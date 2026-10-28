@@ -6,6 +6,7 @@ package signalset
 import (
 	"context"
 	"os"
+	"os/signal"
 	"syscall"
 )
 
@@ -111,4 +112,16 @@ func NotifyAll(ctx context.Context) (<-chan os.Signal, func()) {
 		stop()
 	}()
 	return ch, stop
+}
+
+// ---- os/signal 桥接（全仓库仅本包与 bridge/supervisor 允许 import os/signal）----
+
+// watchSignal 包装 signal.Notify。
+func watchSignal(ch chan<- os.Signal, sigs ...os.Signal) {
+	signal.Notify(ch, sigs...)
+}
+
+// stopSignal 包装 signal.Stop。
+func stopSignal(ch chan<- os.Signal) {
+	signal.Stop(ch)
 }

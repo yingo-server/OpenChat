@@ -13,6 +13,13 @@ import (
 	"time"
 )
 
+// Kind 别名：与 kinds 包一致使用 uint32 kind。
+type Kind = uint32
+
+// helloAckKind HELLO_ACK 复用 kind=902（HELLO 家族）：握手由"谁先发"区分角色，
+// ACK 帧的 body 含服务端自身 nonce 供客户端反向验证。
+const helloAckKind = 902
+
 // HMACAuth 实现 BUS_SOCKET 层间认证（docs/bridge-design.md §2.4/§9）：
 // 密码学只在 HELLO 握手——HMAC-SHA256 互验，时间窗 ±30s，nonce LRU 去重。
 //

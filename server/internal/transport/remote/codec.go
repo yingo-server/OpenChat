@@ -3,25 +3,28 @@
 //
 // BUS_SOCKET 帧格式（wire）：
 //
-//	 0        4  5      7  7         9  9              13  13       13+len
+//	 0        4  5      6  6         8  8              12  12       12+len
 //	┌──────────┬─────────┬───────────┬────────────────┬──────────────────┐
 //	│ "OCHT"   │ version │   kind    │  length (BE32) │  body (JSON)     │
 //	│ 4 bytes  │ 1 byte  │ 2 bytes BE│  4 bytes       │  length bytes    │
 //	└──────────┴─────────┴───────────┴────────────────┴──────────────────┘
 //
-// body 为 JSON 编码的 internal Frame 结构体（简单可靠；proto.Frame 的
-// Envelope 字段以 protojson 兼容方式序列化由 chatpb 侧 Envelope 承担）。
+// body 为 JSON 编码的 internal Frame 结构体（简单可靠）；Envelope 字段
+// 用 protojson 序列化，kind 冗余缓存与线路头 kind 一致。
 package remote
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"sync"
+	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
+
+	chatpb "github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
 
 	"github.com/yingo-server/OpenChat/server/internal/proto"
 )
@@ -36,44 +39,43 @@ const (
 	MaxBodyLen = 256 * 1024
 )
 
+// Kind 与 kinds 包一致：uint32。
+type Kind = uint32
+
 // ErrBadFrame 非法帧（magic/版本/超长）。
 var ErrBadFrame = errors.New("remote: bad frame")
 
 // frameWire 是 body 的 JSON 结构（internal frame 结构体）。
 type frameWire struct {
 	Seq      uint32          `json:"seq"`
-	Kind     uint16          `json:"kind"`
+	Kind     uint32          `json:"kind"`
 	Envelope json.RawMessage `json:"envelope,omitempty"`
 	TraceID  string          `json:"trace_id,omitempty"`
-	ConnID   string          `json:"conn_id,omitempty"`
-	UserID   string          `json:"user_id,omitempty"`
-	DeviceID string          `json:"device_id,omitempty"`
+	SrcLayer string          `json:"src_layer,omitempty"`
+	SrcNode  string          `json:"src_node,omitempty"`
+	ConnID   uint64          `json:"conn_id,omitempty"`
 }
 
 // rawWire 无 Envelope 的裸 body（握手等控制帧用）。
 type rawWire struct {
 	Seq  uint32          `json:"seq"`
-	Kind uint16          `json:"kind"`
+	Kind uint32          `json:"kind"`
 	Body json.RawMessage `json:"body,omitempty"`
 }
 
 // EncodeFrame 把 internal Frame 编成 BUS_SOCKET 帧字节。
-// kind 非 0 时以 kind 覆盖帧内 Kind（握手帧场景）。
-func EncodeFrame(f *proto.Frame, kindOverride uint16) ([]byte, error) {
+// kindOverride 非 0 时以 kindOverride 覆盖线路头 kind（握手帧场景）。
+func EncodeFrame(f *proto.Frame, kindOverride uint32) ([]byte, error) {
 	fw := frameWire{
 		Seq:      f.Seq,
 		Kind:     f.Kind,
-		TraceID:  frameTraceID(f),
-		ConnID:   frameConnID(f),
-		UserID:   frameUserID(f),
-		DeviceID: frameDeviceID(f),
+		Envelope: marshalEnvelope(f),
 	}
-	if f.Envelope != nil {
-		b, err := protojson.Marshal(f.Envelope)
-		if err != nil {
-			return nil, fmt.Errorf("remote: marshal envelope: %w", err)
-		}
-		fw.Envelope = b
+	if f.Meta != nil {
+		fw.TraceID = f.Meta.TraceID
+		fw.SrcLayer = f.Meta.SrcLayer
+		fw.SrcNode = f.Meta.SrcNode
+		fw.ConnID = f.Meta.ConnID
 	}
 	body, err := json.Marshal(fw)
 	if err != nil {
@@ -89,7 +91,7 @@ func EncodeFrame(f *proto.Frame, kindOverride uint16) ([]byte, error) {
 	buf := make([]byte, HeaderLen+len(body))
 	copy(buf, Magic)
 	buf[4] = Version1
-	binary.BigEndian.PutUint16(buf[5:7], kind)
+	binary.BigEndian.PutUint16(buf[5:7], uint16(kind))
 	binary.BigEndian.PutUint32(buf[7:11], uint32(len(body)))
 	copy(buf[HeaderLen:], body)
 	return buf, nil
@@ -98,36 +100,21 @@ func EncodeFrame(f *proto.Frame, kindOverride uint16) ([]byte, error) {
 // DecodeFrame 从连接读一帧并解码为 internal Frame。
 // 非法 magic/版本/超长 → ErrBadFrame（调用方应断开连接）。
 func DecodeFrame(r io.Reader) (*proto.Frame, error) {
-	hdr := make([]byte, HeaderLen)
-	if _, err := io.ReadFull(r, hdr); err != nil {
-		return nil, err
-	}
-	if string(hdr[:4]) != Magic {
-		return nil, ErrBadFrame
-	}
-	if hdr[4] != Version1 {
-		return nil, ErrBadFrame
-	}
-	kind := binary.BigEndian.Uint16(hdr[5:7])
-	length := binary.BigEndian.Uint32(hdr[7:11])
-	if length > MaxBodyLen {
-		return nil, ErrBadFrame
-	}
-	body := make([]byte, length)
-	if _, err := io.ReadFull(r, body); err != nil {
-		return nil, err
-	}
-	return decodeBody(kind, body)
+	f, _, err := DecodeFrameKind(r)
+	return f, err
 }
 
 // DecodeFrameKind 从连接读一帧，返回 (frame, wireKind)。wireKind 是线路
 // 头部的 kind（握手帧的 kind 在头部而非 body）。
-func DecodeFrameKind(r io.Reader) (*proto.Frame, uint16, error) {
+func DecodeFrameKind(r io.Reader) (*proto.Frame, uint32, error) {
 	hdr := make([]byte, HeaderLen)
 	if _, err := io.ReadFull(r, hdr); err != nil {
 		return nil, 0, err
 	}
-	if string(hdr[:4]) != Magic || hdr[4] != Version1 {
+	if string(hdr[:4]) != Magic {
+		return nil, 0, ErrBadFrame
+	}
+	if hdr[4] != Version1 {
 		return nil, 0, ErrBadFrame
 	}
 	kind := binary.BigEndian.Uint16(hdr[5:7])
@@ -139,28 +126,33 @@ func DecodeFrameKind(r io.Reader) (*proto.Frame, uint16, error) {
 	if _, err := io.ReadFull(r, body); err != nil {
 		return nil, 0, err
 	}
-	f, err := decodeBody(kind, body)
-	return f, kind, err
+	f, err := decodeBody(uint32(kind), body)
+	return f, uint32(kind), err
 }
 
-func decodeBody(kind uint16, body []byte) (*proto.Frame, error) {
+func marshalEnvelope(f *proto.Frame) json.RawMessage {
+	if f == nil || f.Env == nil {
+		return nil
+	}
+	b, err := protojson.Marshal(f.Env)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func decodeBody(kind uint32, body []byte) (*proto.Frame, error) {
 	var fw frameWire
 	if err := json.Unmarshal(body, &fw); err != nil {
 		return nil, fmt.Errorf("remote: bad body: %w", err)
 	}
 	f := &proto.Frame{Seq: fw.Seq, Kind: kind}
-	meta := &proto.FrameMeta{}
-	if fw.TraceID != "" {
-		meta.TraceID = fw.TraceID
-	}
-	if fw.ConnID != "" {
-		meta.ConnID = fw.ConnID
-	}
-	if fw.UserID != "" {
-		meta.UserID = fw.UserID
-	}
-	if fw.DeviceID != "" {
-		meta.DeviceID = fw.DeviceID
+	meta := &proto.FrameMeta{
+		TraceID:    fw.TraceID,
+		SrcLayer:   fw.SrcLayer,
+		SrcNode:    fw.SrcNode,
+		ConnID:     fw.ConnID,
+		EnqueuedAt: time.Now(),
 	}
 	f.Meta = meta
 	if len(fw.Envelope) > 0 {
@@ -168,14 +160,14 @@ func decodeBody(kind uint16, body []byte) (*proto.Frame, error) {
 		if err := protojson.Unmarshal(fw.Envelope, env); err != nil {
 			return nil, fmt.Errorf("remote: bad envelope: %w", err)
 		}
-		f.Envelope = env
+		f.Env = env
 	}
 	return f, nil
 }
 
 // EncodeControl 编一个控制帧（握手等）：kind 在线路头部，body 为任意
 // JSON 可序列化对象。
-func EncodeControl(seq uint32, kind uint16, body any) ([]byte, error) {
+func EncodeControl(seq uint32, kind uint32, body any) ([]byte, error) {
 	var raw json.RawMessage
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -192,7 +184,7 @@ func EncodeControl(seq uint32, kind uint16, body any) ([]byte, error) {
 	buf := make([]byte, HeaderLen+len(b))
 	copy(buf, Magic)
 	buf[4] = Version1
-	binary.BigEndian.PutUint16(buf[5:7], kind)
+	binary.BigEndian.PutUint16(buf[5:7], uint16(kind))
 	binary.BigEndian.PutUint32(buf[7:11], uint32(len(b)))
 	copy(buf[HeaderLen:], b)
 	return buf, nil

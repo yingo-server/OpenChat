@@ -9,9 +9,9 @@ import (
 	"github.com/yingo-server/OpenChat/server/internal/proto"
 )
 
-func mkFrame(seq uint16, trace string) *proto.Frame {
+func mkFrame(seq uint32, trace string) *proto.Frame {
 	return &proto.Frame{
-		Seq:  uint32(seq),
+		Seq:  seq,
 		Kind: seq,
 		Meta: &proto.FrameMeta{TraceID: trace},
 	}
@@ -42,7 +42,7 @@ func TestTeeStagePassesAndCopies(t *testing.T) {
 
 	got := 0
 	for f := range out {
-		if f.Seq != uint32(got+1) {
+		if f.Seq != got+1 {
 			t.Errorf("out of order: %v", f.Seq)
 		}
 		got++

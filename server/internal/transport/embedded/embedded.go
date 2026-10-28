@@ -52,7 +52,6 @@ type Bridge struct {
 	lastPeer   transport.Peer
 	links      []*link
 	fanin      chan *proto.Frame // 所有层上行帧的汇聚流
-	pumped     bool
 }
 
 // NewBridge 构造总线端。l 为初始接入层（可传 nil，之后用 Attach 追加）。

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/yingo-server/OpenChat/server/internal/proto"
-	_ "github.com/yingo-server/OpenChat/server/internal/transport" // Peer 接口
 )
 
 // mockLayer 模拟一个层。
@@ -37,7 +36,7 @@ func (m *mockLayer) got() []*proto.Frame {
 	return append([]*proto.Frame(nil), m.delivered...)
 }
 
-func mk(seq uint32) *proto.Frame { return &proto.Frame{Seq: seq, Kind: uint16(seq)} }
+func mk(seq uint32) *proto.Frame { return &proto.Frame{Seq: seq, Kind: seq} }
 
 // 双向：层上行帧 → 总线 Peer.Frames()；总线 Peer.Send() → 层 Deliver。
 func TestEmbeddedBidirectional(t *testing.T) {
