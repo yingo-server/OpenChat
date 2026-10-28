@@ -1,0 +1,182 @@
+# OpenChat 边缘网关（Caddy v2）
+#
+# 职责边界：
+#   - 自动 HTTPS（ACME，Let's Encrypt）
+#   - /ws           → 用户层（WebSocket upgrade）
+#   - /api/admin/*  → 管理层，仅白名单 IP
+#   - 其余（含 /admin/ 静态资源与 /api/v1/*）→ chatd / usergw，SPA 由二进制内嵌托管
+#
+# 限流：Caddy 核心没有 rate_limit 指令。三条路任选其一（详见文末注释）：
+#   (a) 编译 caddy-ratelimit 插件（推荐，按 IP/路径做令牌桶）
+#   (b) 前置 nftables 做 IP 级 connlimit / SYN 限速（security-spec §6.3）
+#   (c) 云厂商 WAF / CDN 边缘规则
+# 本文件保留 (a) 的配置位置，默认注释掉以保证 stock caddy 可直接加载。
+{
+	email {$OPENCHAT_ACME_EMAIL:ops@example.com}
+	# 关掉版本头，减少指纹
+	servers {
+		trusted_proxies static private_ranges
+	}
+	# 管理端 SPA 与 API 不允许被搜索引擎索引
+	admin off
+}
+
+# 站点域名从环境变量注入：OPENCHAT_DOMAIN=chat.example.com
+{$OPENCHAT_DOMAIN:chat.example.com} {
+	encode zstd gzip
+
+	# ------------------------------------------------------------------
+	# 安全响应头（HSTS 只在 HTTPS 站点下发送）
+	# ------------------------------------------------------------------
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-site"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+		# 静态资源带 hash，可长缓存；HTML 不缓存（下方 handle 覆盖）
+	}
+
+	# 全局请求体上限（security-spec E-7：非上传路径 1MB）
+	request_body {
+		max_size 1MB
+	}
+
+	# 访问日志 → stdout → journald（不落文件）
+	log {
+		output stdout
+		format json
+		level INFO
+	}
+
+	# ------------------------------------------------------------------
+	# 1) WebSocket：用户层
+	# ------------------------------------------------------------------
+	@ws {
+		path /ws
+	}
+
+	handle @ws {
+		# WS 握手不带大 body；比全局更严
+		request_body {
+			max_size 64KB
+		}
+
+		# 边缘 upgrade 限流（security-spec E-3/E-4 红线）：
+		# 需 caddy-ratelimit 插件（xcaddy build --with github.com/mholt/caddy-ratelimit）。
+		# 按 IP 10 次/分钟、burst 20；失败率熔断交给 fail2ban（§6.3）。
+		# rate_limit {
+		#     zone ws_upgrade {
+		#         key {remote_host}
+		#         events 10
+		#         window 1m
+		#         match {
+		#             method GET
+		#             path /ws
+		#         }
+		#     }
+		# }
+
+		reverse_proxy 127.0.0.1:8081 {
+			# WS 需要长连接：关闭响应缓冲与超时
+			flush_interval -1
+			transport http {
+				dial_timeout 5s
+				read_timeout 0
+				write_timeout 0
+			}
+			header_up X-Real-IP {remote_host}
+			# 透传客户端协议头（token 只允许 Cookie 或 Sec-WebSocket-Protocol，禁止 query）
+		}
+	}
+
+	# ------------------------------------------------------------------
+	# 2) 管理 API：仅白名单 IP（security-spec §6.3 仅放行必要来源）
+	#    非白名单返回 404 而不是 403 —— 不暴露管理端存在。
+	# ------------------------------------------------------------------
+	@adminApi {
+		path /api/admin/*
+	}
+
+	handle @adminApi {
+		@notAllowed not remote_ip 127.0.0.1/32 10.0.0.0/8 192.168.0.0/16 203.0.113.10/32
+		respond @notAllowed "Not Found" 404
+
+		request_body {
+			max_size 1MB
+		}
+
+		# 管理操作速率：60 op/min/管理员（应用层已限，边缘再兜一层）
+		# rate_limit {
+		#     zone admin_api {
+		#         key {remote_host}
+		#         events 120
+		#         window 1m
+		#     }
+		# }
+
+		reverse_proxy 127.0.0.1:7780 {
+			header_up X-Real-IP {remote_host}
+			transport http {
+				dial_timeout 5s
+				read_timeout 60s
+				write_timeout 60s
+			}
+		}
+	}
+
+	# ------------------------------------------------------------------
+	# 3) 指标：只允许本机/内网抓取，公网 404
+	# ------------------------------------------------------------------
+	@metrics {
+		path /metrics /metrics/*
+	}
+
+	handle @metrics {
+		@metricsDenied not remote_ip 127.0.0.1/32 10.0.0.0/8 192.168.0.0/16
+		respond @metricsDenied "Not Found" 404
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# ------------------------------------------------------------------
+	# 4) 登录/刷新等用户 HTTP API → 用户层
+	# ------------------------------------------------------------------
+	@api {
+		path /api/*
+	}
+
+	handle @api {
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# 上传预签名路径更严的 body 限制（如启用直传代理）
+	@presign {
+		path /api/v1/media/presign
+	}
+	handle @presign {
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy 127.0.0.1:8080
+	}
+
+	# ------------------------------------------------------------------
+	# 5) 其余全部：chatd 内嵌 SPA（用户端 /，管理端 /admin/）
+	#    静态文件由二进制 embed.FS 托管，不需要 Caddy file_server。
+	# ------------------------------------------------------------------
+	handle {
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Real-IP {remote_host}
+		}
+		# 缓存策略由 chatd 内嵌服务器设置（index.html no-cache，hash 资源 immutable）
+	}
+}

@@ -1,0 +1,28 @@
+{
+  "hot_retention_days": 90,
+  "archive": {
+    "cron": "0 4 * * *",
+    "batch_size": 1000,
+    "batch_pause_ms": 100,
+    "active_exempt": true
+  },
+  "backup": {
+    "cron": "30 5 * * *",
+    "dir": "/var/lib/openchat/backup",
+    "keep_days": 14
+  },
+  "trim": [
+    {
+      "table": "sys_rate_limit",
+      "retention_days": 7
+    },
+    {
+      "table": "identity_login_history",
+      "retention_days": 180
+    }
+  ],
+  "rate_limit": {
+    "msg_per_user_per_min": 60,
+    "login_per_ip_per_min": 10
+  }
+}

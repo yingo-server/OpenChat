@@ -12,3 +12,6 @@ node_modules/
 .env
 *.key
 *.pem
+# frontend build outputs
+apps/client/dist/
+apps/admin/dist/
