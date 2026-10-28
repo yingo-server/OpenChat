@@ -451,7 +451,8 @@ func (a *Acceptor) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ws: listen %s: %w", a.cfg.ListenAddr, err)
 	}
-	a.ln = ln
+	// Serve 在锁内登记 listener；在 Run 里再写一次会与并发的 Serve/Stop 竞争
+	// （CI -race 实测）。
 	return a.Serve(ctx, ln)
 }
 

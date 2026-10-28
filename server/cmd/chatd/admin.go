@@ -29,12 +29,16 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
 )
 
 type adminPlane struct {
+	// addr is written once by Run (after net.Listen resolves ":0") and read by
+	// Addr()/logging from other goroutines — guarded by mu (CI -race proved it).
+	mu   sync.RWMutex
 	addr string
 	srv  *http.Server
 	lg   *log.Logger
@@ -90,13 +94,19 @@ func newAdminPlane(addr string, injector http.Handler, lg *log.Logger) (*adminPl
 
 // Run listens and serves until ctx is canceled.
 func (a *adminPlane) Run(ctx context.Context) error {
-	ln, err := net.Listen("tcp", a.addr)
+	a.mu.RLock()
+	listenAddr := a.addr
+	a.mu.RUnlock()
+	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("chatd: admin listen %s: %w", a.addr, err)
 	}
-	a.addr = ln.Addr().String()
+	bound := ln.Addr().String()
+	a.mu.Lock()
+	a.addr = bound
+	a.mu.Unlock()
 	if a.lg != nil {
-		a.lg.Info("admin surface listening", "addr", a.addr,
+		a.lg.Info("admin surface listening", "addr", bound,
 			"inject_api", true, "rest_layer", "admin_rest_listen")
 	}
 	errCh := make(chan error, 1)
@@ -118,7 +128,11 @@ func (a *adminPlane) Run(ctx context.Context) error {
 }
 
 // Addr returns the bound address (valid after Run starts listening).
-func (a *adminPlane) Addr() string { return a.addr }
+func (a *adminPlane) Addr() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.addr
+}
 
 // Close stops the listener immediately (drain path).
 func (a *adminPlane) Close() error { return a.srv.Close() }
