@@ -1,0 +1,14 @@
+# build
+/dist/
+/bin/
+*.exe
+# frontend
+node_modules/
+.vite/
+# local
+*.db
+*.db-wal
+*.db-shm
+.env
+*.key
+*.pem
