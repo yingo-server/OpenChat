@@ -129,12 +129,14 @@ jobs:
           ls -lh dist/
           cat dist/SHA256SUMS
 
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+      # Attach the tarball to a GitHub Release instead of upload-artifact:
+      # artifact storage quotas are per-repo and slow to reclaim, while a
+      # release asset is the actual download entry point users need.
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: openchat-${{ github.ref_name }}-linux-amd64
-          path: |
+          files: |
             dist/openchat-*-linux-*.tar.gz
             dist/SHA256SUMS
-          retention-days: 30
-          if-no-files-found: error
+          generate_release_notes: true
+          fail_on_unmatched_files: true
