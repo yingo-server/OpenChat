@@ -22,9 +22,12 @@ OpenChat 是一个自托管的即时通讯服务：单聊、群聊、图片与�
 ### 安装
 
 ```bash
-# 1. 获取发布包
-curl -LO https://github.com/yingo-server/OpenChat/releases/latest/download/openchat-linux-amd64.tar.gz
-tar -xzf openchat-linux-amd64.tar.gz
+# 1. 获取发布包（版本号见 https://github.com/yingo-server/OpenChat/releases）
+V=0.1.1
+curl -LO https://github.com/yingo-server/OpenChat/releases/download/v$V/openchat-v$V-linux-amd64.tar.gz
+curl -LO https://github.com/yingo-server/OpenChat/releases/download/v$V/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing
+tar -xzf openchat-v$V-linux-amd64.tar.gz
 
 # 2. 安装
 sudo ./install.sh   # 部署二进制、systemd 单元、生成配置与密钥
