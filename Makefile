@@ -19,14 +19,18 @@ ARCH    ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
 
 # proto: 生成 chatpb。无 protoc 时保留仓库内已提交的 wire 兼容实现
 # (server/internal/proto/gen/chatpb)，代码照常构建 —— CI 无需预装 protoc。
+# 整段必须写在同一个 shell 里：make 的每条 recipe 行是独立 shell，
+# `exit 0` 只结束那一行，下一行的 protoc 仍会执行（CI 实测踩到）。
 proto:
 	@if ! command -v protoc >/dev/null 2>&1 || ! command -v protoc-gen-go >/dev/null 2>&1; then \
-		echo "protoc/protoc-gen-go not found: keeping committed chatpb implementation"; exit 0; fi
-	protoc \
-		--go_out=server/internal/proto/gen \
-		--go_opt=paths=source_relative \
-		--go_opt=M$(PROTO_DIR)/chat.proto=github.com/yingo-server/OpenChat/$(GEN_DIR) \
-		$(PROTO_DIR)/chat.proto
+		echo "protoc/protoc-gen-go not found: keeping committed chatpb implementation"; \
+	else \
+		protoc \
+			--go_out=server/internal/proto/gen \
+			--go_opt=paths=source_relative \
+			--go_opt=M$(PROTO_DIR)/chat.proto=github.com/yingo-server/OpenChat/$(GEN_DIR) \
+			$(PROTO_DIR)/chat.proto; \
+	fi
 
 build: proto
 	go build ./...
