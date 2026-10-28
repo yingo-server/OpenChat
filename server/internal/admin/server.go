@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yingo-server/OpenChat/server/internal/admin/auditshim"
@@ -111,6 +112,7 @@ type Server struct {
 	api    *handler.API
 	bridge *bridgeproxy.Proxy
 	addr   string
+	addrMu sync.RWMutex
 }
 
 // New validates dependencies, migrates admin.db, wires services/middleware and
@@ -245,8 +247,13 @@ func New(cfg Config, deps Deps) (*Server, error) {
 // Handler exposes the HTTP handler (tests/embedded assembly).
 func (s *Server) Handler() http.Handler { return s.api.Handler() }
 
-// Addr returns the bound address after Run starts listening.
-func (s *Server) Addr() string { return s.addr }
+// Addr returns the bound address after Run starts listening. Guarded because
+// Run resolves :0 in its own goroutine while callers (tests, logging) read it.
+func (s *Server) Addr() string {
+	s.addrMu.RLock()
+	defer s.addrMu.RUnlock()
+	return s.addr
+}
 
 // Bridge exposes the proxy for metrics/health probes. It is nil in
 // Dispatch-only (embedded/loopback) assembly.
@@ -258,7 +265,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("admin: listen %s: %w", s.cfg.ListenAddr, err)
 	}
+	s.addrMu.Lock()
 	s.addr = ln.Addr().String()
+	s.addrMu.Unlock()
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.http.Serve(ln) }()
 	s.logger.Info("admin listening", "addr", s.addr)

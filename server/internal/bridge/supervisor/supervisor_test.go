@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"os"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -36,8 +37,9 @@ func TestQuitDrainsAndReturnsZero(t *testing.T) {
 
 func TestReloadCallback(t *testing.T) {
 	s := New()
-	reloaded := 0
-	s.AddReload(func() { reloaded++ })
+	// The reload callback runs on Run's goroutine; count it atomically.
+	var reloaded atomic.Int32
+	s.AddReload(func() { reloaded.Add(1) })
 	sigs := make(chan os.Signal, 4)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -47,8 +49,8 @@ func TestReloadCallback(t *testing.T) {
 		cancel()
 	}()
 	_, _ = s.Run(ctx, sigs)
-	if reloaded != 1 {
-		t.Fatalf("reloaded=%d want 1", reloaded)
+	if got := reloaded.Load(); got != 1 {
+		t.Fatalf("reloaded=%d want 1", got)
 	}
 }
 
