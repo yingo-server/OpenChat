@@ -458,17 +458,20 @@ func (a *Acceptor) Run(ctx context.Context) error {
 
 // Serve 在已有 listener 上服务（httptest 用）。
 func (a *Acceptor) Serve(ctx context.Context, ln net.Listener) error {
+	srv := &http.Server{Handler: a, ReadHeaderTimeout: 10 * time.Second}
+	// 登记 listener 与 server 必须同一把锁：Shutdown 可能在另一个 goroutine
+	// 里并发读取它们（SIGTERM 排空路径；CI -race 实测）。
 	a.mu.Lock()
 	a.ln = ln
+	a.srv = srv
 	a.mu.Unlock()
-	a.srv = &http.Server{Handler: a, ReadHeaderTimeout: 10 * time.Second}
 	errCh := make(chan error, 1)
-	go func() { errCh <- a.srv.Serve(ln) }()
+	go func() { errCh <- srv.Serve(ln) }()
 	select {
 	case <-ctx.Done():
 		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return a.srv.Shutdown(sctx)
+		return srv.Shutdown(sctx)
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
@@ -480,10 +483,13 @@ func (a *Acceptor) Serve(ctx context.Context, ln net.Listener) error {
 // Shutdown 停止 accept（listener.Close，如同 nginx QUIT）并等待活跃连接处理完。
 func (a *Acceptor) Shutdown(ctx context.Context) error {
 	a.closed.Store(true)
-	if a.srv == nil {
+	a.mu.Lock()
+	srv := a.srv
+	a.mu.Unlock()
+	if srv == nil {
 		return nil
 	}
-	return a.srv.Shutdown(ctx)
+	return srv.Shutdown(ctx)
 }
 
 // Addr 返回实际监听地址（测试用 :0 后取真实端口）。

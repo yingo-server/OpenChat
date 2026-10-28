@@ -347,11 +347,11 @@ func TestReconnectingPeerResync(t *testing.T) {
 	serverPeers := runServer(ctx, ln, testKey())
 
 	rp := NewReconnectingPeer(ctx, addr, testKey(), "user", []string{"sys.>"})
-	rp.OnResync = func(transport.Peer) {
+	rp.SetOnResync(func(transport.Peer) {
 		mu.Lock()
 		resyncs++
 		mu.Unlock()
-	}
+	})
 	defer rp.Close()
 
 	// 第一次连接 + resync

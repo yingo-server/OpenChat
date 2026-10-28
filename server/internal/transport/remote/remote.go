@@ -276,8 +276,10 @@ type ReconnectingPeer struct {
 	attempt int
 	seq     uint32
 
-	// OnResync 重连成功后回调（上层触发 RESYNC）。
-	OnResync func(p transport.Peer)
+	// onResync 重连成功后回调（上层触发 RESYNC）。写入只经 SetOnResync：
+	// connectLoop 在另一个 goroutine 里读它，直接写字段就是数据竞争
+	// （CI -race 实测）。
+	onResync func(p transport.Peer)
 }
 
 // NewReconnectingPeer 构造并启动首次连接。subs 为重连后重发的订阅 topic。
@@ -326,8 +328,11 @@ func (rp *ReconnectingPeer) connectLoop(ctx context.Context) {
 		// 重发 HELLO + SUBSCRIBE（重连恢复语义：订约 = 各层重连重建）
 		rp.resendHelloSubscribe(p)
 
-		if rp.OnResync != nil {
-			rp.OnResync(p)
+		rp.mu.Lock()
+		cb := rp.onResync
+		rp.mu.Unlock()
+		if cb != nil {
+			cb(p)
 		}
 
 		// 监视连接存活
@@ -380,6 +385,14 @@ func (rp *ReconnectingPeer) resendHelloSubscribe(p transport.Peer) {
 }
 
 // Layer 返回层标识。
+// SetOnResync installs the resync callback. Safe to call at any time (including
+// after the first connection has been established).
+func (rp *ReconnectingPeer) SetOnResync(fn func(p transport.Peer)) {
+	rp.mu.Lock()
+	rp.onResync = fn
+	rp.mu.Unlock()
+}
+
 func (rp *ReconnectingPeer) Layer() string { return rp.layer }
 
 // Send 发送一帧；未连接时返回 ErrNotConnected。

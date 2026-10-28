@@ -407,9 +407,27 @@ func TestReloadAndStatusDump(t *testing.T) {
 	}
 }
 
+// waitAddr blocks until the plane has bound a real port (Run resolves :0 in its
+// own goroutine, so reading Addr() too early yields ":0").
+func waitAddr(t *testing.T, addr func() string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		a := addr()
+		if !strings.HasSuffix(a, ":0") {
+			return a
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("listener never bound: %q", addr())
+	return ""
+}
+
 func TestAdminSurfaceHealthz(t *testing.T) {
 	a, _ := startAssembly(t)
-	resp, err := http.Get("http://" + a.admin.Addr() + "/healthz")
+	adminAddr := waitAddr(t, a.admin.Addr)
+	restAddr := waitAddr(t, a.adminREST.Addr)
+	resp, err := http.Get("http://" + adminAddr + "/healthz")
 	if err != nil {
 		t.Fatalf("admin healthz: %v", err)
 	}
@@ -419,7 +437,7 @@ func TestAdminSurfaceHealthz(t *testing.T) {
 	}
 	// /api/admin/* on the injector port is a misroute: the RBAC REST layer has
 	// its own loopback listener (admin_rest_listen).
-	resp2, err := http.Post("http://"+a.admin.Addr()+"/api/admin/v1/users", "application/json", strings.NewReader("{}"))
+	resp2, err := http.Post("http://"+adminAddr+"/api/admin/v1/users", "application/json", strings.NewReader("{}"))
 	if err != nil {
 		t.Fatalf("admin api: %v", err)
 	}
@@ -430,7 +448,7 @@ func TestAdminSurfaceHealthz(t *testing.T) {
 
 	// Unauthenticated request to the real REST surface must be 401, not 404:
 	// that proves the RBAC layer is mounted and enforcing.
-	url := "http://" + a.adminREST.Addr() + "/api/v1/whoami"
+	url := "http://" + restAddr + "/api/v1/whoami"
 	resp3, err := http.Get(url)
 	if err != nil {
 		t.Fatalf("admin rest whoami: %v", err)
