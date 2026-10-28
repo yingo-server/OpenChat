@@ -1,0 +1,602 @@
+syntax = "proto3";
+
+// OpenChat 唯一契约源：所有 kind 定义 + Envelope。
+// 号段总表见 docs/architecture.md「统一 kind 号段」。
+package chat.v1;
+
+option go_package = "github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb;chatpb";
+
+// ===================================================================
+// 0-99 系统层（连接生命周期 / 鉴权 / 同步 / 错误）
+// ===================================================================
+
+// 全系统唯一外层帧。控制面/数据面/管理面/观测面全部是同一种 Envelope。
+message Envelope {
+  uint64 id = 1;         // 单调帧 id
+  uint64 ack_id = 2;     // 被确认帧的 id
+  uint32 kind = 3;       // 消息类型，见 kinds 号段表
+  uint32 version = 4;    // 协议版本
+  string request_id = 5; // 请求-应答配对（幂等键）
+  uint32 flags = 6;      // 位标志（压缩/加密/分片…）
+  fixed64 sent_at = 7;   // 发送端毫秒时间戳
+  reserved 8, 9, 12, 13, 14;
+  oneof target {
+    uint64 conv_id = 10; // 目标会话
+    uint64 user_id = 11; // 目标用户
+  }
+  bytes payload = 15;    // 按 kind 解码的消息体
+}
+
+message Hello {
+  string client_version = 1;
+  string device_id = 2;
+  repeated string capabilities = 3;
+  string nonce = 4;
+  reserved 5 to 9;
+}
+
+message Auth {
+  string token = 1;    // JWT
+  string device_id = 2;
+  reserved 3 to 9;
+}
+
+message AuthResult {
+  bool ok = 1;
+  string error = 2;
+  uint64 user_id = 3;
+  string session_id = 4;
+  fixed64 expires_at = 5;
+  reserved 6 to 9;
+}
+
+message Ping {
+  fixed64 client_ms = 1;
+  reserved 2 to 9;
+}
+
+message Pong {
+  fixed64 client_ms = 1; // 回显
+  fixed64 server_ms = 2;
+  reserved 3 to 9;
+}
+
+message Resume {
+  string session_id = 1;
+  uint64 conv_id = 2;
+  uint64 last_seq = 3;
+  reserved 4 to 9;
+}
+
+message ResumeResult {
+  uint64 conv_id = 1;
+  uint64 from_seq = 2;
+  bool complete = 3;
+  uint64 server_seq = 4;
+  reserved 5 to 9;
+}
+
+message SyncRequest {
+  uint64 conv_id = 1;
+  uint64 since_seq = 2;
+  uint32 limit = 3;
+  reserved 4 to 9;
+}
+
+message SyncResult {
+  uint64 conv_id = 1;
+  uint64 from_seq = 2;
+  uint64 to_seq = 3;
+  bool has_more = 4;
+  repeated Envelope frames = 5; // 逐帧下发，sync 引擎去重重组
+  reserved 6 to 9;
+}
+
+message Error {
+  uint32 code = 1;
+  string reason = 2;
+  uint32 retry_after_ms = 3;
+  reserved 4 to 9;
+}
+
+message Kicked {
+  string reason = 1;
+  fixed64 banned_until = 2; // 0 = 未封禁（仅踢下线）
+  reserved 3 to 9;
+}
+
+message FeatureFlags {
+  uint32 version = 1;
+  map<string, string> flags = 2;
+  reserved 3 to 9;
+}
+
+message RateLimited {
+  string scope = 1;
+  uint32 limit = 2;
+  uint32 retry_after_ms = 3;
+  reserved 4 to 9;
+}
+
+// ===================================================================
+// 100-199 消息层
+// ===================================================================
+
+// 消息回执（READ / DELIVERED），作为 MessagePayload 字段与独立帧 payload 复用。
+enum ReceiptType {
+  RECEIPT_READ = 0;
+  RECEIPT_DELIVERED = 1;
+}
+
+message Receipt {
+  uint64 msg_id = 1;
+  uint64 user_id = 2;
+  fixed64 at = 3;
+  ReceiptType rtype = 4;
+  reserved 5 to 9;
+}
+
+message MessagePayload { // MSG_SEND(101)
+  string client_msg_id = 1; // 幂等键（dedupguard）
+  string text = 2;
+  repeated Media media = 3;
+  uint64 reply_to = 4;
+  repeated uint64 mentions = 5;
+  reserved 6 to 8;
+  Content content = 9;          // 结构化内容（预留，可选）
+  repeated Receipt receipts = 10; // 回执类帧复用本 payload
+  reserved 11 to 14;
+}
+
+// 结构化内容（未来投票/卡片等走此扩展，text 与 content 二选一）。
+message Content {
+  string text = 1;
+  repeated Media media = 2;
+  uint64 reply_to = 3;
+  repeated uint64 mentions = 4;
+  reserved 5 to 9, 15 to 19;
+}
+
+message MsgNew { // MSG_NEW(102)
+  uint64 msg_id = 1; // snowflake
+  uint64 seq = 2;    // 会话内连续 seq（sync 引擎校验）
+  uint64 sender_id = 3;
+  MessagePayload content = 4;
+  fixed64 sent_at = 5;
+  reserved 6 to 9;
+}
+
+message MsgAck { // MSG_ACK(103)
+  uint64 msg_id = 1;
+  uint64 seq = 2;
+  string client_msg_id = 3;
+  uint32 status = 4;
+  reserved 5 to 9;
+}
+
+message MsgEdit {
+  uint64 msg_id = 1;
+  uint64 conv_id = 2;
+  string text = 3;
+  reserved 4 to 9;
+}
+
+message MsgDelete {
+  uint64 msg_id = 1;
+  uint64 conv_id = 2;
+  bool for_everyone = 3;
+  reserved 4 to 9;
+}
+
+message MsgRecall {
+  uint64 msg_id = 1;
+  uint64 conv_id = 2;
+  reserved 3 to 9;
+}
+
+message MsgForward {
+  uint64 msg_id = 1;
+  uint64 from_conv_id = 2;
+  uint64 to_conv_id = 3;
+  reserved 4 to 9;
+}
+
+message MsgSearch {
+  uint64 conv_id = 1;
+  string query = 2;
+  uint32 limit = 3;
+  reserved 4 to 9;
+}
+
+message MsgSearchResult {
+  repeated MsgNew messages = 1;
+  bool has_more = 2;
+  reserved 3 to 9;
+}
+
+// ===================================================================
+// 200-299 会话层
+// ===================================================================
+
+message Member {
+  uint64 user_id = 1;
+  uint32 role = 2;
+  fixed64 joined_at = 3;
+  fixed64 muted_until = 4;
+  reserved 5 to 9;
+}
+
+message ConvPayload { // CONV 系列通用应答体
+  uint64 conv_id = 1;
+  string title = 2;
+  uint32 conv_type = 3;
+  fixed64 created_at = 4;
+  repeated Member members = 5;
+  uint32 version = 6;
+  reserved 7 to 9;
+}
+
+message ConvCreate {
+  string title = 1;
+  uint32 conv_type = 2;
+  repeated uint64 member_ids = 3;
+  reserved 4 to 9;
+}
+
+message ConvUpdate {
+  uint64 conv_id = 1;
+  string title = 2;
+  uint32 version = 3;
+  reserved 4 to 9;
+}
+
+message MemberOp { // MEMBER_ADD/REMOVE/UPDATE、ROLE_SET 通用体
+  uint64 conv_id = 1;
+  repeated uint64 user_ids = 2;
+  uint32 role = 3;
+  reserved 4 to 9;
+}
+
+message MutePayload {
+  uint64 conv_id = 1;
+  fixed64 until = 2;
+  reserved 3 to 9;
+}
+
+message PinPayload {
+  uint64 conv_id = 1;
+  uint64 msg_id = 2;
+  bool pinned = 3;
+  reserved 4 to 9;
+}
+
+message Typing {
+  uint64 conv_id = 1;
+  bool typing = 2;
+  reserved 3 to 9;
+}
+
+message Draft {
+  uint64 conv_id = 1;
+  string text = 2;
+  reserved 3 to 9;
+}
+
+// ===================================================================
+// 300-349 媒体层
+// ===================================================================
+
+enum MediaType {
+  MEDIA_IMAGE = 0;
+  MEDIA_AUDIO = 1;
+  MEDIA_VIDEO = 2;
+  MEDIA_FILE = 3;
+}
+
+enum MediaStatus {
+  MEDIA_PENDING = 0;
+  MEDIA_UPLOADING = 1;
+  MEDIA_READY = 2;
+  MEDIA_EXPIRED = 3;
+  MEDIA_FAILED = 4;
+}
+
+message Media {
+  string media_id = 1;
+  MediaType mtype = 2;
+  string name = 3;
+  int64 size = 4;
+  uint32 width = 5;
+  uint32 height = 6;
+  uint32 duration_ms = 7;
+  string mime = 8;
+  bytes thumb_inline = 9; // 内联缩略图（小图 base64/blurhash）
+  bytes waveform = 10;    // 语音波形（24 段采样）
+  MediaStatus status = 11;
+  reserved 12 to 14, 20 to 29;
+}
+
+message MediaPresignRequest {
+  string media_id = 1;
+  string mime = 2;
+  int64 size = 3;
+  reserved 4 to 9;
+}
+
+message MediaPresignResult {
+  string media_id = 1;
+  string method = 2;
+  string upload_url = 3;
+  map<string, string> headers = 4;
+  fixed64 expires_at = 5;
+  reserved 6 to 9;
+}
+
+message MediaReady {
+  string media_id = 1;
+  reserved 2 to 9;
+}
+
+message MediaExpire {
+  string media_id = 1;
+  reserved 2 to 9;
+}
+
+message MediaThumb {
+  string media_id = 1;
+  bytes thumb = 2;
+  reserved 3 to 9;
+}
+
+// ===================================================================
+// 350-399 通话预留（flag 关闭，常量已定义但不启用）
+// ===================================================================
+
+message CallSignal {
+  uint64 call_id = 1;
+  string sdp = 2;   // offer/answer SDP；candidate 帧放 candidate 字段
+  string candidate = 3;
+  reserved 4 to 9;
+}
+
+message CallEvent {
+  uint64 call_id = 1;
+  uint64 from_user_id = 2;
+  string reason = 3; // busy / hangup 原因
+  reserved 4 to 9;
+}
+
+// ===================================================================
+// 400-449 presence
+// ===================================================================
+
+enum PresenceStatus {
+  PRESENCE_OFFLINE = 0;
+  PRESENCE_ONLINE = 1;
+  PRESENCE_AWAY = 2;
+}
+
+message PresenceUpdate {
+  uint64 user_id = 1;
+  PresenceStatus status = 2;
+  fixed64 at = 3;
+  reserved 4 to 9;
+}
+
+message PresenceSubscribe {
+  repeated uint64 user_ids = 1;
+  reserved 2 to 9;
+}
+
+message PresenceUnsubscribe {
+  repeated uint64 user_ids = 1;
+  reserved 2 to 9;
+}
+
+// ===================================================================
+// 450-499 用户层
+// ===================================================================
+
+message ProfileUpdate {
+  string display_name = 1;
+  string avatar_media_id = 2;
+  string bio = 3;
+  reserved 4 to 9;
+}
+
+message BlockPayload {
+  uint64 user_id = 1;
+  reserved 2 to 9;
+}
+
+message ReportPayload {
+  uint64 user_id = 1;
+  uint32 reason = 2;
+  string detail = 3;
+  reserved 4 to 9;
+}
+
+// ===================================================================
+// 500-599 管理下行（AdminAPI 把 HTTP 翻译成 5xx 帧注入 Bus）
+// ===================================================================
+
+message AdminBroadcast {
+  string text = 1;
+  repeated uint64 conv_ids = 2; // 空 = 全量
+  fixed64 expires_at = 3;
+  reserved 4 to 9;
+}
+
+message Announce {
+  string title = 1;
+  string text = 2;
+  string level = 3; // info / warning / critical
+  reserved 4 to 9;
+}
+
+message Maintenance {
+  fixed64 begin_at = 1;
+  fixed64 end_at = 2;
+  string message = 3;
+  reserved 4 to 9;
+}
+
+// ===================================================================
+// 900-999 层间内部帧（不出 Bridge，不出内部 socket）
+// ===================================================================
+
+// 层间内部帧外层：内嵌 Envelope + 路由头。
+message InternalFrame {
+  Envelope envelope = 1;      // 原始业务帧（原样透传）
+  string src_layer = 2;       // user / data / admin / bridge
+  string dst_layer = 3;
+  string src_node = 4;        // 实例标识
+  string dst_node = 5;
+  uint64 conn_id = 6;         // 入口连接 id，回程投递透传上下文
+  string trace_id = 7;        // 前端生成，全链路透传
+  reserved 8 to 9, 15 to 19;
+}
+
+message InternalHello { // 902
+  bytes nonce = 1;             // HMAC 握手挑战
+  string layer = 2;
+  string node = 3;
+  repeated string capabilities = 4;
+  reserved 5 to 9;
+}
+
+message InternalSubscribe { // 903
+  string topic = 1;       // 如 conv.123 / sys.flags
+  uint32 ttl_seconds = 2; // 订阅租约
+  reserved 3 to 9;
+}
+
+message FrameAck { // 904
+  uint32 seq = 1;
+  reserved 2 to 9;
+}
+
+message Heartbeat { // 905
+  fixed64 at = 1;
+  uint32 rtt_ms = 2; // RTT 喂 egress 连接健康分
+  reserved 3 to 9;
+}
+
+// 通用控制帧 payload（SHUTDOWN_NOTICE/CONFIG_UPDATE/TOPOLOGY 等 91x 的兜底体）。
+message ControlPayload {
+  string command = 1;
+  map<string, string> params = 2;
+  bytes data = 3;
+  reserved 4 to 9;
+}
+
+message ShutdownNotice { // 910
+  fixed64 deadline = 1; // now+5s
+  string reason = 2;
+  reserved 3 to 9;
+}
+
+message ConfigUpdate { // 912
+  string source = 1;
+  map<string, string> changed = 2;
+  reserved 3 to 9;
+}
+
+message NodeInfo {
+  string layer = 1;
+  string node = 2;
+  repeated string topics = 3;
+  fixed64 since = 4;
+  reserved 5 to 9;
+}
+
+message Topology { // 913
+  fixed64 at = 1;
+  repeated NodeInfo nodes = 2;
+  reserved 3 to 9;
+}
+
+message ReadHistory { // 920 请求
+  uint64 conv_id = 1;
+  uint64 since_seq = 2;
+  uint32 limit = 3;
+  bool cold_merge = 4; // readrouter 热/冷/merge 透明路由提示
+  reserved 5 to 9;
+}
+
+message ReadHistoryResult { // 921 应答
+  uint64 conv_id = 1;
+  repeated MsgNew messages = 2;
+  bool from_cold = 3;
+  bool has_more = 4;
+  reserved 5 to 9;
+}
+
+message ConvDataRequest { // 930/931 会话数据操作
+  uint32 op = 1;
+  uint64 conv_id = 2;
+  bytes body = 3;
+  string request_id = 4;
+  reserved 5 to 9;
+}
+
+message DataResult { // 各数据域应答通用体（931/941/961…）
+  uint32 op = 1;
+  bool ok = 2;
+  string error = 3;
+  bytes body = 4;
+  string request_id = 5;
+  reserved 6 to 9;
+}
+
+message IdentityRequest { // 940/941 users/identities/devices
+  uint32 op = 1;
+  uint64 user_id = 2;
+  bytes body = 3;
+  string request_id = 4;
+  reserved 5 to 9;
+}
+
+message SecurityRequest { // 960/961 封禁/审计/举报
+  uint32 op = 1;
+  uint64 user_id = 2;
+  bytes body = 3;
+  string request_id = 4;
+  reserved 5 to 9;
+}
+
+message FlagRequest { // 970-972 feature flag 读写（flag 即策略表）
+  string key = 1;
+  string value = 2;
+  bool write = 3;
+  string request_id = 4;
+  reserved 5 to 9;
+}
+
+message FlagResult {
+  map<string, string> flags = 1;
+  string request_id = 2;
+  reserved 3 to 9;
+}
+
+message JobTrigger { // 980-981 archive/backup/trim/audit-verify
+  string job = 1;
+  bool dry_run = 2;
+  string request_id = 3;
+  reserved 4 to 9;
+}
+
+message JobStatus {
+  string job = 1;
+  string state = 2; // queued/running/done/failed
+  fixed64 at = 3;
+  string detail = 4;
+  reserved 5 to 9;
+}
+
+message DiagLoopback { // 990-999 环回压测帧
+  bytes echo = 1;
+  fixed64 sent_at = 2;
+  uint32 hop = 3;
+  reserved 4 to 9;
+}
