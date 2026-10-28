@@ -12,7 +12,9 @@ EMBED_CLIENT  := $(EMBED_ROOT)/client
 EMBED_ADMIN   := $(EMBED_ROOT)/admin
 
 # 发布包版本号：tag 优先，否则日期。目录名做白名单清洗（release.sh 同规则）。
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || date -u +%Y%m%d%H%M%S)
+# 不用 --dirty：make web 会重写 server/web 下的产物文件，工作树必然变脏，
+# 版本名会变成 v0.1.0-dirty（发布包实测踩到）。标签优先，其次提交短号。
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || date -u +%Y%m%d%H%M%S)
 ARCH    ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
 
 .PHONY: proto build test lint web web-client web-admin admin-web release release-all clean
