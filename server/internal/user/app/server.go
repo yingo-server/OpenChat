@@ -65,7 +65,10 @@ func New(cfg Config, authn AuthnFunc, peer transport.Peer) (*Server, error) {
 	lim := limit.New(pol.Snapshot().Limits)
 	sess := session.New(pol.Snapshot().TombstoneTTL)
 	fwd := bridge.NewForwarder(peer, logger, pol.Snapshot().ForwardQueueCap)
-	flags := featureflags.New()
+	flags := cfg.Flags
+	if flags == nil {
+		flags = featureflags.New()
+	}
 	rtr := router.New(sess, lim, pol, fwd, flags, logger)
 	acc := ws.NewAcceptor(ws.Config{
 		ListenAddr:        cfg.ListenAddr,
@@ -75,6 +78,7 @@ func New(cfg Config, authn AuthnFunc, peer transport.Peer) (*Server, error) {
 		ReadTimeout:       cfg.ReadTimeout,
 		MaxFrameBytes:     cfg.MaxFrameBytes,
 		WriteChanCap:      cfg.WriteChanCap,
+		ExtraRoutes:       cfg.ExtraRoutes,
 	}, authn, logger)
 
 	// 连接生命周期 → 连接表 + 限流器连接级状态。
@@ -235,3 +239,7 @@ func (s *Server) Drain(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Broadcast 向全部在线连接投递一帧（SIGHUP flag 重下发等进程内广播）。
+// 返回成功入队的连接数。
+func (s *Server) Broadcast(b []byte) int { return s.sess.BroadcastAll(b) }

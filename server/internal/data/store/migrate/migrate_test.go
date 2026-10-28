@@ -1,9 +1,9 @@
 package migrate
 
 import (
-	"strconv"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"testing/fstest"
 )
@@ -49,8 +49,10 @@ func TestDiscoverHotOrderingAndGrouping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 5 {
-		t.Fatalf("hot should discover 5 migrations (one per domain), got %d", len(ms))
+	// The hot tree gains migrations over time (each domain has its own
+	// version sequence); assert the structural invariants, not a fixed count.
+	if len(ms) < 5 {
+		t.Fatalf("hot should discover at least 5 migrations (one per domain), got %d", len(ms))
 	}
 	lastDomain := ""
 	versions := map[string]int{}
@@ -68,8 +70,8 @@ func TestDiscoverHotOrderingAndGrouping(t *testing.T) {
 		}
 	}
 	for _, d := range []string{"conv", "identity", "media", "msg", "sys"} {
-		if versions[d] != 1 {
-			t.Errorf("domain %s: want version 1, got %d", d, versions[d])
+		if versions[d] < 1 {
+			t.Errorf("domain %s: want version >= 1, got %d", d, versions[d])
 		}
 	}
 	// checksum stability: same file must yield the same checksum.
@@ -172,7 +174,7 @@ func TestVerifyChecksum(t *testing.T) {
 
 func TestDiscoverRejectsBadNamesAndDupes(t *testing.T) {
 	f := fstest.MapFS{
-		"hot/bad/init.sql":                  {Data: []byte("-- x")},
+		"hot/bad/init.sql": {Data: []byte("-- x")},
 	}
 	r := &Runner{Dialect: DialectSQLite, Dir: f}
 	if _, err := r.Discover(); err == nil {
@@ -200,6 +202,10 @@ func TestDiscoverRejectsBadNamesAndDupes(t *testing.T) {
 
 func TestRelativePathResolves(t *testing.T) {
 	abs, err := filepath.Abs(filepath.Join("..", "..", "..", "..", "store", "migrations"))
-	if err != nil { t.Fatal(err) }
-	if _, err := os.Stat(abs); err != nil { t.Fatalf("migration dir not found at %s: %v", abs, err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		t.Fatalf("migration dir not found at %s: %v", abs, err)
+	}
 }

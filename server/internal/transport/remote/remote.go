@@ -35,14 +35,14 @@ const handshakeTimeout = 5 * time.Second
 // remotePeer 一条已认证连接的 Peer 实现。
 // 写方向：Send → 编码 → 连接写锁；读方向：Frames 来自读 goroutine。
 type remotePeer struct {
-	layer string
-	conn  net.Conn
-	cw    *connWriter
-	frames  chan *proto.Frame
+	layer  string
+	conn   net.Conn
+	cw     *connWriter
+	frames chan *proto.Frame
 
 	closeOnce sync.Once
 	closeErr  error
-	ctrl chan *proto.Frame // 控制面帧（旁路）
+	ctrl      chan *proto.Frame // 控制面帧（旁路）
 }
 
 // peerFramesChan 接收流缓冲深度。
@@ -60,8 +60,8 @@ func newRemotePeer(layer string, conn net.Conn) *remotePeer {
 	return p
 }
 
-func (p *remotePeer) Layer() string                  { return p.layer }
-func (p *remotePeer) Frames() <-chan *proto.Frame    { return p.frames }
+func (p *remotePeer) Layer() string               { return p.layer }
+func (p *remotePeer) Frames() <-chan *proto.Frame { return p.frames }
 
 // Send 编码 BUS_SOCKET 帧并写入连接。连接级错误返回（不崩进程）。
 func (p *remotePeer) Send(f *proto.Frame) error {
@@ -265,16 +265,16 @@ func Dial(ctx context.Context, addr string, auth *HMACAuth) (transport.Peer, err
 // （0.5s→1s→2s→4s→8s 封顶），重连成功后自动重发 HELLO+SUBSCRIBE
 // 帧并回调通知上层 resync。
 type ReconnectingPeer struct {
-	addr   string
-	auth   *HMACAuth
-	layer  string
-	subs   []string
+	addr  string
+	auth  *HMACAuth
+	layer string
+	subs  []string
 
-	mu       sync.Mutex
-	inner    transport.Peer
-	closed   bool
-	attempt  int
-	seq      uint32
+	mu      sync.Mutex
+	inner   transport.Peer
+	closed  bool
+	attempt int
+	seq     uint32
 
 	// OnResync 重连成功后回调（上层触发 RESYNC）。
 	OnResync func(p transport.Peer)
@@ -425,8 +425,8 @@ func makeInternalFrame(seq uint32, kind kinds.Kind, layer string) *proto.Frame {
 	return &proto.Frame{
 		Seq:  seq,
 		Kind: kind,
-		Env:      &chatpb.Envelope{Kind: uint32(kind), Payload: []byte(body)},
-		Meta:     &proto.FrameMeta{TraceID: ""},
+		Env:  &chatpb.Envelope{Kind: uint32(kind), Payload: []byte(body)},
+		Meta: &proto.FrameMeta{TraceID: ""},
 	}
 }
 

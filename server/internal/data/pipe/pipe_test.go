@@ -45,7 +45,9 @@ func (h hotBundle) SetBan(ctx context.Context, b *store.Ban) error            { 
 func (h hotBundle) CreateConv(ctx context.Context, m *store.ConvMeta, c int64) (int64, error) {
 	return h.conv.CreateConv(ctx, m, c)
 }
-func (h hotBundle) AddMember(ctx context.Context, m *store.Member) error { return h.conv.AddMember(ctx, m) }
+func (h hotBundle) AddMember(ctx context.Context, m *store.Member) error {
+	return h.conv.AddMember(ctx, m)
+}
 func (h hotBundle) RemoveMember(ctx context.Context, cid, uid int64) error {
 	return h.conv.RemoveMember(ctx, cid, uid)
 }
@@ -64,7 +66,9 @@ func (h hotBundle) GetConvMeta(ctx context.Context, cid int64) (*store.ConvMeta,
 func (h hotBundle) NextSeq(ctx context.Context, cid int64) (int64, error) {
 	return h.conv.NextSeq(ctx, cid)
 }
-func (h hotBundle) UpsertFlag(ctx context.Context, f *store.Flag) error { return h.sys.UpsertFlag(ctx, f) }
+func (h hotBundle) UpsertFlag(ctx context.Context, f *store.Flag) error {
+	return h.sys.UpsertFlag(ctx, f)
+}
 func (h hotBundle) AllFlags(ctx context.Context) ([]store.Flag, error) { return h.sys.AllFlags(ctx) }
 func (h hotBundle) UpsertPresence(ctx context.Context, p *store.Presence) error {
 	return h.sys.UpsertPresence(ctx, p)

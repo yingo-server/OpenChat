@@ -82,15 +82,15 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Rules: map[uint32]Rule{
-			kinds.KindMsgSend:         {Rate: 20, Burst: 40, Capacity: 100, MaxPayload: 8 << 10},
-			KindPriority:              {Rate: 5, Burst: 10, Capacity: 20, MaxPayload: 4 << 10},
-			kinds.KindTyping:          {Rate: 1, Burst: 3, Capacity: 5, Silent: true},
-			kinds.KindPresenceUpdate:  {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, Silent: true},
+			kinds.KindMsgSend:             {Rate: 20, Burst: 40, Capacity: 100, MaxPayload: 8 << 10},
+			KindPriority:                  {Rate: 5, Burst: 10, Capacity: 20, MaxPayload: 4 << 10},
+			kinds.KindTyping:              {Rate: 1, Burst: 3, Capacity: 5, Silent: true},
+			kinds.KindPresenceUpdate:      {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, Silent: true},
 			kinds.KindPresenceSubscribe:   {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, Silent: true},
 			kinds.KindPresenceUnsubscribe: {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, Silent: true},
-			kinds.KindMsgRead:         {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256},
-			kinds.KindMsgDelivered:    {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256},
-			kinds.KindSyncRequest:     {Rate: 2, Burst: 4, Capacity: 8, MaxPayload: 512},
+			kinds.KindMsgRead:             {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256},
+			kinds.KindMsgDelivered:        {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256},
+			kinds.KindSyncRequest:         {Rate: 2, Burst: 4, Capacity: 8, MaxPayload: 512},
 			kinds.KindMediaPresignRequest: {Rate: 1.0 / 30.0, Burst: 2, Capacity: 4, MaxPayload: 512},
 		},
 		DefaultRule:   Rule{Rate: 10, Burst: 20, Capacity: 40},

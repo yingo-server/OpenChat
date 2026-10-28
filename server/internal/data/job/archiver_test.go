@@ -11,9 +11,9 @@ import (
 
 // fakeLedger records run bookkeeping.
 type fakeLedger struct {
-	started  int
-	finished int
-	statuses []string
+	started   int
+	finished  int
+	statuses  []string
 	failStart bool
 }
 
@@ -59,9 +59,9 @@ func newArchiver(rows []store.HotMsg, cutoff int64) (*Archiver, *fakeReader, *pi
 	a := &pipefakes.FakeArchive{}
 	return &Archiver{
 		R: r, W: a,
-		Cutoff: func() int64 { return cutoff },
+		Cutoff:    func() int64 { return cutoff },
 		BatchSize: 2,
-		Now: func() int64 { return cutoffNow },
+		Now:       func() int64 { return cutoffNow },
 	}, r, a
 }
 

@@ -1,11 +1,11 @@
 package policy
 
 import (
-	"reflect"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -62,18 +62,18 @@ func TestValidate(t *testing.T) {
 	}
 	// ttl/retention exclusivity
 	errs = Validate(Policy{HotRetentionDays: 1,
-		Archive: ArchiveConfig{Cron: "x", BatchSize: 1},
-		Backup:  BackupConfig{Cron: "x", Dir: "d", KeepDays: 1},
+		Archive:   ArchiveConfig{Cron: "x", BatchSize: 1},
+		Backup:    BackupConfig{Cron: "x", Dir: "d", KeepDays: 1},
 		RateLimit: RateLimitConfig{MsgPerUserPerMin: 1, LoginPerIPPerMin: 1},
-		Trim: []TrimRule{{Table: "sys_rate_limit", TTLHours: 5, RetentionDays: 5}}})
+		Trim:      []TrimRule{{Table: "sys_rate_limit", TTLHours: 5, RetentionDays: 5}}})
 	if len(errs) != 1 {
 		t.Fatalf("expected exactly 1 trim error, got %v", errs)
 	}
 	errs = Validate(Policy{HotRetentionDays: 1,
-		Archive: ArchiveConfig{Cron: "x", BatchSize: 1},
-		Backup:  BackupConfig{Cron: "x", Dir: "d", KeepDays: 1},
+		Archive:   ArchiveConfig{Cron: "x", BatchSize: 1},
+		Backup:    BackupConfig{Cron: "x", Dir: "d", KeepDays: 1},
 		RateLimit: RateLimitConfig{MsgPerUserPerMin: 1, LoginPerIPPerMin: 1},
-		Trim: []TrimRule{{Table: "sys_rate_limit"}}})
+		Trim:      []TrimRule{{Table: "sys_rate_limit"}}})
 	if len(errs) != 1 {
 		t.Fatalf("expected exactly 1 trim error (missing ttl/retention), got %v", errs)
 	}

@@ -6,6 +6,9 @@
 package frame
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -48,6 +51,13 @@ func Decode(b []byte) (*chatpb.Envelope, error) {
 	if len(b) > MaxFrameBytes {
 		return nil, fmt.Errorf("%w: %d > %d", ErrFrameTooLarge, len(b), MaxFrameBytes)
 	}
+	// Wire format is auto-detected: a leading '{' is the JSON form used by the
+	// browser client (apps/client defaults to JSON so it needs no protobuf
+	// runtime), everything else is protobuf. Both paths get identical limits
+	// and validation — the format is transport convenience, not a trust boundary.
+	if b[0] == '{' {
+		return decodeJSON(b)
+	}
 	if err := checkEnvelopeFields(b); err != nil {
 		return nil, err
 	}
@@ -60,6 +70,78 @@ func Decode(b []byte) (*chatpb.Envelope, error) {
 	}
 	return env, nil
 }
+
+// jsonEnvelope is the JSON wire form of Envelope (snake_case field names, the
+// same shape apps/client/src/net/proto/codec.ts emits). Payload is base64, as
+// protobuf bytes are in JSON.
+type jsonEnvelope struct {
+	ID        uint64 `json:"id,omitempty"`
+	AckID     uint64 `json:"ack_id,omitempty"`
+	Kind      uint32 `json:"kind"`
+	Version   uint32 `json:"version,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
+	Flags     uint32 `json:"flags,omitempty"`
+	SentAt    uint64 `json:"sent_at,omitempty"`
+	ConvID    uint64 `json:"conv_id,omitempty"`
+	UserID    uint64 `json:"user_id,omitempty"`
+	Payload   []byte `json:"payload,omitempty"`
+}
+
+// decodeJSON parses the browser client's JSON form. Unknown fields are
+// rejected (DisallowUnknownFields) for the same reason protobuf rejects them:
+// a field we do not understand means a version mismatch or a crafted frame.
+func decodeJSON(b []byte) (*chatpb.Envelope, error) {
+	var je jsonEnvelope
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&je); err != nil {
+		return nil, fmt.Errorf("%w: json: %v", ErrBadFrame, err)
+	}
+	if je.Kind == 0 {
+		return nil, fmt.Errorf("%w: kind=0", ErrBadFrame)
+	}
+	// oneof target: exactly one of conv_id/user_id may be set.
+	if je.ConvID != 0 && je.UserID != 0 {
+		return nil, fmt.Errorf("%w: both conv_id and user_id set", ErrBadFrame)
+	}
+	env := &chatpb.Envelope{
+		Id:        je.ID,
+		AckId:     je.AckID,
+		Kind:      je.Kind,
+		Version:   je.Version,
+		RequestId: je.RequestID,
+		Flags:     je.Flags,
+		SentAt:    je.SentAt,
+		Payload:   je.Payload,
+	}
+	switch {
+	case je.ConvID != 0:
+		env.Target = &chatpb.Envelope_ConvId{ConvId: je.ConvID}
+	case je.UserID != 0:
+		env.Target = &chatpb.Envelope_UserId{UserId: je.UserID}
+	}
+	return env, nil
+}
+
+// EncodeJSON is decodeJSON's inverse (useful for tests and CLI debugging).
+func EncodeJSON(env *chatpb.Envelope) ([]byte, error) {
+	if env == nil {
+		return nil, ErrNilEnvelope
+	}
+	je := jsonEnvelope{
+		ID: env.Id, AckID: env.AckId, Kind: env.Kind, Version: env.Version,
+		RequestID: env.RequestId, Flags: env.Flags, SentAt: env.SentAt, Payload: env.Payload,
+	}
+	if c, ok := env.Target.(*chatpb.Envelope_ConvId); ok {
+		je.ConvID = c.ConvId
+	}
+	if u, ok := env.Target.(*chatpb.Envelope_UserId); ok {
+		je.UserID = u.UserId
+	}
+	return json.Marshal(je)
+}
+
+var _ = base64.StdEncoding // payload is []byte: encoding/json base64s it automatically
 
 // Encode 把 Envelope 编码为 WS 二进制消息。
 func Encode(env *chatpb.Envelope) ([]byte, error) {

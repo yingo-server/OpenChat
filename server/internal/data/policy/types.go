@@ -36,8 +36,8 @@ type ArchiveConfig struct {
 	// (daily semantics); fields with */n or lists are rejected at parse time.
 	// Complex schedules must be simplified by the ASSEMBLY layer into the
 	// "@daily HH:MM" form before registering the job unit.
-	BatchSize    int    `json:"batch_size"`    // rows per copy transaction, 1..50000
-	BatchPauseMS int    `json:"batch_pause_ms"` // pause between batches, 0 allowed
+	BatchSize    int `json:"batch_size"`     // rows per copy transaction, 1..50000
+	BatchPauseMS int `json:"batch_pause_ms"` // pause between batches, 0 allowed
 	// ActiveExempt: conversations with recent activity are skipped this run.
 	ActiveExempt bool `json:"active_exempt"`
 }
@@ -59,8 +59,8 @@ type TrimRule struct {
 
 // RateLimitConfig holds bucket thresholds.
 type RateLimitConfig struct {
-	MsgPerUserPerMin  int `json:"msg_per_user_per_min"`
-	LoginPerIPPerMin  int `json:"login_per_ip_per_min"`
+	MsgPerUserPerMin int `json:"msg_per_user_per_min"`
+	LoginPerIPPerMin int `json:"login_per_ip_per_min"`
 }
 
 // Snapshot pairs a Policy with its version, so callers can detect reloads.

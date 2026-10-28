@@ -13,12 +13,12 @@ import (
 // "old" is POLICY (docs §4: archiver 不知道归档多旧的). Swap the hot schema or
 // the cold schema and this file's logic is untouched (only wiring changes).
 type Archiver struct {
-	R      store.MsgReader      // hot reads
-	W      store.ArchiveTarget  // cold copy + hot delete
-	Cutoff func() int64         // policy source: unix seconds; rows with sent_at < cutoff are archivable
-	BatchSize int               // rows per copy transaction (policy archive.batch_size)
-	Ledger ArchiveLedger        // optional run ledger (breakpoint bookkeeping)
-	Now   func() int64          // test seam
+	R         store.MsgReader     // hot reads
+	W         store.ArchiveTarget // cold copy + hot delete
+	Cutoff    func() int64        // policy source: unix seconds; rows with sent_at < cutoff are archivable
+	BatchSize int                 // rows per copy transaction (policy archive.batch_size)
+	Ledger    ArchiveLedger       // optional run ledger (breakpoint bookkeeping)
+	Now       func() int64        // test seam
 }
 
 // ArchiveLedger is the archive_runs ledger seam (pg.ColdDB satisfies it).

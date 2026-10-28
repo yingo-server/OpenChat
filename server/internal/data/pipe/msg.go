@@ -21,10 +21,10 @@ type msgDomain struct {
 
 // Result of admitting (or rejecting) one message.
 type msgAdmit struct {
-	Pending  *store.PendingMsg // non-nil when admitted into the pipeline
-	Replay   *dedupResult      // non-nil when dedup replayed an old ack
-	Code     uint32            // 0 ok; 403 unauthorized; 409 duplicate-no-row
-	Reason   string
+	Pending *store.PendingMsg // non-nil when admitted into the pipeline
+	Replay  *dedupResult      // non-nil when dedup replayed an old ack
+	Code    uint32            // 0 ok; 403 unauthorized; 409 duplicate-no-row
+	Reason  string
 }
 
 // admit runs the pre-pipeline gates for one MSG_SEND.

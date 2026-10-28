@@ -14,8 +14,8 @@ func near(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
 func TestDefaultRules(t *testing.T) {
 	cfg := DefaultConfig()
 	cases := []struct {
-		kind kinds.Kind
-		rate float64
+		kind  kinds.Kind
+		rate  float64
 		burst float64
 	}{
 		{kinds.KindMsgSend, 20, 40},

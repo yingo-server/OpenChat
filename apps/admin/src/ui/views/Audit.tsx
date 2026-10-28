@@ -30,14 +30,18 @@ function toneForType(type: string): Tone {
   return 'muted';
 }
 
-/** 展开行高度：按 JSON 字符数估算行数，夹在 120–360px 之间（与渲染时的实际高度一致） */
-function expandedPanelHeight(event: AuditEvent): number {
+/**
+ * 展开行的「首帧占位高度」。
+ *
+ * 注意：这只是占位，不是最终高度。旧实现把它当成真实行高（绝对定位 + fixed
+ * height + overflow-hidden），JSON 树换行/折叠状态与字符数估算不一致时，展开
+ * 内容要么被裁掉、要么越界压住下一行 —— 这就是审计流展开行重叠的根因。
+ * 现在真实高度由 AuditRow 的 ResizeObserver 实测后回填 layout，占位值只在
+ * 首次绘制的一帧内使用。
+ */
+function provisionalPanelHeight(event: AuditEvent): number {
   const lines = Math.min(16, Math.ceil(JSON.stringify(event.payload ?? {}).length / 88) + 2);
   return Math.min(360, Math.max(120, lines * 20 + 44));
-}
-
-function estimateHeight(event: AuditEvent): number {
-  return ROW_HEIGHT + expandedPanelHeight(event);
 }
 
 export function Audit() {
@@ -62,6 +66,12 @@ export function Audit() {
   const [filterVersion, setFilterVersion] = useState(0);
 
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  /**
+   * 展开行的实测高度（px），key = audit id。
+   * 虚拟滚动用绝对定位摆放每一行，行高必须等于真实渲染高度，否则后续行会被
+   * 上一行的展开内容压住 —— 这里由 ResizeObserver 回填，不再用字符数估算。
+   */
+  const [expandedHeights, setExpandedHeights] = useState<Map<number, number>>(() => new Map());
   const [scrollTop, setScrollTop] = useState(0);
   const [viewport, setViewport] = useState(560);
   const [copiedId, setCopiedId] = useState<number | null>(null);
@@ -80,6 +90,7 @@ export function Audit() {
     setLoading(true);
     setError(null);
     setExpanded(new Set());
+    setExpandedHeights(new Map());
     fetchAudit(
       {
         limit: PAGE_SIZE,
@@ -203,7 +214,11 @@ export function Audit() {
 
   /* ---------------- 虚拟滚动 ---------------- */
   const layout = useMemo(() => {
-    const heights = events.map((e) => (expanded.has(e.id) ? estimateHeight(e) : ROW_HEIGHT));
+    const heights = events.map((e) => {
+      if (!expanded.has(e.id)) return ROW_HEIGHT;
+      const measured = expandedHeights.get(e.id);
+      return measured && measured > ROW_HEIGHT ? measured : ROW_HEIGHT + provisionalPanelHeight(e);
+    });
     const offsets: number[] = new Array(events.length);
     let total = 0;
     for (let i = 0; i < events.length; i += 1) {
@@ -211,7 +226,7 @@ export function Audit() {
       total += heights[i]!;
     }
     return { heights, offsets, total };
-  }, [events, expanded]);
+  }, [events, expanded, expandedHeights]);
 
   const { start, end } = useMemo(() => {
     const overscan = 8;
@@ -251,11 +266,31 @@ export function Audit() {
       .catch(() => setTypes([]));
   }, []);
 
+  /** AuditRow 实测高度回填：高度不变时返回原 Map，避免无谓重渲染 */
+  const measureRow = useCallback((id: number, height: number) => {
+    const next = Math.max(ROW_HEIGHT, Math.ceil(height));
+    setExpandedHeights((prev) => {
+      if (prev.get(id) === next) return prev;
+      const copy = new Map(prev);
+      copy.set(id, next);
+      return copy;
+    });
+  }, []);
+
   const toggle = (id: number) => {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+        setExpandedHeights((heights) => {
+          if (!heights.has(id)) return heights;
+          const copy = new Map(heights);
+          copy.delete(id);
+          return copy;
+        });
+      } else {
+        next.add(id);
+      }
       return next;
     });
   };
@@ -450,6 +485,7 @@ export function Audit() {
                   height={height}
                   query={debouncedGrep}
                   expanded={expanded.has(event.id)}
+                  onMeasure={measureRow}
                   onToggle={() => toggle(event.id)}
                   onCopy={async () => {
                     const ok = await copyText(event.ts);
@@ -490,13 +526,14 @@ export function Audit() {
   );
 }
 
-/** 单行：固定表头列宽，展开时在行内渲染 JSON 树 */
+/** 单行：固定表头列宽，展开时在行内渲染 JSON 树（高度由内容撑开，实测回填给虚拟滚动） */
 function AuditRow({
   event,
   top,
   height,
   query,
   expanded,
+  onMeasure,
   onToggle,
   onCopy,
   copied,
@@ -506,18 +543,36 @@ function AuditRow({
   height: number;
   query: string;
   expanded: boolean;
+  onMeasure: (id: number, height: number) => void;
   onToggle: () => void;
   onCopy: () => void;
   copied: boolean;
 }) {
   const tone = toneForType(event.type);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+
+  /* 展开后测量真实高度（含 JSON 树折叠/换行/字号变化），回填给父级 layout。 */
+  useEffect(() => {
+    if (!expanded) return undefined;
+    const el = rowRef.current;
+    if (!el) return undefined;
+    const report = () => onMeasure(event.id, el.getBoundingClientRect().height);
+    report();
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [expanded, onMeasure, event.id]);
+
   return (
     <div
+      ref={rowRef}
       className={cn(
-        'absolute left-0 right-0 overflow-hidden border-b border-border-default',
+        'absolute left-0 right-0 border-b border-border-default',
+        // 仅收起态裁剪：展开态必须让内容撑开行高，否则会压住下一行
+        !expanded && 'overflow-hidden',
         tone === 'danger' ? 'bg-danger-50 hover:bg-danger-100' : 'hover:bg-bg-surface-2',
       )}
-      style={{ top, height }}
+      style={expanded ? { top, minHeight: height } : { top, height: ROW_HEIGHT }}
     >
       <div className="flex h-8 items-center gap-3 px-3">
         <button
@@ -552,10 +607,7 @@ function AuditRow({
       </div>
 
       {expanded && (
-        <div
-          className="overflow-auto border-t border-border-default bg-bg-surface px-3 py-2"
-          style={{ height: height - ROW_HEIGHT }}
-        >
+        <div className="border-t border-border-default bg-bg-surface px-3 py-2">
           <div className="mb-2 flex flex-wrap items-center gap-3 text-caption text-text-tertiary">
             <span className="nums">{formatDateTime(event.ts)}</span>
             <span>id <span className="nums">#{event.id}</span></span>

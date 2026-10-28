@@ -43,8 +43,8 @@ type Redactor interface {
 // redactedString 包装一个已脱敏的字符串，用于输出。
 type redactedString struct{ s string }
 
-func (r redactedString) String() string    { return r.s }
-func (r redactedString) Redacted() string { return r.s }
+func (r redactedString) String() string               { return r.s }
+func (r redactedString) Redacted() string             { return r.s }
 func (r redactedString) MarshalJSON() ([]byte, error) { return json.Marshal(r.s) }
 
 // RedactPhone 手机号脱敏：保留前 3 后 4（138****1234）；不足 7 位则全遮蔽。

@@ -4,9 +4,9 @@
 package embedded
 
 import (
-	"time"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/yingo-server/OpenChat/server/internal/proto"
 	"github.com/yingo-server/OpenChat/server/internal/transport"
@@ -249,7 +249,10 @@ func (b *Bridge) SendTo(layer string, f *proto.Frame) error {
 			return nil
 		case <-lk.done():
 			return ErrClosed
-		default:
+		case <-time.After(fanoutGrace):
+			// toLayer 是无缓冲 channel：裸 default 会把「泵恰好还没回到接收点」
+			// 的正常帧误判成满队列直接丢弃（装配实测：MSG_SEND 偶发丢失）。
+			// 与 busPeer.Send 一样给一个宽限窗口，超过才判 BUSY。
 			return ErrLayerBusy
 		}
 	}

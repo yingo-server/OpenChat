@@ -28,10 +28,10 @@ type Dedup struct {
 
 // dedupResult is the remembered outcome for one (cid, sender, client_msg_id).
 type dedupResult struct {
-	MsgID       int64
-	Seq         int64
-	SentAt      int64
-	Status      uint32 // ack status code
+	MsgID  int64
+	Seq    int64
+	SentAt int64
+	Status uint32 // ack status code
 }
 
 // NewDedup creates the guard with capacity entries (100_000 in production;

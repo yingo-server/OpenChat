@@ -28,8 +28,8 @@ import (
 type CronKind int
 
 const (
-	CronDaily CronKind = iota // @daily HH:MM (or a 5-field cron reduced to daily)
-	CronInterval              // every N seconds
+	CronDaily    CronKind = iota // @daily HH:MM (or a 5-field cron reduced to daily)
+	CronInterval                 // every N seconds
 )
 
 func (k CronKind) String() string {
@@ -149,10 +149,10 @@ type Unit interface {
 
 // Result is a job outcome (dry-run reports carry estimates).
 type Result struct {
-	MovedRows   int64
+	MovedRows    int64
 	ConvsTouched int
-	DryRun      bool
-	Detail      string
+	DryRun       bool
+	Detail       string
 }
 
 // Jobber schedules Units per Specs. Single-flight per job: a unit still
@@ -214,8 +214,8 @@ func (j *Jobber) Trigger(ctx context.Context, name string, dryRun bool) (Result,
 
 // running guards single-flight across Trigger and Run loops.
 var (
-	runMu     sync.Mutex
-	running   = map[string]bool{}
+	runMu   sync.Mutex
+	running = map[string]bool{}
 )
 
 func runSingleFlight(ctx context.Context, name string, u Unit, dryRun bool, lg Logger) (Result, error) {

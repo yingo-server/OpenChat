@@ -71,6 +71,11 @@ func DefaultConfig() Config {
 	}
 }
 
+// Dispatcher is the bridge dispatch seam the service layer depends on.
+// It is an alias so assembly code (cmd/chatd, admin/prod) can name the
+// dependency without importing the service package directly.
+type Dispatcher = service.Dispatcher
+
 // Deps is the injected dependency set. DB is admin.db; AuditJournal is the
 // cold append-only journal; Authorizer authenticates outbound AdminAPI calls;
 // Policy is the flag/policy store.
@@ -80,6 +85,12 @@ type Deps struct {
 	Authorizer   adminapi.Authorizer
 	Bridge       *bridgeproxy.Proxy
 	Policy       service.PolicyStore
+
+	// Dispatch, when non-nil, replaces Bridge as the dispatcher every service
+	// mutation goes through. Production assembly supplies either a *Proxy
+	// (BridgeURL mode) or any other implementation (embedded/loopback mode);
+	// at least one of Bridge/Dispatch is required.
+	Dispatch service.Dispatcher
 
 	// Read ports (implemented by the data layer in production; fakes in
 	// tests). Nil ports degrade to 503 not_configured instead of crashing.
@@ -125,7 +136,7 @@ func New(cfg Config, deps Deps) (*Server, error) {
 	}
 
 	bridge := deps.Bridge
-	if bridge == nil {
+	if bridge == nil && deps.Dispatch == nil {
 		if strings.TrimSpace(cfg.BridgeURL) == "" {
 			return nil, errors.New("admin: bridge proxy or BridgeURL is required")
 		}
@@ -147,6 +158,13 @@ func New(cfg Config, deps Deps) (*Server, error) {
 		bridge = p
 	}
 
+	// Every mutation goes through exactly one dispatcher. Deps.Dispatch wins
+	// when supplied (embedded / loopback assembly); otherwise the proxy above.
+	var dispatcher service.Dispatcher = bridge
+	if deps.Dispatch != nil {
+		dispatcher = deps.Dispatch
+	}
+
 	shim := auditshim.New(deps.AuditJournal)
 	authSvc := service.NewAuthService(
 		&adminAccountRepo{db: adb},
@@ -165,15 +183,17 @@ func New(cfg Config, deps Deps) (*Server, error) {
 		flagStore = service.SysFlagStore{Sys: deps.Policy}
 	}
 
-	users := service.NewUserService(deps.Users, bridge, shim)
-	reports := service.NewReportService(deps.Reports, bridge, shim)
-	messages := service.NewMessageService(deps.Messages, bridge, shim)
-	flags := service.NewFlagService(flagStore, bridge, shim)
-	broadcast := service.NewBroadcastService(deps.Reach, bridge, shim)
+	users := service.NewUserService(deps.Users, dispatcher, shim)
+	reports := service.NewReportService(deps.Reports, dispatcher, shim)
+	messages := service.NewMessageService(deps.Messages, dispatcher, shim)
+	flags := service.NewFlagService(flagStore, dispatcher, shim)
+	broadcast := service.NewBroadcastService(deps.Reach, dispatcher, shim)
 	auditSvc := service.NewAuditService(deps.AuditReader, shim)
-	archive := service.NewArchiveService(deps.Archive, bridge, shim)
+	archive := service.NewArchiveService(deps.Archive, dispatcher, shim)
 	metrics := service.NewMetrics()
-	metrics.SetBridgeStats(bridge.Stats)
+	if bridge != nil {
+		metrics.SetBridgeStats(bridge.Stats)
+	}
 	metrics.SetAuditFailures(shim.Failures)
 
 	loginLimiter := middleware.NewLoginLimiter(middleware.DefaultLockPolicy())
@@ -228,7 +248,8 @@ func (s *Server) Handler() http.Handler { return s.api.Handler() }
 // Addr returns the bound address after Run starts listening.
 func (s *Server) Addr() string { return s.addr }
 
-// Bridge exposes the proxy for metrics/health probes.
+// Bridge exposes the proxy for metrics/health probes. It is nil in
+// Dispatch-only (embedded/loopback) assembly.
 func (s *Server) Bridge() *bridgeproxy.Proxy { return s.bridge }
 
 // Run listens and serves until ctx is cancelled or the listener fails.

@@ -1,379 +1,1052 @@
-# OpenChat 部署手册
+# OpenChat 部署手册（单机 embedded）
 
-> 适用范围：单机（2C2G 起步）embedded 部署；split 形态差异在文中标注。
-> 安全基线以 [security-spec.md](security-spec.md) §6 为唯一权威，本文只做操作映射。
-
----
-
-## 1. 前置条件
-
-| 项 | 要求 |
-|---|---|
-| 系统 | Linux + systemd（Debian 12 / Ubuntu 22.04 / Rocky 9 验证） |
-| 资源 | 2 vCPU / 2 GB 内存 / 40 GB SSD 起；媒体目录建议独立 LUKS 卷 |
-| 域名 | 已解析到本机；TLS 由 Caddy 自动签发（80/443 需可达） |
-| 冷库 | 外部 PostgreSQL 14+（本机不装；`sslmode=require` 为底线） |
-| 依赖 | `openssl`、`sqlite3`、`curl`、`tar`、`rsync`（异地备份时）、`age`（可选） |
-| Caddy | v2.8+；限流需 `caddy-ratelimit` 插件或前置 nftables |
-
-防火墙只放行 22 / 80 / 443，其余 DROP（security-spec §6.3 红线）。
+> 适用：单机 2C2G 起步的 embedded 部署（bridge/user/data/admin 同进程）。
+> 权威来源：安全基线见 [security-spec.md](security-spec.md) §6；数据与 API 设计见
+> [admin-data-design.md](admin-data-design.md)。本文只写「怎么装、怎么改、怎么救」。
+>
+> 约定：`$` = 普通用户，`#` = root；`/opt/openchat/current` 永远指向当前 release 目录。
+> 假设发行包（`.tar.gz` + `SHA256SUMS`）已上传到 `/root` 并解压。
 
 ---
 
-## 2. 单机安装
+## 0. 五分钟快速路径
 
 ```bash
-# 1) 构建产物（在开发机或目标机）
-make release-all            # client + admin + chatd + tar.gz
+# 0) 校验并解包（在存放 tar.gz 与 SHA256SUMS 的目录执行）
+cd /root
+sha256sum -c SHA256SUMS && tar -xzf openchat-<version>-linux-amd64.tar.gz
+cd openchat-<version>
 
-# 2) 上传到目标机后执行
-sudo ./deploy/install.sh               # embedded（默认）
-sudo ./deploy/install.sh --split       # split 五进程
-sudo ./deploy/install.sh --no-start    # 镜像构建：只落盘不启动
+# 1) 装系统（建用户/目录/密钥/unit，幂等）
+sudo ./deploy/install.sh
 
-# 3) 改配置
-sudoedit /etc/openchat/openchat.toml   # 域名 / 冷库 DSN
-sudoedit /etc/openchat/policy.json     # 保留期 / cron / 限流
-sudo systemctl reload openchat         # SIGHUP 热重载策略
+# 2) 改三个值：域名、冷库 DSN；监听地址保持 127.0.0.1
+sudoedit /etc/openchat/openchat.toml
 
-# 4) 边缘
+# 3) 起服务（骨架阶段先按附录 A.1 把 Type=notify 改为 Type=exec）
+sudo systemctl enable --now openchat
+systemctl is-active openchat && ss -lntp | grep -E ':(8080|7780|9090)'
+
+# 4) 边缘：Caddy 自动 HTTPS
 sudo cp /etc/openchat/Caddyfile.reference /etc/caddy/Caddyfile
-sudo sed -i 's/203.0.113.10\/32/<你的运维出口IP>\/32/' /etc/caddy/Caddyfile
-sudo systemctl reload caddy
+sudoedit /etc/caddy/Caddyfile          # OPENCHAT_DOMAIN / remote_ip 白名单
+sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl restart caddy
+
+# 5) 首登：先在本机/跳板完成首个账号注册（自动成为管理员）→ /admin/ 开 TOTP
+curl -sI https://chat.example.com/ | head -1        # 200
+curl -s  https://chat.example.com/admin/ | grep -o '<title>[^<]*'
 ```
-
-`install.sh` 是幂等的：可反复执行，已存在的配置与密钥不会被覆盖，目录权限每次强制校正。
-
-**安装脚本做的事**
-
-1. 建组 `openchat` 与系统用户（embedded: `openchat`；split: `openchat-{bridge,user,data,admin}`）
-2. 建目录并按权限矩阵 chmod/chown：
-   `/etc/openchat` 0750、`keys/` 0750、`env` 0600、`/var/lib/openchat` 0700、`media/` 0750、`backup/` 0700
-3. 生成密钥到 `/etc/openchat/keys/`：
-   `jwt_sign_key.pem`、`admin_jwt_key.pem`（Ed25519，`openssl genpkey -algorithm ED25519`；无 openssl 时回退 `go run ./deploy/keygen`）、
-   `ipc_key`/`hmac_key`/`pii_key`/`phone_lookup_key`/`download_key`/`upload_secret`/`audit_chain_key`/`backup.key`（32B hex）
-4. 安装 `openchat.toml` / `policy.json` / journald 配额 drop-in / systemd unit
-5. `systemctl daemon-reload && systemctl enable --now`
-6. 红线自检：`find /etc/openchat /var/lib/openchat -perm /o+rwx` 必须为空，否则退出 1
-
-安装完成后**立即**：登录管理后台 → 开启 TOTP → 核对 `/api/admin/*` 白名单 → 跑一次 `openchatctl audit verify`。
 
 ---
 
-## 3. 配置说明
+## 1. 系统要求
+
+| 项 | 最低 | 说明 |
+|---|---|---|
+| 操作系统 | Linux + systemd 249+ | Debian 12 / Ubuntu 22.04 / Rocky 9 验证；x86_64 或 aarch64 |
+| CPU / 内存 | 2 vCPU / 2 GB | `GOMEMLIMIT=1280MiB` 已写入 `/etc/openchat/env` |
+| 磁盘 | 40 GB SSD | 媒体目录建议独立 LUKS 卷；备份目录与数据盘分开 |
+| 冷库 | PostgreSQL 14+（外部） | `sslmode=require` 为底线；本机不装 PG 也能先跑（归档会失败告警） |
+| 运行时依赖 | `bash` `coreutils` `openssl` `sqlite3` `curl` `tar` | `install.sh` 需要 `useradd/groupadd/getent/install`；`backup.sh` 需要 `sqlite3` |
+| 可选依赖 | `age`（备份加密）、`rsync`（异地备份）、`jq`（日志过滤） | `age` 优先于 `openssl` |
+| 边缘 | Caddy 2.8+（stock 即可） | 限流插件可选，见 §5.6 |
+| 网络 | 域名 A/AAAA 已解析；公网放行 22/80/443 | 80 仅用于 ACME HTTP-01 与跳转 |
+
+**端口与监听面**（全部只监听回环，公网唯一入口是 Caddy）：
+
+| 地址 | 用途 | 谁能访问 |
+|---|---|---|
+| `127.0.0.1:8080` | 用户层 HTTP + WebSocket + 内嵌 SPA（`listen`） | Caddy |
+| `127.0.0.1:8081` | split 形态用户网关（Caddy `OPENCHAT_WS_PORT`，embedded 设为 8080） | Caddy |
+| `127.0.0.1:7780` | 管理 API（`admin_listen`） | Caddy + IP 白名单 |
+| `127.0.0.1:9090` | Prometheus 指标（`metrics_listen`，当前版本未监听，见附录 A.2） | 本机/内网 |
+| `/run/openchat/*.sock` | 层间 UDS（split） | 同组进程，0600 |
+| `22 / 80 / 443` | SSH / ACME / HTTPS | 公网（22 建议源 IP 白名单） |
+
+---
+
+## 2. 安装（install.sh）
+
+### 2.1 取包与校验
+
+```bash
+cd /root
+sha256sum -c SHA256SUMS
+tar -xzf openchat-<version>-linux-amd64.tar.gz
+cd openchat-<version>
+ls -l dist/chatd deploy/install.sh docs/deploy.md
+sha256sum dist/chatd          # 与发布页 SHA256SUMS 对照
+```
+
+包内布局（`make release-all` 与 `release.sh` 产物一致）：
+
+```
+openchat-<version>/
+├── dist/chatd                 # 单二进制（内含 client + admin 前端）
+├── deploy/{install.sh,release.sh,backup.sh,openchat.toml,policy.json,Caddyfile,
+│           systemd/,journald/,keygen/,logrotate.conf}
+├── docs/deploy.md
+├── README.md
+└── LICENSE
+```
+
+> 前端已 `go:embed` 进 `chatd`，发布包**不再**带 `web/` 目录，目标机无需 Node。
+> `install.sh` 兼容旧布局：若存在 `apps/{client,admin}/dist` 会额外复制到
+> `/opt/openchat/releases/bootstrap/web/`，只作静态回退，不参与内嵌。
+
+### 2.2 执行
+
+```bash
+sudo ./deploy/install.sh                 # embedded（默认）
+sudo ./deploy/install.sh --no-start      # 只落盘，不 enable/start（打镜像）
+sudo ./deploy/install.sh --split         # split：bridge/user/data/admin 四个 unit
+sudo ./deploy/install.sh --skip-keys     # 密钥由 KMS 下发时
+sudo ./deploy/install.sh --prefix /opt/openchat --etc /etc/openchat --state /var/lib/openchat
+```
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `--split` | off | 安装 4 个 split unit，并 disable embedded unit |
+| `--no-start` | off | 只 `daemon-reload`，不 `enable --now` |
+| `--skip-keys` | off | 跳过密钥生成（要求已由外部下发） |
+| `--prefix` | `/opt/openchat` | 二进制 release 根 |
+| `--etc` | `/etc/openchat` | 配置根 |
+| `--state` | `/var/lib/openchat` | 数据根 |
+
+退出码：`0` 成功 / `64` 用法错误 / `77` 非 root / `78` 缺少依赖（如 openssl 与 go 都没有）。
+
+### 2.3 每一步做什么、产物在哪
+
+| # | 动作 | 产物 | 现场校验 |
+|---|---|---|---|
+| 1 | 建组 `openchat` 与系统用户（embedded: `openchat`；split: `openchat-{bridge,user,data,admin}`，shell=nologin，home=`/var/lib/openchat`） | `/etc/group`、`/etc/passwd` | `getent passwd openchat` |
+| 2 | 建目录并按 §6 矩阵 chmod/chown | 见 §6 表 | `stat -c '%a %U:%G %n' /etc/openchat /var/lib/openchat` |
+| 3 | 写环境变量文件（存在则不动） | `/etc/openchat/env`（0600 root:openchat；split 为 `env.d/*.env`） | `ls -l /etc/openchat/env` |
+| 4 | 生成密钥（存在则跳过，绝不覆盖） | `keys/{jwt_sign_key.pem,admin_jwt_key.pem,ipc_key,hmac_key,pii_key,phone_lookup_key,download_key,upload_secret,audit_chain_key,backup.key}`；`/etc/openchat/backup.key -> keys/backup.key` | `ls -l /etc/openchat/keys`；`openssl pkey -in .../jwt_sign_key.pem -pubout \| openssl dgst -sha256` |
+| 5 | 安装配置（存在则保留；`Caddyfile.reference` 每次覆盖） | `openchat.toml` 0640、`policy.json` 0640、`Caddyfile.reference` 0640；`config/chatd.toml -> ../openchat.toml` | `ls -l /etc/openchat` |
+| 6 | 安装二进制（前端已内嵌；若包内有 `apps/*/dist` 则额外复制到 `current/web` 作静态回退） | `/opt/openchat/releases/bootstrap/bin/chatd`；`current -> releases/bootstrap`；`bin -> current/bin`；`web -> current/web` | `ls -l /opt/openchat/current/bin/chatd` |
+| 7 | 安装 unit 与 journald 配额 | `/etc/systemd/system/openchat.service`（split 为 4 个）；`/etc/systemd/journald.conf.d/openchat.conf`（`SystemMaxUse=200M`） | `systemctl cat openchat`；`journalctl --disk-usage` |
+| 8 | `daemon-reload` + `enable --now`（`--no-start` 跳过） | 运行中的 unit | `systemctl is-active openchat` |
+| 9 | 红线自检：`find /etc/openchat /var/lib/openchat -perm /o+rwx` 必须为空，否则 **exit 1** | — | 手工重跑同一条命令 |
+| 10 | 打印下一步（改 toml / policy / Caddy / 首登） | stdout | — |
+
+**幂等语义**：重复执行只校正目录权限，不覆盖已有配置、环境文件与密钥；升级配置需人工 merge
+（`install_cfg` 会打印「已存在，保持不变」）。所以**升级前先备份 `/etc/openchat`**（§8.1）。
+
+> 第 9 步失败时服务可能已经启动（第 8 步在前）。修完权限重跑脚本即可，不必先停服。
+> `install.sh` **不安装** `adminctl` / `openchatctl`，CLI 安装见 §9.1。
+
+---
+
+## 3. 配置项
 
 ### 3.1 `/etc/openchat/openchat.toml`（0640 root:openchat）
 
-| 键 | 说明 |
-|---|---|
-| `mode` | `embedded`（默认）或 `split` |
-| `listen` / `admin_listen` / `metrics_listen` | **必须** 127.0.0.1；公网只允许 Caddy |
-| `public_origin` | 站点绝对地址，用于 Cookie 域与 CORS |
-| `hot_db` / `admin_db` | SQLite 路径；admin.db 独立，最小权限隔离 |
-| `media_dir` | 媒体根目录（LUKS 卷，0750） |
-| `cold_dsn` | 冷库 Postgres，`sslmode=require` |
-| `policy_path` | 策略真源，默认 `/etc/openchat/policy.json` |
-| `log_level` | `debug`/`info`/`warn`/`error`；日志只走 stdout → journald |
-| `[feature_flags]` | 默认值；运行期由管理后台热改（kind 911 下发） |
+改完 **必须 restart**（TOML 不热载）：`sudo systemctl restart openchat`。
+
+| 字段 | 默认值 | 含义与约束 |
+|---|---|---|
+| `mode` | `"embedded"` | `embedded` 单进程；`split` 五进程（配合 `[socket]`） |
+| `listen` | `"127.0.0.1:8080"` | 用户层 HTTP/WS 监听。**必须是回环**；公网只走 Caddy。也用它托管内嵌 SPA |
+| `admin_listen` | `"127.0.0.1:7780"` | 管理 API 监听（Caddy 仅对白名单 IP 反代 `/api/admin/*`） |
+| `metrics_listen` | `"127.0.0.1:9090"` | Prometheus `/metrics` 监听（契约字段，见下方「消费进度」） |
+| `public_origin` | `"https://chat.example.com"` | 对外站点，用于绝对 URL、CORS、Cookie 域；**不带尾斜杠**，必须与实际域名一致（否则 WS 握手 401） |
+| `hot_db` | `"/var/lib/openchat/chatd.db"` | 热库 SQLite（WAL）。文件 0600，目录 0700 |
+| `admin_db` | `"/var/lib/openchat/admin.db"` | 管理库（管理员/会话），独立文件做最小权限隔离 |
+| `media_dir` | `"/var/lib/openchat/media"` | 媒体根（LUKS 卷挂载点），0750 |
+| `jwt_key_path` | `"/etc/openchat/keys/jwt_sign_key.pem"` | 用户 token 签名私钥（Ed25519 PKCS#8，0640 root:openchat） |
+| `pii_hmac_key_path` | `"/etc/openchat/keys/phone_lookup_key"` | 手机号/邮箱 HMAC 索引密钥（32B hex，0600） |
+| `cold_dsn` | `postgres://openchat@db.internal:5432/openchat?sslmode=require` | 冷库 DSN；`sslmode=require` 为底线，内网也建议 `verify-full` |
+| `policy_path` | `"/etc/openchat/policy.json"` | 策略唯一真源（保留期/cron/限流）；SIGHUP 热载 |
+| `log_level` | `"info"` | `debug`/`info`/`warn`/`error`；日志只写 stdout → journald |
+| `shutdown_timeout_sec` | `30` | SIGTERM 优雅退出预算（flusher 最后组提交 + 归档断点） |
+| `watchdog_interval_sec` | `7` | 进程心跳间隔，取 systemd `WatchdogSec=15` 的一半（契约字段） |
+| `max_devices_per_user` | `3` | 单用户并发设备上限（用户级限流聚合，§1.2.1；契约字段） |
+| `max_upload_bytes` | `52428800` | 单文件上传上限（50 MB，D-3/D-4；契约字段） |
+| `daily_upload_bytes_per_user` | `2147483648` | 单用户日上传上限（2 GB，D-4 红线；契约字段） |
+| `[feature_flags].video_enabled` | `false` | 视频消息开关；运行期可后台热改（kind 911 下发） |
+| `[feature_flags].e2ee` | `false` | 端到端加密开关 |
+| `[feature_flags].registration` | `true` | 注册开关；被刷时后台关（§6.4.3 一键禁注册） |
+| `[feature_flags].readonly` | `false` | 全站只读（收信保留，MSG_SEND 回 READONLY） |
+| `[feature_flags].call_enabled` | `false` | 通话开关 |
+| `[socket].bus/user/data/admin`（split） | 注释示例 | split 形态的 UDS 地址，默认 `/run/openchat/*.sock` |
+
+**不要改**：监听地址改成 `0.0.0.0`（绕过 Caddy 等于裸奔）、`public_origin` 用 http、
+把 `hot_db` 放到 NFS（SQLite WAL 不支持网络文件系统）。
+
+> **消费进度**：当前 `chatd` 已读取 `mode/listen/admin_listen/public_origin/hot_db/admin_db/
+> cold_dsn/policy_path/jwt_key_path/pii_hmac_key_path/media_dir/log_level/shutdown_timeout_sec`
+> 与 `[feature_flags]`；`metrics_listen`、`watchdog_interval_sec`、`max_devices_per_user`、
+> `max_upload_bytes`、`daily_upload_bytes_per_user` 是契约字段，本版本尚未消费（未知键被
+> 安全忽略，不会导致启动失败）。改这些字段前先确认二进制版本。
 
 ### 3.2 `/etc/openchat/policy.json`（0640 root:openchat）
 
-策略唯一真源（docs/admin-data-design.md §4）。改完 `systemctl reload openchat` 热生效；
-坏策略（如 `hot_retention_days: 0`）会被拒绝加载并继续用旧策略，同时 `policy.invalid` 指标 +1。
+策略唯一真源；改完 `sudo systemctl reload openchat`（SIGHUP）热生效。非法策略会被拒绝并继续用旧值。
 
-```json
-{
-  "hot_retention_days": 90,
-  "archive": { "cron": "0 4 * * *", "batch_size": 1000, "batch_pause_ms": 100, "active_exempt": true },
-  "backup":  { "cron": "30 5 * * *", "dir": "/var/lib/openchat/backup", "keep_days": 14 },
-  "trim": [
-    { "table": "sys_rate_limit",         "retention_days": 7 },
-    { "table": "identity_login_history", "retention_days": 180 }
-  ],
-  "rate_limit": { "msg_per_user_per_min": 60, "login_per_ip_per_min": 10 }
-}
-```
-
-- `trim[].table` 只能取白名单（`sys_rate_limit` / `identity_login_history`），其他值加载即拒绝——trimmer 永不做动态 SQL。
-- `archive.cron` 支持 `0 4 * * *`、`@daily 04:00`、`interval 3600` 三种形式；复杂 cron 需在装配层化简。
-- 审计保留 5 年、登录日志 180 天属合规约束，不在本文件里缩短。
-
-### 3.3 环境变量 `/etc/openchat/env`（0600 root:openchat）
-
-只放运行时参数（`GOMEMLIMIT`、`TZ`、`OPENCHAT_CONFIG` 等）。systemd 以 root 读取后再降权，
-因此 0600 不影响服务读取。**密钥不要放这里**，走 `/etc/openchat/keys/`。
-
-### 3.4 Caddy（`/etc/caddy/Caddyfile`）
-
-| 路径 | 去向 | 保护 |
+| 键 | 默认 | 含义 |
 |---|---|---|
-| `/ws` | 127.0.0.1:8081 用户层 | upgrade 限流 10/min/IP + 失败熔断（红线） |
-| `/api/admin/*` | 127.0.0.1:7780 管理层 | `remote_ip` 白名单，非白名单返回 404 |
-| `/metrics` | 127.0.0.1:9090 | 仅内网/本机，公网 404 |
-| `/api/*` | 127.0.0.1:8080 | 1MB body 上限 |
-| 其余（含 `/admin/`） | chatd 内嵌 SPA | HTML no-cache，hash 资源长缓存 |
+| `hot_retention_days` | `90` | 热库保留天数；超期由归档作业搬去冷库 |
+| `archive.cron` | `"0 4 * * *"` | 归档调度（每日 04:00） |
+| `archive.batch_size` | `1000` | 单批搬运行数 |
+| `archive.batch_pause_ms` | `100` | 批间停顿，避免打满 I/O |
+| `archive.active_exempt` | `true` | 活跃会话（近 7 天有消息）不归档 |
+| `backup.cron` | `"30 5 * * *"` | 备份调度（每日 05:30；调度器见 §8.2） |
+| `backup.dir` | `"/var/lib/openchat/backup"` | 本地备份目录（0700） |
+| `backup.keep_days` | `14` | 本地备份保留天数 |
+| `trim[]` | `sys_rate_limit` 7 天、`identity_login_history` 180 天 | 只允许白名单表；其他值加载即拒绝（防动态 SQL） |
+| `rate_limit.msg_per_user_per_min` | `60` | 用户级消息速率（跨设备聚合） |
+| `rate_limit.login_per_ip_per_min` | `10` | 单 IP 登录尝试速率 |
 
-HSTS/`X-Content-Type-Options`/`X-Frame-Options`/`Referrer-Policy`/`Permissions-Policy` 由 Caddy 统一加。
+### 3.3 `/etc/openchat/env`（0600 root:openchat）
+
+只放运行时参数，不放密钥（密钥走 `keys/`）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `TZ` | `UTC` | 固定 UTC，避免 cron/归档时间漂移 |
+| `GOMEMLIMIT` | `1280MiB` | Go 软内存上限（2C2G 留 700MB 给系统/页缓存） |
+| `OPENCHAT_CONFIG` | `/etc/openchat/openchat.toml` | 配置路径（`chatd --config` 的默认值来源） |
+| `OPENCHAT_LAYER` | `embedded`（split 为层名） | 进程角色标识 |
+
+改完 `systemctl restart openchat`（EnvironmentFile 只在启动时读取）。
 
 ---
 
-## 4. 升级与回滚
+## 4. 首次启动与管理员引导
+
+### 4.1 启动前检查（4 条，30 秒）
 
 ```bash
-# 发布（构建 → 打包 → 上传 → 切换 → 健康检查 → 失败自动回滚）
-./deploy/release.sh --target root@chat.example.com
+# 1) 配置键齐全、引号成对（TOML 不支持中文标点）
+grep -nE '^(mode|listen|admin_listen|public_origin|hot_db|cold_dsn|policy_path|jwt_key_path)' /etc/openchat/openchat.toml
 
-# 指定版本 / 复用 CI 产物
-./deploy/release.sh --target root@chat.example.com --version v1.4.2 --skip-build
+# 2) 密钥齐全且权限对（私钥 0640，对称密钥 0600）
+ls -l /etc/openchat/keys/
+
+# 3) unit 语法与安全评分
+systemd-analyze verify /etc/systemd/system/openchat.service
+systemd-analyze security --offline=true /etc/systemd/system/openchat.service | tail -3
+
+# 4) 端口没被占用
+ss -lntp | grep -E ':(8080|7780|9090)' || echo "ports free"
 ```
 
-远端布局（只保留 current + last）：
+### 4.2 启动
+
+```bash
+sudo systemctl enable --now openchat
+systemctl is-active openchat                 # 期望 active
+journalctl -u openchat -n 50 --no-pager      # 期望 msg="chatd ready"
+
+# 本机验证（绕过 Caddy，确认上游活着）
+curl -sI http://127.0.0.1:8080/ | head -3             # 200 + text/html
+curl -s  http://127.0.0.1:8080/admin/ | grep -o '<title>[^<]*'
+curl -s  http://127.0.0.1:8080/healthz               # 期望 ok/200
+```
+
+> 骨架阶段 `Type=notify` 未实现 `sd_notify`，会 `start operation timed out`。
+> 先按 **附录 A.1** 临时改 `Type=exec`（上线前恢复并实现 notify + watchdog）。
+
+### 4.3 先堵抢注，再开放公网
+
+**首个注册账号自动成为管理员**（见 [admin-guide.md](admin-guide.md)）。因此开放公网前必须
+先完成首登，否则任何人都可能抢到管理员：
+
+```bash
+# 方式 A（推荐）：只在本机操作
+ssh -L 8080:127.0.0.1:8080 ops@chat.example.com
+# 浏览器打开 http://127.0.0.1:8080 完成注册
+
+# 方式 B：防火墙临时只放行运维出口 IP
+sudo nft add rule inet filter input tcp dport {80,443} ip saddr != <你的IP> drop
+```
+
+完成 §4.4 后再放开公网。
+
+### 4.4 管理员引导（逐屏操作）
+
+| 步 | 操作 | 期望结果 |
+|---|---|---|
+| 1 | 打开 `https://chat.example.com/`，用手机号/邮箱注册第一个账号 | 账号创建成功，角色自动为管理员 |
+| 2 | 打开 `https://chat.example.com/admin/`，用同一账号登录 | 进入管理后台（登录需要密码 + TOTP；首次会要求绑定） |
+| 3 | 绑定 TOTP：扫描二维码，输入 6 位验证码 | 绑定成功；**立即抄下 8 个一次性恢复码**（服务端只存哈希，丢了只能重置） |
+| 4 | 核对身份与权限（`adminctl whoami` 返回同一管理员） | 角色/RBAC 正确 |
+| 5 | 打开「审计日志」→「校验哈希链」 | 返回 ok；记下当前最大 id 作为基线 |
+| 6 | 打开「用户」页确认列表可读（空列表也算通过） | `/api/admin/v1/*` 白名单生效 |
+
+TOTP 参数（§3.3 红线）：**SHA-1 / 6 位 / 30s 周期，时间窗 ±1**；连续 10 次失败锁 30 分钟；
+管理会话 access TTL 5 分钟、idle 15 分钟强制重认证。服务器时间必须同步（§5.6），否则全员 TOTP 失败。
+
+### 4.5 上线验收（5 条，全过才算部署完成）
+
+```bash
+# 1) 站点 200 且证书有效
+curl -sSI https://chat.example.com/ | grep -E 'HTTP/|strict-transport-security'
+# 2) 管理后台 200（白名单内）
+curl -sS https://chat.example.com/admin/ | grep -q 'OpenChat 管理后台' && echo admin-ok
+# 3) 指标只对本机开放：公网应为 404
+curl -s -o /dev/null -w '%{http_code}\n' https://chat.example.com/metrics   # 期望 404
+# 4) 管理 API 对非白名单 404（从白名单外的机器执行）
+curl -s -o /dev/null -w '%{http_code}\n' https://chat.example.com/api/admin/v1/whoami  # 期望 404
+# 5) 审计链基线
+adminctl --server http://127.0.0.1:7780 audit --since-id 0 --limit 1 --output json
+```
+
+---
+
+## 5. Caddy 与 TLS
+
+### 5.1 安装 Caddy 2.8+
+
+```bash
+# Debian/Ubuntu（官方源）
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+  | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+  | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update && sudo apt install -y caddy
+caddy version        # 期望 v2.8.x 或更高
+```
+
+### 5.2 部署 Caddyfile 与环境变量
+
+Caddyfile 用 `{$VAR:default}` 读环境变量，变量放在 systemd drop-in（不要写死在 unit 主文件）：
+
+```bash
+sudo mkdir -p /etc/systemd/system/caddy.service.d
+sudo tee /etc/systemd/system/caddy.service.d/openchat.conf >/dev/null <<'EOF'
+[Service]
+Environment=OPENCHAT_DOMAIN=chat.example.com
+Environment=OPENCHAT_ACME_EMAIL=ops@example.com
+Environment=OPENCHAT_WS_PORT=8080
+Environment=OPENCHAT_METRICS_PORT=9090
+EOF
+sudo systemctl daemon-reload
+
+sudo cp /etc/openchat/Caddyfile.reference /etc/caddy/Caddyfile
+sudo caddy fmt --overwrite /etc/caddy/Caddyfile
+sudo caddy validate --config /etc/caddy/Caddyfile     # 必须 "Valid configuration"
+```
+
+> 本 Caddyfile 的 global 块是 `admin off`（关闭本地 admin API），因此**不能**用
+> `caddy reload` / `systemctl reload caddy` 热加载；改完配置用 `systemctl restart caddy`
+> （中断 < 1s，可接受）。若要热加载，删掉 `admin off` 并确保 2019 端口只监听回环。
+
+### 5.3 路由与保护
+
+| 路径 | 上游 | 保护 |
+|---|---|---|
+| `/ws` | `127.0.0.1:{$OPENCHAT_WS_PORT:8081}` | WS upgrade；`flush_interval -1`；建议 10 次/分钟/IP（E-3）+ 失败熔断（E-4） |
+| `/api/admin/*` | `127.0.0.1:7780` | `remote_ip` 白名单；**非白名单返回 404**（不暴露管理端存在） |
+| `/metrics` | `127.0.0.1:{$OPENCHAT_METRICS_PORT:9090}` | 仅 127/8、10/8、192.168/16；公网 404 |
+| `/api/*` | `127.0.0.1:8080` | 请求体 1 MB（E-7） |
+| `/api/v1/media/presign` | `127.0.0.1:8080` | 请求体 64 KB（E-7） |
+| 其余（`/`、`/admin/`、静态资源） | `127.0.0.1:8080` | 二进制内嵌 SPA；index 不缓存、hash 资源 immutable |
+
+管理端 IP 白名单在 Caddyfile 里改这一行（换成你的运维出口 IP，可多个）：
+
+```caddyfile
+@notAllowed not remote_ip 127.0.0.1/32 10.0.0.0/8 192.168.0.0/16 203.0.113.10/32
+```
+
+改完 `sudo caddy validate ... && sudo systemctl restart caddy`，再从白名单外验证返回 404。
+
+### 5.4 TLS / ACME
+
+- **HTTP-01**（默认）：Caddy 自动申请 Let's Encrypt 证书，要求 80 端口公网可达且域名解析正确。
+  证书落在 `/var/lib/caddy/.local/share/caddy/certificates/`，到期前 30 天自动续期。
+- **DNS-01**（80 被封/内网）：需要带 DNS provider 插件的 Caddy
+  （`xcaddy build --with github.com/caddy-dns/<provider>`），在 global 块加 `acme_dns <provider> <token>`；
+  stock Caddy 不支持。
+- 自签（仅测试）：`tls internal`，浏览器需手动信任根证书；**生产禁用**。
+- 检查：
+
+```bash
+curl -vI https://chat.example.com 2>&1 | grep -E 'subject:|issuer:|expire date|SSL certificate verify'
+echo | openssl s_client -connect chat.example.com:443 -servername chat.example.com 2>/dev/null \
+  | openssl x509 -noout -dates -issuer
+```
+
+- HSTS 已带 `includeSubDomains; preload`：**只有当所有子域都永久 HTTPS 时**才保留 preload，
+  否则删掉 `preload` 与 `includeSubDomains`，避免把自己锁死。
+
+### 5.5 防火墙（nftables 最小集）
+
+```bash
+sudo tee /etc/nftables.conf >/dev/null <<'EOF'
+#!/usr/sbin/nft -f
+flush ruleset
+table inet filter {
+  chain input {
+    type filter hook input priority 0; policy drop;
+    ct state established,related accept
+    iif lo accept
+    ip protocol icmp accept
+    tcp dport 22 ip saddr { 203.0.113.0/24 } accept   # SSH 只放行运维网段
+    tcp dport { 80, 443 } accept
+    counter drop
+  }
+  chain forward { type filter hook forward priority 0; policy drop; }
+  chain output  { type filter hook output  priority 0; policy accept; }
+}
+EOF
+sudo nft -f /etc/nftables.conf && sudo systemctl enable --now nftables
+```
+
+出站建议白名单（443、DNS、NTP、短信/邮件供应商 API），至少保证 443 与 DNS 可用，
+否则 ACME、冷库、OTP 通道都会失败。
+
+### 5.6 限流与时间同步
+
+- Caddy 核心无 `rate_limit`。三选一：编译 `caddy-ratelimit` 插件（Caddyfile 内已留注释位）、
+  前置 nftables `ct count` 做 IP 级、云 WAF。E-3/E-4 是**红线**，必须落地其一。
+- 时间同步是 TOTP/JWT 红线（§6.3）：`sudo timedatectl set-ntp true && timedatectl status`
+  或装 chrony；偏差 > 30s 会导致全部 TOTP 校验失败。
+
+### 5.7 Caddy 自检
+
+```bash
+sudo systemctl status caddy --no-pager | head -5
+sudo journalctl -u caddy -n 50 --no-pager | grep -iE 'error|certificate|obtain'
+ss -lntp | grep -E ':(80|443)\b'
+```
+
+---
+
+## 6. 目录与权限矩阵
+
+embedded 形态（split 的差异在表后注明）。**这张表就是 security-spec §6.2 红线的落地值**，
+任何 `other` 位带 `rwx` 都视为未通过上线评审。
+
+| 路径 | owner:group | mode | 内容 / 说明 |
+|---|---|---|---|
+| `/opt/openchat` | root:root | 0755 | 发布根；运行用户不可写 |
+| `/opt/openchat/releases/<ver>` | root:root | 0755 | 每个版本一个目录 |
+| `/opt/openchat/releases/<ver>/bin/*` | root:root | 0755 | `chatd` 等二进制 |
+| `/opt/openchat/current` | root:root | symlink | → `releases/<ver>`（原子的切换点） |
+| `/opt/openchat/bin` | root:root | symlink | → `current/bin` |
+| `/opt/openchat/web` | root:root | symlink | → `current/web`（旧布局静态回退，可空） |
+| `/etc/openchat` | root:openchat | 0750 | 配置根 |
+| `/etc/openchat/openchat.toml` | root:openchat | 0640 | 运行配置 |
+| `/etc/openchat/policy.json` | root:openchat | 0640 | 策略真源 |
+| `/etc/openchat/Caddyfile.reference` | root:openchat | 0640 | 边缘配置样例（每次安装覆盖） |
+| `/etc/openchat/env` | root:openchat | 0600 | 环境变量（split: `env.d/*.env`） |
+| `/etc/openchat/keys/` | root:openchat | 0750 | 密钥目录 |
+| `/etc/openchat/keys/*.pem` | root:openchat | 0640 | Ed25519 私钥（JWT 签名） |
+| `/etc/openchat/keys/{ipc,hmac,pii,phone_lookup,download,upload_secret,audit_chain}_key` | root:openchat | 0600 | 对称密钥 |
+| `/etc/openchat/keys/backup.key` | root:openchat | 0600 | 备份加密口令（`/etc/openchat/backup.key` 为符号链接） |
+| `/var/lib/openchat` | openchat:openchat | 0700 | 运行数据根（embedded） |
+| `/var/lib/openchat/chatd.db` | openchat:openchat | 0600 | 热库（含 `-wal`/`-shm`） |
+| `/var/lib/openchat/admin.db` | openchat:openchat | 0600 | 管理库 |
+| `/var/lib/openchat/media/` | openchat:openchat | 0750 | 媒体对象（建议 LUKS 卷） |
+| `/var/lib/openchat/backup/` | openchat:openchat | 0700 | 本地加密备份 |
+| `/run/openchat/` | openchat:openchat | 0750 | UDS 目录（systemd `RuntimeDirectory`） |
+| `/run/openchat/*.sock` | 层用户:openchat | 0600 | 层间 socket（split） |
+| `/etc/systemd/system/openchat*.service` | root:root | 0644 | unit |
+| `/etc/systemd/journald.conf.d/openchat.conf` | root:root | 0644 | journald 配额 |
+
+split 差异：`/var/lib/openchat/{data,admin,user,bridge}` 各自 0700、owner 为同名用户；
+媒体与备份归 `openchat-data`。
+
+### 6.1 权限自检（贴进巡检脚本）
+
+```bash
+# 1) 红线：other 位不得有 rwx（期望无输出）
+sudo find /etc/openchat /var/lib/openchat -perm /o+rwx -print
+
+# 2) 关键路径逐项核对
+stat -c '%a %U:%G %n' /etc/openchat /etc/openchat/keys /etc/openchat/env \
+  /var/lib/openchat /var/lib/openchat/media /var/lib/openchat/backup
+
+# 3) 逐级解析（确认父目录没有意外放行）
+namei -l /etc/openchat/keys/jwt_sign_key.pem
+
+# 4) 二进制不可被运行用户改写
+sudo -u openchat test -w /opt/openchat/current/bin/chatd && echo "FAIL: writable" || echo ok
+```
+
+---
+
+## 7. 升级与回滚（release.sh）
+
+### 7.1 发布机前置
+
+| 依赖 | 用途 |
+|---|---|
+| `ssh` / `scp` | **必须免密（BatchMode）**；`~/.ssh/config` 配好目标机 |
+| `tar` / `sha256sum` | 打包与校验 |
+| `node` + `npm` | 构建 client/admin（`--skip-build` 可跳过，复用 `apps/*/dist`） |
+| `go` | 构建 `chatd`（`--skip-build` 时复用 `dist/`） |
+| 目标机 `curl` / `systemctl` | 健康检查与重启 |
+
+```bash
+ssh -o BatchMode=yes root@chat.example.com true   # 先验证免密
+```
+
+### 7.2 命令
+
+```bash
+# 全量：构建 → 打包 → 上传 → 切换 → 健康检查 → 失败自动回滚
+./deploy/release.sh --target root@chat.example.com
+
+# 指定版本 / 复用 CI 已构建的 dist
+./deploy/release.sh --target root@chat.example.com --version v1.4.2 --skip-build
+
+# 其它参数
+--service openchat.service     # systemd 单元名
+--health-url http://127.0.0.1:8080/healthz
+--remote-root /opt/openchat    # 远端根
+--ssh-port 2222
+```
+
+版本号默认 `git describe --tags --always --dirty`，并做白名单清洗
+（`tr -c 'A-Za-z0-9._-' '-'`），会进入目录名与回滚命令，不要用带空格/斜杠的字符串。
+
+### 7.3 release.sh 实际行为（8 步）
+
+| # | 动作 | 失败时的表现 |
+|---|---|---|
+| 1 | `npm ci && npm run build`（client、admin 各自目录） | 立即退出，不动远端 |
+| 2 | `go build -trimpath -ldflags "-s -w"` 逐个子命令（只有存在的 `server/cmd/*` 才编） | 同上；`dist/chatd` 缺失直接 die |
+| 3 | 打包 `dist/openchat-<ver>-linux-<arch>.tar.gz`：`bin/` + `web/{client,admin}` + `deploy/`，并生成 `dist/SHA256SUMS` | 同上 |
+| 4 | `scp` 到 `$REMOTE_ROOT/incoming/` | SSH 失败即退出 |
+| 5 | 远端 `sha256sum -c SHA256SUMS` → 解包到 `releases/<ver>` → `chown -R root:root` | 校验失败即退出，旧版本不受影响 |
+| 6 | 原子切换 `current`（`ln -sfn` 到 `.new` + `mv -Tf`），同步 `bin`/`web` 链接，`systemctl restart` | 启动失败进入回滚 |
+| 7 | 健康检查：最多 20 次 × 1s 请求 `--health-url`；若返回 404 则退化为 `systemctl is-active`（兼容旧构建） | 失败 → `current` 指回 `last` → 重启 → 再检查 |
+| 8 | 记录 `last`，清理 `incoming` 与多余 release（只留 `current`、`last`、`bootstrap`） | 清理失败不影响服务 |
+
+回滚语义：第 7 步失败时把 `current` 指回上一版本并重启；**回滚也失败**则退出非 0 并保留现场
+（`journalctl -u openchat -n 100`）。首次发布没有 `last` 时无法自动回滚，必须人工介入。
+
+### 7.4 产物与校验
+
+```bash
+ls -l dist/openchat-*-linux-*.tar.gz dist/SHA256SUMS
+sha256sum -c dist/SHA256SUMS          # 在 dist/ 目录内执行
+tar -tzf dist/openchat-<ver>-linux-amd64.tar.gz | head -20
+```
+
+远端布局（`--remote-root /opt/openchat`）：
 
 ```
 /opt/openchat/
-├── releases/v1.4.2/{bin,web}
+├── releases/v1.4.2/{bin,web,deploy}
+├── releases/v1.4.1/            # last
 ├── current -> releases/v1.4.2
 ├── last    -> releases/v1.4.1
 ├── bin     -> current/bin
 └── web     -> current/web
 ```
 
-切换用 `ln -sfn ... current.new && mv -Tf current.new current`（原子 rename），随后
-`systemctl restart openchat`。健康检查最多等 20s；失败自动把 `current` 指回 `last` 并重启，
-仍失败则退出非 0 并保留现场。
-
-手工回滚：
+### 7.5 手工回滚
 
 ```bash
-sudo ln -sfn "$(readlink -f /opt/openchat/last)" /opt/openchat/current
+# 1) 看当前与上一版本
+readlink -f /opt/openchat/current /opt/openchat/last
+
+# 2) 切回上一版本（原子）
+sudo ln -sfn "$(readlink -f /opt/openchat/last)" /opt/openchat/current.new
+sudo mv -Tf /opt/openchat/current.new /opt/openchat/current
+sudo ln -sfn current/bin /opt/openchat/bin
+sudo ln -sfn current/web /opt/openchat/web
+
+# 3) 重启并验证
 sudo systemctl restart openchat
+systemctl is-active openchat
 journalctl -u openchat -n 100 --no-pager
 ```
 
-数据库迁移只向前（`datactl migrate up`），回滚二进制前先确认迁移是否兼容旧版本；
-破坏性迁移必须配 `datactl backup` 快照。
+**数据库迁移只向前**：回滚二进制前先确认该版本引入的迁移是否向后兼容；破坏性迁移必须
+先做备份（§8）并在 staging 演练。不确定时不要回滚，改用前向修复（forward fix）。
+
+### 7.6 `make release-all` 与 `release.sh` 的分工
+
+| | `make release-all` | `deploy/release.sh` |
+|---|---|---|
+| 产物 | `dist/openchat-<ver>-linux-<arch>.tar.gz` + `dist/SHA256SUMS` | 同左，但直接上传并切换 |
+| 前端 | `make web`（npm ci + build + 复制到 `server/web/{client,admin}`） | 自己 `npm ci + build`，再把 `apps/*/dist` 打进 `web/` |
+| 适用 | CI 出包、离线交付 | 运维一条命令发布到远端 |
+| 前置 | 本机 Node + Go | 本机 Node + Go + 免密 SSH |
 
 ---
 
-## 5. 备份与恢复
+## 8. 备份与恢复（backup.sh）
+
+### 8.1 先搞清楚 backup.sh 备份了什么
+
+`deploy/backup.sh` **只备份热库 `chatd.db`**（外加 manifest 与 sha256）。
+以下内容**不在**备份范围内，必须单独保护：
+
+| 对象 | 为什么重要 | 单独备份方式 |
+|---|---|---|
+| `/var/lib/openchat/admin.db` | 管理员账号、TOTP secret、会话 | 停服或 `sqlite3 .backup` 后加密（见 §8.5） |
+| `/etc/openchat/keys/` | `audit_chain_key` 丢失 = 审计链永久无法验证；`pii_key` 丢失 = 手机号不可解 | 离线加密保管，**不要**放进 `/var/lib/openchat/backup` 自动清理目录 |
+| 媒体文件 `media/` | 图片/语音/文件本体 | LUKS 卷快照或 `restic`/`borg` 增量 |
+| 冷库 PostgreSQL | 90 天前的全量历史 | PostgreSQL 自身 PITR / `pg_dump` |
+| `/etc/openchat/*.toml/json` | 配置与策略 | 随发布包或配置管理（Git）留存 |
+
+> 只恢复 `chatd.db` 而丢掉 `admin.db`/`keys`，等于「有消息但没人能登录、审计链无法验证」。
+> 生产环境必须把上表纳入同一份恢复演练。
+
+### 8.2 调度（policy.json 只描述策略，不自带调度器）
+
+`policy.json` 的 `backup.cron` 是**声明**，由外部调度器执行。推荐 systemd timer（可查、幂等）：
 
 ```bash
-sudo /opt/openchat/current/deploy/backup.sh --dry-run   # 预检空间/密钥/异地目标
-sudo ./deploy/backup.sh                                 # 立即备份
+sudo install -m 0755 deploy/backup.sh /usr/local/sbin/openchat-backup
+
+sudo tee /etc/systemd/system/openchat-backup.service >/dev/null <<'EOF'
+[Unit]
+Description=OpenChat hot DB backup (sqlite3 .backup + encrypt)
+After=openchat.service
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/openchat-backup
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/openchat/backup
+NoNewPrivileges=true
+EOF
+
+sudo tee /etc/systemd/system/openchat-backup.timer >/dev/null <<'EOF'
+[Unit]
+Description=Daily OpenChat backup at 05:30
+[Timer]
+OnCalendar=*-*-* 05:30:00
+Persistent=true
+RandomizedDelaySec=300
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now openchat-backup.timer
+systemctl list-timers openchat-backup.timer
 ```
 
-流程：`sqlite3 .backup`（在线一致快照）→ `PRAGMA integrity_check` → age/openssl 加密
-（密钥 `/etc/openchat/backup.key` → `keys/backup.key`）→ 原子落盘 → rsync/对象存储异地 →
-按 `policy.backup.keep_days` 清理。任一步失败退出非 0。
+`OnCalendar` 用**系统时区**；建议 `sudo timedatectl set-timezone UTC` 与 `policy.json` 的
+`"30 5 * * *"` 对齐。备份以 root 运行：`backup.key` 是 0600 root:openchat，普通用户读不到。
 
-**恢复**
+### 8.3 手动备份与产物
 
 ```bash
+# 预检：空间、密钥、加密工具、异地目标（不写任何文件）
+sudo /usr/local/sbin/openchat-backup --dry-run
+
+# 立即备份
+sudo /usr/local/sbin/openchat-backup
+```
+
+产物（`$BACKUP_DIR` 默认 `/var/lib/openchat/backup`，umask 077）：
+
+```
+openchat-20261029T053000Z.db.enc        # openssl 加密；用 age 时为 .db.age
+openchat-20261029T053000Z.db.enc.sha256 # 密文校验和
+openchat-20261029T053000Z.manifest.json # created_at / 源库大小 / 明文 sha256 / 保留天数 / host
+```
+
+流程：`sqlite3 .backup`（在线一致快照，不锁写）→ `PRAGMA integrity_check` 必须 ok →
+立即删除明文（有 `shred` 则覆写）→ 加密 → 原子 rename 落盘 → 异地 → 按 `keep_days` 清理。
+任一步失败退出非 0，timer 记录 failed。
+
+加密选择：`OPENCHAT_AGE_RECIPIENT`（或 `backup.key` 内容以 `age1` 开头）且装了 `age` → age；
+否则 `openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass file:/etc/openchat/backup.key`。
+
+### 8.4 异地副本
+
+```bash
+# rsync（写进 systemd unit 的 Environment= 或 root 的 crontab）
+OPENCHAT_BACKUP_RSYNC=backup@10.0.0.9:/srv/openchat-backup
+
+# 对象存储（aws 或 rclone 二选一）
+OPENCHAT_BACKUP_S3=s3://my-bucket/openchat
+```
+
+未配置异地目标时脚本只告警（不会失败），但**本机磁盘故障会同时丢失数据与备份**——
+生产环境必须配置其一，并定期验证能拉回。
+
+### 8.5 恢复演练（每季度一次，先在 staging 做）
+
+```bash
+# 0) 选定一份备份（含 .sha256 与 manifest）
+B=/var/lib/openchat/backup
+LATEST=$(ls -1t "$B"/openchat-*.db.enc "$B"/openchat-*.db.age 2>/dev/null | head -1)
+echo "$LATEST"
+
+# 1) 先验密文完整性（在备份目录内执行，文件名要对得上）
+( cd "$B" && sha256sum -c "$(basename "$LATEST").sha256" )
+
+# 2) 解密到临时目录（0600）
+#    age 身份私钥由运维离线保管（install.sh 不生成）：
+#      age-keygen -o /root/.age/openchat.key && chmod 600 /root/.age/openchat.key
+#    公钥（age1...）写进 OPENCHAT_AGE_RECIPIENT 后再备份。
+sudo install -d -m 0700 /var/tmp/oc-restore
+case "$LATEST" in
+  *.age)
+    sudo age -d -i /root/.age/openchat.key -o /var/tmp/oc-restore/chatd.db "$LATEST" ;;
+  *.enc)
+    sudo openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+      -in "$LATEST" -out /var/tmp/oc-restore/chatd.db -pass file:/etc/openchat/backup.key ;;
+esac
+
+# 3) 恢复前校验（不通过就停止，不要覆盖生产库）
+sudo sqlite3 /var/tmp/oc-restore/chatd.db "PRAGMA integrity_check;"   # 必须 ok
+sudo sqlite3 /var/tmp/oc-restore/chatd.db "SELECT count(*) FROM sqlite_master;"  # 表数量合理
+
+# 4) 停服，保留现场（不要直接覆盖唯一副本）
 sudo systemctl stop openchat
-sudo mv /var/lib/openchat/chatd.db /var/lib/openchat/chatd.db.bak
-# age
-age -d -i /etc/openchat/keys/age.key -o /tmp/hot.db /var/lib/openchat/backup/openchat-*.db.age
-# 或 openssl
-openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
-  -in /var/lib/openchat/backup/openchat-*.db.enc \
-  -out /tmp/hot.db -pass file:/etc/openchat/backup.key
-
-sqlite3 /tmp/hot.db "PRAGMA integrity_check;"      # 必须 ok
-sudo install -m 0600 -o openchat -g openchat /tmp/hot.db /var/lib/openchat/chatd.db
+sudo mv /var/lib/openchat/chatd.db "/var/lib/openchat/chatd.db.bak.$(date -u +%Y%m%dT%H%M%SZ)"
 sudo rm -f /var/lib/openchat/chatd.db-wal /var/lib/openchat/chatd.db-shm
+
+# 5) 落盘（owner/mode 必须与矩阵一致）
+sudo install -m 0600 -o openchat -g openchat /var/tmp/oc-restore/chatd.db /var/lib/openchat/chatd.db
+
+# 6) 起服
 sudo systemctl start openchat
-openchatctl doctor
+systemctl is-active openchat
+journalctl -u openchat -n 50 --no-pager
+
+# 7) 业务验证（四件事）
+sudo sqlite3 /var/lib/openchat/chatd.db "PRAGMA quick_check;"          # ok
+curl -sI https://chat.example.com/ | head -1                            # 200
+adminctl --server http://127.0.0.1:7780 audit --since-id 0 --limit 5 --output json
+# 管理后台随机抽 3 个会话，确认最近消息时间点 = 备份时刻
+
+# 8) 清理明文
+sudo shred -u /var/tmp/oc-restore/chatd.db 2>/dev/null || sudo rm -f /var/tmp/oc-restore/chatd.db
 ```
 
-恢复后补跑一次 `openchatctl archive --dry-run` 确认 cutoff 与冷库一致（备份不含冷库，
-冷库由 Postgres 自身 PITR 负责）。
+**恢复后必须知道的两件事**：
+
+1. 热库回到备份时刻，**冷库不回滚**。归档游标可能落后于冷库已有数据，先跑
+   `openchatctl archive --dry-run` / `adminctl archive status` 核对 cutoff，再决定是否重跑归档。
+2. 备份时刻之后写入的审计事件会缺失，哈希链会出现断点。这是数据丢失的**预期结果**，
+   不是"被篡改"；按 §10.4 记录事件，并在审计报告里说明恢复点（附 manifest 的 `sha256_plain`）。
+
+指标：RPO = 备份间隔（默认 24h，可加密到每小时）；RTO ≈ 10 分钟（2 GB 以内热库）。
 
 ---
 
-## 6. 常用运维命令
+## 9. 日常运维命令
 
-### systemd / journald
+### 9.1 openchatctl（本机运维，直连 systemd/信号/热库）
 
-```bash
-systemctl status openchat                 # 单元状态 + 最近日志
-systemctl reload openchat                 # SIGHUP：热重载 policy 与白名单
-journalctl -u openchat -f                 # 跟随日志（JSON lines）
-journalctl -u openchat -g 'trace_id=abc'  # 单条消息全链路
-journalctl -u openchat --since '10 min ago' -p warning
-journalctl --disk-usage
-journalctl --vacuum-size=200M             # 应急收缩（配额 200M）
-```
-
-信号：`SIGTERM` 优雅退出（flusher 最后组提交 + 归档断点，预算 30s）、`SIGHUP` 热重载、
-`SIGUSR1` 触发一次备份、`SIGUSR2` WAL checkpoint + 指标 dump。
-
-### openchatctl（管理面 CLI，等价 API 客户端）
-
-| 命令 | 用途 |
-|---|---|
-| `openchatctl status` | 在线连接、队列水位、归档状态、版本 |
-| `openchatctl doctor` | 体检：DB/WAL/磁盘/冷库连通/密钥可读 |
-| `openchatctl backup [--run]` | 查看/触发备份（等价 SIGUSR1） |
-| `openchatctl ban <uid> --level 2 --days 7` | 封禁（撤销 token + 断连） |
-| `openchatctl unban <uid>` / `kick --uid` | 解封 / 强制下线 |
-| `openchatctl users list\|show <uid>` | 用户查询 |
-| `openchatctl reports list\|show\|handle` | 举报队列 |
-| `openchatctl messages search --q ... --conv 123` | 消息检索 |
-| `openchatctl broadcast preview\|send` | 广播预估/发送 |
-| `openchatctl flags list\|set <key>=<value>` | feature flag |
-| `openchatctl audit --since-id N` / `audit verify` | 顺序读审计 / 校验哈希链 |
-| `openchatctl archive status\|--dry-run\|--run` | 归档作业 |
-| `openchatctl policy show\|validate` | 策略查看/校验 |
-| `openchatctl migrate status\|up` | 迁移 |
-| `openchatctl completion bash` | shell 补全 |
-
-**datactl** 说话给数据层（`status` / `archive` / `backup` / `trim` / `search` / `inspect` / `policy` / `doctor`），
-**adminctl** 说话给管理层（`login` / `whoami` / `users` / `monitor` / `reports` / `messages` / `broadcast` / `flags` / `audit`）。
-两者与管理后台走完全相同的 HTTP/鉴权链路，没有旁路。
-
-### 常用一次性命令
+`openchatctl` 不说话给网络端口：它读 systemd 状态、给进程发信号、只读打开热库，因此**必须与
+`chatd` 同机、通常用 root 运行**。`install.sh` 不安装 CLI，从发布包或源码装一次：
 
 ```bash
-sudo -u openchat /opt/openchat/current/bin/chatd-ctl status      # 数据层状态 dump
-sqlite3 /var/lib/openchat/chatd.db "PRAGMA wal_checkpoint(TRUNCATE);"
-sqlite3 /var/lib/openchat/chatd.db "PRAGMA quick_check;"
-du -sh /var/lib/openchat/media /var/lib/openchat/backup
-ss -lntp | grep -E '8080|8081|7780|9090'
+# 从源码构建（任何安装方式都适用）
+go build -o /usr/local/bin/openchatctl ./server/cmd/openchatctl
+go build -o /usr/local/bin/adminctl    ./server/cmd/adminctl
+
+# 用 release.sh 发布过的机器：current/bin 里已带 CLI，直接 install
+sudo install -m 0755 /opt/openchat/current/bin/openchatctl /usr/local/bin/openchatctl
 ```
----
 
-## 7. 故障排查
+| 命令 | 用途 | 关键参数 |
+|---|---|---|
+| `openchatctl status` | 进程状态 + `SIGUSR1` dump 摘要 + 热库统计 | `--unit openchat`、`--hot-db /var/lib/openchat/chatd.db`、`--signal usr1\|usr2\|none`、`--no-journal` |
+| `openchatctl doctor` | 体检：热库完整性、磁盘余量、近 1h error 数、冷库 TCP 连通 | `--hot-db PATH`、`--unit NAME`、`--no-logs` |
+| `openchatctl backup --dry-run` | 只校验备份环境，不写文件 | `--db PATH`、`--script PATH`、`--to DIR` |
+| `openchatctl backup` | 调 `deploy/backup.sh`；找不到脚本则内置 `sqlite .backup` | 同上 |
+| `openchatctl archive --dry-run` / `--run` | 经管理 API 触发/预估归档 | 需先 `adminctl login` |
+| `openchatctl flags list` / `flags set KEY=VALUE` | 读/写 feature flag | `--json` 统一 JSON |
+| `openchatctl ban <uid> --days 7 --level 2 --reason spam` / `unban <uid>` | 封禁/解封（与管理 API 同一链路） | — |
 
-### 7.1 先看三样
+全局：`--json`、`--admin-url`、`--token`、`--csrf-token`、`--timeout`（默认 20s）。
+退出码：`0` 成功 / `1` 错误（doctor 有 FAIL）/ `64` 语法 / `77` 未授权或未登录。
+审计链校验没有 CLI 子命令，走管理后台「审计日志 → 校验哈希链」。
+
+### 9.2 adminctl（走管理 API）
+
+> `admin_listen` 默认 `127.0.0.1:7780`，而 `adminctl` 内置默认值是 `127.0.0.1:7781`，
+> **务必显式传 `--server` 或导出环境变量**，否则会连空端口：
+>
+> ```bash
+> export OPENCHAT_ADMIN_URL=http://127.0.0.1:7780   # 与 openchat.toml 的 admin_listen 一致
+> ```
+>
+> `adminctl` 的路径前缀是 `/api/v1/*`（不经 Caddy 的 `/api/admin/*` 白名单），因此只在
+> 本机/内网使用；远程运维先开隧道：`ssh -L 7780:127.0.0.1:7780 ops@chat.example.com`。
+
+```bash
+# 登录（交互式密码 + TOTP；凭据默认落 ~/.config/openchat/admin.json）
+adminctl --server http://127.0.0.1:7780 login
+
+# 我是谁 / 当前 token 是否有效
+adminctl --server http://127.0.0.1:7780 whoami
+
+# 用户查询与封禁（uid 是位置参数；level 1..3，days=0 永久）
+adminctl --server http://127.0.0.1:7780 users list --q alice --limit 20
+adminctl --server http://127.0.0.1:7780 users ban 10086 --level 2 --days 7 --reason "spam"
+adminctl --server http://127.0.0.1:7780 kick 10086
+
+# 举报队列（status: 0 待处理 / 1 处理中 / 2 已结）
+adminctl --server http://127.0.0.1:7780 reports list --status 0 --limit 20
+adminctl --server http://127.0.0.1:7780 reports handle 42 --action resolve --note "已警告"
+
+# 审计游标流（since_id 只进不退；JSON 便于 jq）
+adminctl --server http://127.0.0.1:7780 audit --since-id 0 --limit 100 --output json
+
+# 归档与开关
+adminctl --server http://127.0.0.1:7780 archive status
+adminctl --server http://127.0.0.1:7780 archive run --dry-run
+adminctl --server http://127.0.0.1:7780 flags list
+adminctl --server http://127.0.0.1:7780 flags set registration false
+```
+
+全局开关：`--output json|table`、`--token`（env `OPENCHAT_ADMIN_TOKEN`）、`--csrf-token`、
+`--idempotency-key`（写操作 5 分钟内幂等）。退出码：0 ok / 1 error / 64 usage / 65 not found / 77 权限。
+
+### 9.3 journalctl（五条够用）
+
+```bash
+journalctl -u openchat -f                                   # 实时跟随
+journalctl -u openchat --since '10 min ago' -p warning      # 近 10 分钟告警
+journalctl -u openchat -g 'trace_id=01H...'                 # 单条消息全链路
+journalctl -u openchat -o cat | jq -c 'select(.level=="ERROR")' | tail -20
+journalctl --disk-usage && sudo journalctl --vacuum-size=200M   # 配额 200M，满了先查循环重启
+```
+
+日志是 JSON lines：顶层 `ts/level/component/msg`，业务字段在 `fields` 里，即
+`jq -c 'select(.level=="ERROR") | {ts,component,msg,fields}'`。
+
+### 9.4 systemd 与一次性检查
 
 ```bash
 systemctl status openchat --no-pager -l
-journalctl -u openchat -n 100 --no-pager
-ss -lntp | grep -E '8080|8081|7780|9090'
+systemctl reload openchat          # SIGHUP：热载 policy + 白名单（失败保留旧策略）
+systemctl restart openchat         # 重启：TOML/env 变更后
+
+sqlite3 /var/lib/openchat/chatd.db "PRAGMA wal_checkpoint(TRUNCATE);"
+sqlite3 /var/lib/openchat/chatd.db "PRAGMA quick_check;"
+du -sh /var/lib/openchat/media /var/lib/openchat/backup && df -h /var/lib/openchat
+ss -lntp | grep -E ':(8080|7780|9090)'
 ```
 
-日志是 JSON lines，可直接用 `jq` 过滤（示例）：
+---
+
+## 10. 故障排查
+
+### 10.1 起不来（unit 不 active）
+
+按顺序做，每步都有明确判据：
 
 ```bash
-journalctl -u openchat -o cat | jq -c 'select(.level=="error")' | tail -20
+# 1) 看退出码与重启次数
+systemctl status openchat --no-pager -l | head -20
+systemctl show openchat -p ExecMainStatus -p NRestarts -p Result
+
+# 2) 看最后 100 行结构化日志（先找 msg/fields，不要只看 systemd 摘要）
+journalctl -u openchat -n 100 --no-pager
+journalctl -u openchat -o cat | jq -c 'select(.level=="ERROR" or .level=="WARN")' | tail -20
+
+# 3) 手工前台跑（绕过 systemd，直接看 stderr；先停 unit 释放端口）
+sudo systemctl stop openchat
+sudo -u openchat env $(grep -v '^#' /etc/openchat/env | xargs) \
+  /opt/openchat/current/bin/chatd --config /etc/openchat/openchat.toml
 ```
 
-### 7.2 症状 → 处置
-
-| 症状 | 最可能原因 | 处置 |
+| 现象 | 最可能原因 | 处置 |
 |---|---|---|
-| 启动即退出，退出码 78 | 配置/策略非法（TOML 引号、policy 校验失败） | `journalctl` 找 `policy: invalid` / `config:` 行；`openchatctl policy validate` |
-| `start operation timed out`，反复重启 | 未收到 `READY=1`（sd_notify）或启动阻塞 | 见 §9 已知差异；临时 `systemctl edit --full` 改 `Type=exec` 验证 |
-| Caddy 502 | 上游未监听 / 端口写错 | `ss -lntp`；确认只监听 127.0.0.1 且 Caddy 指向同端口 |
-| `/ws` 握手 401 | token 放在 query（红线）、Cookie 域不对、access 过期 | 用 Cookie 或 `Sec-WebSocket-Protocol`；核对 `public_origin` |
-| 管理后台 404（其他路径正常） | 来源 IP 不在白名单 | 改 Caddyfile 的 `remote_ip`，`systemctl reload caddy` |
-| 登录 429 / 一直失败 | 失败锁定（5 次 15min，逐级升到 24h） | 等锁定期结束；查 `auth.login_failed` 审计；不要绕过限流 |
-| 归档 API 返回 409 | 上一轮仍在运行（单飞） | `openchatctl archive status`；必要时等其结束 |
-| 归档滞后天数 > 0 | 冷库慢 / 作业被打断 | 查 `cold_db.latency_ms`；`openchatctl archive --dry-run` 估量 |
-| 写队列水位持续 > 64 | 磁盘慢 / SQLite 锁竞争 | 查 `writech_queue_depth`、`iostat`、WAL 大小；临时降级写入 |
-| 磁盘满 | journal 或备份堆积 | `journalctl --vacuum-size=200M`；清理过期备份；检查媒体 GC |
-| 审计链断裂 `audit_chain_broken=1` | 数据库被旁路写入 / 恢复错版本 | **P0**：冻结写入、保全现场、通知安全负责人、跑 `openchatctl audit verify` |
-| TOTP 全部校验失败 | 服务器时间漂移 | `timedatectl`；启用 chrony/timesyncd（红线） |
+| `status=1/FAILURE`，日志 `config:` | TOML 语法/引号/policy 非法 | 对照 `deploy/openchat.toml` 逐键核对；`journalctl -u openchat -o cat \| jq -c 'select(.msg\|test("config"))'` |
+| `status=2/FAILURE`，日志 `assembly failed` | 层装配失败（kind 冲突/配置缺项） | 回滚上一版本，保留 `journalctl` 现场 |
+| `status=203/EXEC` | 二进制不存在/无执行位 | `ls -l /opt/openchat/current/bin/chatd`；确认 `current` 链接 |
+| `status=226/NAMESPACE` | `ReadWritePaths` 指向的目录不存在 | `install -d -o openchat -g openchat /var/lib/openchat` |
+| `start operation timed out` + 反复重启 | `Type=notify` 未收到 `READY=1` | 见附录 A.1（临时 `Type=exec`） |
+| `address already in use` | 旧进程/别的服务占用 8080/7780/9090 | `ss -lntp \| grep :8080`，`systemctl stop` 冲突单元 |
+| `permission denied` 打开 DB | 文件 owner/mode 被改（曾用 root 跑过） | 按 §6 恢复：`chown openchat:openchat`、`chmod 0600` |
 
-### 7.3 状态 dump（贴给维护者）
+### 10.2 连不上（浏览器/客户端）
+
+自内向外排查，五层：
+
+```bash
+# L1 DNS + TCP
+dig +short chat.example.com
+curl -vI https://chat.example.com 2>&1 | head -20
+
+# L2 Caddy 有没有证书/上游错误
+sudo journalctl -u caddy -n 100 --no-pager | grep -iE 'error|502|dial'
+sudo caddy validate --config /etc/caddy/Caddyfile
+
+# L3 上游是否监听（在目标机执行）
+ss -lntp | grep -E ':(8080|7780|9090)'
+curl -sI http://127.0.0.1:8080/ | head -1
+
+# L4 防火墙
+sudo nft list ruleset | head -40
+```
+
+| 症状 | 原因 | 处置 |
+|---|---|---|
+| 502 Bad Gateway | Caddy 指向的端口没有进程 | 启 `openchat`；核对 `OPENCHAT_WS_PORT`/`listen` 一致 |
+| `/admin/` 404，其它正常 | 来源 IP 不在白名单（Caddy 故意 404） | 改 `remote_ip` 后 `systemctl restart caddy` |
+| `/admin/` 503 `admin UI is not embedded` | 二进制是未 `make web` 的构建 | 用发布包/重新 `make release` |
+| `/ws` 握手 401 | token 放在 query（红线）、Cookie 域不符、access 过期 | token 只放 Cookie 或 `Sec-WebSocket-Protocol`；核对 `public_origin` |
+| 登录 429 / 一直失败 | 失败锁定：5 次→15min→1h→24h（§A-1） | 等锁定期；查 `auth.login_failed` 审计；不要绕过限流 |
+| 浏览器报 `Unexpected token '<'` | 静态资源 404 被回成 index.html | 确认用的是本仓库新二进制（`web.spa` 对带扩展名路径返回 404） |
+| TOTP 全部失败 | 服务器时间漂移 > 30s | `timedatectl status`；开 NTP/chrony |
+
+### 10.3 消息不落库（发得出去、刷新就没了）
+
+按「写管道 → SQLite → 磁盘 → 冷库」顺序查：
+
+```bash
+# 1) 写队列是否打满（BUSY 会回 retry_after，不会丢已 ack 消息）
+curl -s 127.0.0.1:9090/metrics | grep -E 'writech_queue_depth|writech_busy_total'
+
+# 2) SQLite 是否卡住/损坏
+sqlite3 /var/lib/openchat/chatd.db "PRAGMA wal_checkpoint(PASSIVE); PRAGMA quick_check;"
+ls -lh /var/lib/openchat/chatd.db*
+journalctl -u openchat -o cat | jq -c 'select(.msg|test("write|flush|busy";"i"))' | tail -30
+
+# 3) 磁盘与 inode（WAL 写不进去最常见的根因）
+df -h /var/lib/openchat; df -i /var/lib/openchat
+
+# 4) 文件权限（root 跑过之后 owner 变 root 会写失败）
+stat -c '%a %U:%G %n' /var/lib/openchat/chatd.db /var/lib/openchat
+
+# 5) 冷库归档滞后（只影响历史，不影响新消息落热库）
+adminctl --server http://127.0.0.1:7780 archive status
+```
+
+| 现象 | 原因 | 处置 |
+|---|---|---|
+| `writech_queue_depth` 持续 > 64 | 磁盘慢 / 单条写入长事务 | 查 `iostat -x 1`、WAL 大小；降低归档 batch；临时只读 |
+| `database is locked` 持续 | 有外部进程直连 SQLite（sqlite3 CLI 长事务/备份） | 结束外部连接；备份用 `.backup`，不要 `cp` 正在写的库 |
+| `disk I/O error` / `SQLITE_FULL` | 磁盘满/inode 满/卷只读 | 清 journal、旧备份；扩盘；`mount -o remount,rw` |
+| 消息写入成功但刷新消失 | 客户端读的是冷库副本且归档未完成 | 查归档 cutoff；确认 `SYNC` 走热库 |
+| `PRAGMA quick_check` 返回非 ok | 页损坏（断电/坏盘） | 立即停服、保全文件、用最近备份恢复（§8.5），不要 `VACUUM` |
+
+**禁止**：`kill -9` 杀 chatd（丢最后一组提交）、`cp` 热库做备份（不一致）、
+在服务运行时 `rm -f chatd.db-wal`（等于丢已提交事务）。
+
+### 10.4 审计断链（P0）
+
+触发：管理后台显示「审计链断裂 @#N」、`audit_chain_broken=1`、或审计页「校验哈希链」失败。
+这是**红线告警**（security-spec §6.4.2），按事故处理，不要先尝试"修复数据"。
+
+```bash
+# 1) 立即冻结写入风险：开全站只读（后台开关或 adminctl）
+adminctl --server http://127.0.0.1:7780 flags set readonly true
+
+# 2) 保全现场（顺序很重要：先快照/拷贝，再分析）
+sudo systemctl stop openchat
+sudo cp -a /var/lib/openchat/chatd.db /var/lib/openchat/chatd.db.incident.$(date -u +%s)
+sudo journalctl -u openchat -n 2000 --no-pager > /var/log/openchat-incident-$(date -u +%s).log
+
+# 3) 定位断点：从 broken_at 往前取 5 条，记录 id/ts/type/prev_hash
+#    （走管理 API，不依赖热库表名；N 换成页面显示的断链 id）
+adminctl --server http://127.0.0.1:7780 audit --since-id $((N-5)) --limit 11 --output json \
+  | jq -c '.events[] | {id,ts,type,prev_hash}'
+
+# 4) 判断性质（三选一，必须写进事故记录）
+#    a. 合法恢复：最近做过 §8.5 恢复 → 备份点之后的事件缺失，属预期
+#    b. 旁路写入：有人直连 SQLite 改/删了审计表 → 安全事故，升级
+#    c. 版本错配：回滚到旧二进制但库已升级 → 核对迁移版本，前向修复
+
+# 5) 上报：安全负责人 + 值班；保留 hash 链证据，禁止重建/清空审计表
+# 6) 恢复服务前：重新基线需双人复核并写入事故报告；只读开关关闭前确认链已可验证
+```
+
+### 10.5 一键状态 dump（贴给维护者前排敏）
 
 ```bash
 {
   date -u; uname -a
   systemctl is-active openchat; systemctl show openchat -p NRestarts -p ExecMainStatus
-  openchatctl status --output json
+  adminctl --server http://127.0.0.1:7780 whoami 2>/dev/null || true
   sqlite3 /var/lib/openchat/chatd.db "PRAGMA wal_checkpoint(PASSIVE); PRAGMA quick_check;"
   df -h /var/lib/openchat; du -sh /var/lib/openchat/*
-  curl -s 127.0.0.1:9090/metrics | grep -E 'writech_queue_depth|ratelimit|audit_chain|go_goroutines'
+  ss -lntp | grep -E ':(8080|7780|9090)'
+  curl -s 127.0.0.1:9090/metrics | grep -E 'writech|ratelimit|audit_chain|go_goroutines'
   journalctl -u openchat -n 200 --no-pager
 } > /tmp/openchat-dump.txt 2>&1
 ```
 
-**注意**：dump 里可能含用户 ID / 会话 ID，外发前脱敏；不要包含 `keys/`、`env`、数据库文件。
+外发前删除用户 ID/会话 ID/手机号；**不要**打包 `keys/`、`env`、数据库文件。
 
 ---
 
-## 8. 安全基线 checklist
+## 11. 安全基线 checklist（10 条）
 
-部署完成逐项打勾；任何一项不通过视为未上线（security-spec §6 红线）。
+部署完成逐项打勾，任何一条不通过 = 未上线。编号引用 [security-spec.md](security-spec.md)。
 
-**systemd 加固**
+- [ ] **1. systemd 加固**：`NoNewPrivileges=true`、`ProtectSystem=strict`、`ProtectHome=true`、
+      `PrivateTmp/PrivateDevices=true`、`ProtectKernel{Tunables,Modules,Logs,ControlGroups,Clock}=true`、
+      `RestrictSUIDSGID/LockPersonality/RestrictNamespaces=true`（§6.1 红线）。
+      验证：`systemd-analyze security --offline=true /etc/systemd/system/openchat.service`。
+- [ ] **2. 非 root 独立用户 + EnvironmentFile 0600**：embedded 用 `openchat`，split 每层独立用户；
+      `EnvironmentFile=/etc/openchat/env`（§6.1 红线）。
+      验证：`ps -o user= -p $(systemctl show -p MainPID --value openchat)`。
+- [ ] **3. 最小权限边界**：`CapabilityBoundingSet=` 与 `AmbientCapabilities=` 为空；
+      `ReadWritePaths` 只含本进程数据目录；配置与二进制 `ReadOnlyPaths`（§6.1 红线）。
+      验证：`systemctl cat openchat | grep -E 'Capability|ReadWritePaths|ReadOnlyPaths'`。
+- [ ] **4. 文件权限矩阵**：§6 表逐项一致；`find /etc/openchat /var/lib/openchat -perm /o+rwx` 为空
+      （§6.2 红线）。验证：§6.1 四条命令。
+- [ ] **5. SSH 基线**：`PermitRootLogin no`、`PasswordAuthentication no`、仅 ed25519 公钥、
+      `MaxAuthTries 3`、`AllowUsers` 白名单（§6.3 红线）。
+      验证：`sshd -T | grep -E 'permitrootlogin|passwordauthentication|maxauthtries'`。
+- [ ] **6. 防火墙与时间同步**：默认 DROP，仅放行 22/80/443；出站白名单；NTP 已启用
+      （§6.3 红线，TOTP/JWT 时间窗依赖）。验证：`nft list ruleset`、`timedatectl status`。
+- [ ] **7. 管理面三重门**：强制 TOTP（6 位/30s/±1，10 次失败锁 30min，A-4 红线）、
+      `/api/admin/*` IP 白名单（非白名单 404）、所有非 GET 强制 CSRF（§3.3 红线）。
+      验证：白名单外 `curl -o /dev/null -w '%{http_code}' https://域名/api/admin/v1/whoami` 应为 404。
+- [ ] **8. 边缘限流与体积上限**：WS upgrade ≤ 10 次/分钟/IP + 失败熔断（E-3/E-4 红线）；
+      非上传路径请求体 ≤ 1 MB、预签名申请 ≤ 64 KB（E-7 红线）。
+      验证：`curl --data-binary @2MB.bin https://域名/api/v1/auth/login` 应 413。
+- [ ] **9. 密钥清单与轮换**：§6.4.1 清单齐全、`kid` 支持双钥轮换、私钥不入库不进镜像、
+      `backup.key`/`db_disk_key` 离线保管（§6.4.1 红线）。
+      验证：`ls -l /etc/openchat/keys`；`git grep -n 'BEGIN PRIVATE KEY'` 应为空。
+- [ ] **10. 备份与审计**：备份加密 + 异地 + 至少一次成功恢复演练（§8.5）；审计链每日校验，
+      断裂按 P0 处置（§6.4.2 红线）。验证：`systemctl list-timers openchat-backup.timer`；
+      后台审计页「校验哈希链」返回 ok。
 
-- [ ] `NoNewPrivileges=true`、`ProtectSystem=strict`、`ProtectHome=true`、`PrivateTmp=true`
-- [ ] `PrivateDevices=true`、`ProtectKernel{Tunables,Modules,Logs,ControlGroups,Clock}=true`
-- [ ] `RestrictSUIDSGID=true`、`LockPersonality=true`、`RestrictNamespaces=true`
-- [ ] `CapabilityBoundingSet=` 与 `AmbientCapabilities=` 为空
-- [ ] `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`
-- [ ] `ReadWritePaths` 只含本进程数据目录（embedded：`/var/lib/openchat`、`media`、`/run/openchat`）
-- [ ] 每进程独立系统用户（split：`openchat-{bridge,user,data,admin}`）
-- [ ] `EnvironmentFile` 指向 0600 文件
-- [ ] `systemd-analyze security --offline=true /etc/systemd/system/openchat.service` 评分 ≤ 2.0（EXPOSED 项逐条解释）
-
-**文件权限**
-
-- [ ] `/etc/openchat` 0750 root:openchat；`keys/` 0750；`*.pem` 0640；`env` 0600
-- [ ] `/var/lib/openchat` 0700；`media/` 0750；库文件 0600
-- [ ] `/opt/openchat/**` 0755 root:root（运行用户不可写）
-- [ ] `find /etc/openchat /var/lib/openchat -perm /o+rwx` 输出为空
-
-**网络与边界**
-
-- [ ] 防火墙默认 DROP，仅 22/80/443；出站白名单（443/DNS/NTP/短信邮件供应商）
-- [ ] SSH：`PermitRootLogin no`、`PasswordAuthentication no`、仅 ed25519、`MaxAuthTries 3`
-- [ ] `/api/admin/*` 白名单生效，非白名单返回 404
-- [ ] `/metrics` 公网 404
-- [ ] HSTS（`max-age=31536000; includeSubDomains; preload`）与 `X-Content-Type-Options: nosniff`
-- [ ] 请求体上限 1MB（上传预签名 64KB）
-- [ ] 时间同步已启用（TOTP/JWT 时间窗依赖）
-
-**应用**
-
-- [ ] 管理登录强制 TOTP（未开启的管理员在顶栏有红色提示）
-- [ ] JWT 算法白名单仅 `EdDSA`，`kid` 支持双钥轮换
-- [ ] 密钥清单齐全且**不在**本机明文之外的地方留副本；`backup.key` 离线保管
-- [ ] 审计链每月自动校验 + 手动可跑，断链 P0 告警
-- [ ] 日志只走 journald（`systemd-journald` 配额 200M），无文件日志
-- [ ] 备份加密 + 异地 + 至少做过一次恢复演练
-
-**密钥轮换日历**（security-spec §6.4.1）
-
-| 密钥 | 周期 | 到期动作 |
-|---|---|---|
-| `jwt_sign_key` / `admin_jwt_key` | 180 / 90 天 | 新钥 `kid` 上线 → 24h 后旧钥下线 → 全端重登 |
-| `ipc_key` / `hmac_key` | 90 天 | 换钥 + 重启进程对 + 审计 |
-| `pii_key` / `phone_lookup_key` | 180 / 365 天 | 重加密迁移 / 重建索引 |
-| `download_key` / `upload_secret` | 90 天 | 旧签名 15min 自然过期 |
-| `audit_chain_key` | 365 天 | 换盐需全链重验（先在副本演练） |
-| `backup_key` | 180 天 | 旧备份作废重做 |
-| `db_disk_key`（LUKS） | 365 天 | 仅离线信封保管，不在本机留明文 |
+**密钥轮换日历**（§6.4.1）：`jwt_sign_key` 180 天、`admin_jwt_key` 90 天、`ipc_key`/`hmac_key` 90 天、
+`pii_key` 180 天（需重加密迁移）、`phone_lookup_key` 365 天（需重建索引）、
+`download_key`/`upload_secret` 90 天、`audit_chain_key` 365 天（换盐=全链重验）、
+`backup_key` 180 天（旧备份作废重做）。
 
 ---
 
-## 9. 已知差异（骨架阶段）
+## 附录 A：骨架阶段差异（联调必读）
 
-部署件按**目标形态**编写；当前仓库的 `chatd` 仍是第 2 批骨架，联调时注意：
+部署件按**目标形态**编写；当前仓库的 `chatd` 仍在逐层接入。下表只列会被实测到、且会让
+"照文档做却起不来"的差异，逐条给绕过方式：
 
-1. **配置读取**：骨架从工作目录读 `config/chatd.toml`，尚未解析 `--config`。
-   `install.sh` 已建 `/etc/openchat/config/chatd.toml -> ../openchat.toml` 兼容链接，且单元
-   `WorkingDirectory=/etc/openchat`，因此可直接启动；`--config` 参数在 CLI 落地后自动生效。
-2. **Type=notify**：骨架未实现 `sd_notify(READY=1)`，systemd 会在 `TimeoutStartSec=30` 后判定启动失败并重启。
-   临时联调可 `systemctl edit --full openchat` 把 `Type=notify` 改为 `Type=exec`；**上线前必须恢复**并实现 sd_notify。
-3. **健康检查**：`/healthz` 未实现。`release.sh` 检测到 404 会自动退化为 `systemctl is-active`，不会误回滚。
-4. **/metrics**：未实现指标端点时，管理后台「数据面板」显示"—/未找到指标"，不影响其他页面。
-5. **openchatctl**：CLI 三件套尚未落地，命令表见 §6 与 docs/admin-data-design.md §7。
-6. **后台 API 前缀**：前端约定 `/api/admin/v1/*`，与 Caddy 的 `/api/admin/*` 白名单规则一致；
-   管理层路由实现时保持该前缀即可，无需改前端。
+| # | 差异 | 现象 | 临时绕过 / 上线前要求 |
+|---|---|---|---|
+| A.1 | 未实现 `sd_notify(READY=1)`，但 unit 是 `Type=notify` + `WatchdogSec=15` | `start operation timed out`，`Restart=always` 反复重启 | **仅联调**：`sudo systemctl edit --full openchat`，把 `Type=notify` 改 `Type=exec`、`WatchdogSec=15` 改 `WatchdogSec=0`；**上线前必须恢复**并实现 notify + watchdog 心跳 |
+| A.2 | Prometheus `/metrics` 与 `metrics_listen` 未实现（管理 API 只有 `/api/v1/metrics` 摘要） | Caddy `/metrics` 对白名单内来源 502、对公网 404 | 先从管理 API 取指标；上线前接入 Prometheus handler 并监听 9090 |
+| A.3 | `install.sh` 只安装 `chatd`，不安装 `adminctl` / `openchatctl` | `command not found` | 按 §9.1 从 `current/bin` 或源码 `install` 到 `/usr/local/bin` |
+| A.4 | 管理 REST 层尚未挂载（启动日志 `admin.rest_layer="not_wired"`） | 管理后台 API 全 404 / 登录不可用 | 以 `journalctl -u openchat` 的 `chatd ready` / `admin surface listening` 字段判断进度；层就绪后 §4.4 原样执行 |
+| A.5 | `deploy/openchat.toml` 中部分契约字段当前二进制未消费 | 改了 `metrics_listen`/上传上限等无效果 | 见 §3.1 表后的「消费进度」注记 |
+| A.6 | 内嵌前端在 `server/web`（`go:embed`），`chatd` 在 `listen` 为 TCP 时托管 `/` 与 `/admin/` | 未 `make web` 的构建返回 503 `UI is not embedded` | 用发布包，或 `make web && make release`；不要手改 `server/web/*`，它由 `make web` 整目录替换 |
+
+**发布前必须关闭的临时措施**：A.1 的 `Type=exec`/`WatchdogSec=0`（改回 notify 前先确认
+`READY=1` 与 `WATCHDOG=1` 已实现）。其余项只影响功能完整性，不影响安全基线。
 
 ---
 
-## 10. 附：目录速查
+## 附录 B：目录速查
 
 ```
-/opt/openchat/current/bin/{chatd,chatd-{bridge,user,data,admin}}
-/opt/openchat/current/web/{client,admin}       # 内嵌 SPA 源目录
-/etc/openchat/{openchat.toml,policy.json,env,keys/,env.d/,Caddyfile.reference}
+/opt/openchat/current/bin/chatd                 # 单二进制（含内嵌前端）
+/opt/openchat/current/{deploy,web}              # release.sh 打包时附带
+/etc/openchat/{openchat.toml,policy.json,env,Caddyfile.reference}
+/etc/openchat/keys/{*.pem,*_key,backup.key}
+/etc/openchat/config/chatd.toml -> ../openchat.toml
 /var/lib/openchat/{chatd.db,admin.db,media/,backup/}
-/run/openchat/*.sock                          # UDS，mode 0600
+/run/openchat/*.sock                            # split 层间 UDS，0600
 /etc/systemd/system/openchat*.service
-/etc/systemd/journald.conf.d/openchat.conf
+/etc/systemd/journald.conf.d/openchat.conf     # SystemMaxUse=200M
+/usr/local/sbin/openchat-backup                 # §8.2 手动安装
 ```

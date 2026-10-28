@@ -133,17 +133,18 @@ var ErrBadWire = protoerr{}
 type protoerr struct{}
 
 func (protoerr) Error() string { return "chatpb: bad wire data" }
+
 // Envelope mirrors chat.v1.Envelope (proto3).
 type Envelope struct {
-	Id uint64
-	AckId uint64
-	Kind uint32
-	Version uint32
+	Id        uint64
+	AckId     uint64
+	Kind      uint32
+	Version   uint32
 	RequestId string
-	Flags uint32
-	SentAt uint64
+	Flags     uint32
+	SentAt    uint64
 	// Target oneof: ConvId(10) / UserId(11).
-	Target isEnvelope_Target `json:"-"`
+	Target  isEnvelope_Target `json:"-"`
 	Payload []byte
 }
 
@@ -215,24 +216,32 @@ func (m *Envelope) GetSentAt() uint64 {
 
 func (m *Envelope) GetConvId() uint64 {
 	if m != nil {
-		if t, ok := m.Target.(*Envelope_ConvId); ok { return t.ConvId }
+		if t, ok := m.Target.(*Envelope_ConvId); ok {
+			return t.ConvId
+		}
 	}
 	return 0
 }
 
 func (m *Envelope) SetConvId(v uint64) {
-	if m != nil { m.Target = &Envelope_ConvId{ConvId: v} }
+	if m != nil {
+		m.Target = &Envelope_ConvId{ConvId: v}
+	}
 }
 
 func (m *Envelope) GetUserId() uint64 {
 	if m != nil {
-		if t, ok := m.Target.(*Envelope_UserId); ok { return t.UserId }
+		if t, ok := m.Target.(*Envelope_UserId); ok {
+			return t.UserId
+		}
 	}
 	return 0
 }
 
 func (m *Envelope) SetUserId(v uint64) {
-	if m != nil { m.Target = &Envelope_UserId{UserId: v} }
+	if m != nil {
+		m.Target = &Envelope_UserId{UserId: v}
+	}
 }
 
 func (m *Envelope) GetPayload() []byte {
@@ -409,9 +418,9 @@ func (m *Envelope) ProtoMessage() {}
 // Hello mirrors chat.v1.Hello (proto3).
 type Hello struct {
 	ClientVersion string
-	DeviceId string
-	Capabilities []string
-	Nonce string
+	DeviceId      string
+	Capabilities  []string
+	Nonce         string
 }
 
 func (m *Hello) GetClientVersion() string {
@@ -528,7 +537,7 @@ func (m *Hello) ProtoMessage() {}
 
 // Auth mirrors chat.v1.Auth (proto3).
 type Auth struct {
-	Token string
+	Token    string
 	DeviceId string
 }
 
@@ -608,9 +617,9 @@ func (m *Auth) ProtoMessage() {}
 
 // AuthResult mirrors chat.v1.AuthResult (proto3).
 type AuthResult struct {
-	Ok bool
-	Error string
-	UserId uint64
+	Ok        bool
+	Error     string
+	UserId    uint64
 	SessionId string
 	ExpiresAt uint64
 }
@@ -899,8 +908,8 @@ func (m *Pong) ProtoMessage() {}
 // Resume mirrors chat.v1.Resume (proto3).
 type Resume struct {
 	SessionId string
-	ConvId uint64
-	LastSeq uint64
+	ConvId    uint64
+	LastSeq   uint64
 }
 
 func (m *Resume) GetSessionId() string {
@@ -1001,9 +1010,9 @@ func (m *Resume) ProtoMessage() {}
 
 // ResumeResult mirrors chat.v1.ResumeResult (proto3).
 type ResumeResult struct {
-	ConvId uint64
-	FromSeq uint64
-	Complete bool
+	ConvId    uint64
+	FromSeq   uint64
+	Complete  bool
 	ServerSeq uint64
 }
 
@@ -1127,9 +1136,9 @@ func (m *ResumeResult) ProtoMessage() {}
 
 // SyncRequest mirrors chat.v1.SyncRequest (proto3).
 type SyncRequest struct {
-	ConvId uint64
+	ConvId   uint64
 	SinceSeq uint64
-	Limit uint32
+	Limit    uint32
 }
 
 func (m *SyncRequest) GetConvId() uint64 {
@@ -1232,11 +1241,11 @@ func (m *SyncRequest) ProtoMessage() {}
 
 // SyncResult mirrors chat.v1.SyncResult (proto3).
 type SyncResult struct {
-	ConvId uint64
+	ConvId  uint64
 	FromSeq uint64
-	ToSeq uint64
+	ToSeq   uint64
 	HasMore bool
-	Frames []*Envelope
+	Frames  []*Envelope
 }
 
 func (m *SyncResult) GetConvId() uint64 {
@@ -1383,8 +1392,8 @@ func (m *SyncResult) ProtoMessage() {}
 
 // Error mirrors chat.v1.Error (proto3).
 type Error struct {
-	Code uint32
-	Reason string
+	Code         uint32
+	Reason       string
 	RetryAfterMs uint32
 }
 
@@ -1486,7 +1495,7 @@ func (m *Error) ProtoMessage() {}
 
 // Kicked mirrors chat.v1.Kicked (proto3).
 type Kicked struct {
-	Reason string
+	Reason      string
 	BannedUntil uint64
 }
 
@@ -1569,7 +1578,7 @@ func (m *Kicked) ProtoMessage() {}
 // FeatureFlags mirrors chat.v1.FeatureFlags (proto3).
 type FeatureFlags struct {
 	Version uint32
-	Flags map[string]string
+	Flags   map[string]string
 }
 
 func (m *FeatureFlags) GetVersion() uint32 {
@@ -1660,8 +1669,8 @@ func (m *FeatureFlags) ProtoMessage() {}
 
 // RateLimited mirrors chat.v1.RateLimited (proto3).
 type RateLimited struct {
-	Scope string
-	Limit uint32
+	Scope        string
+	Limit        uint32
 	RetryAfterMs uint32
 }
 
@@ -1763,10 +1772,10 @@ func (m *RateLimited) ProtoMessage() {}
 
 // Receipt mirrors chat.v1.Receipt (proto3).
 type Receipt struct {
-	MsgId uint64
+	MsgId  uint64
 	UserId uint64
-	At uint64
-	Rtype int32
+	At     uint64
+	Rtype  int32
 }
 
 func (m *Receipt) GetMsgId() uint64 {
@@ -1890,12 +1899,12 @@ func (m *Receipt) ProtoMessage() {}
 // MessagePayload mirrors chat.v1.MessagePayload (proto3).
 type MessagePayload struct {
 	ClientMsgId string
-	Text string
-	Media []*Media
-	ReplyTo uint64
-	Mentions []uint64
-	Content *Content
-	Receipts []*Receipt
+	Text        string
+	Media       []*Media
+	ReplyTo     uint64
+	Mentions    []uint64
+	Content     *Content
+	Receipts    []*Receipt
 }
 
 func (m *MessagePayload) GetClientMsgId() string {
@@ -2087,9 +2096,9 @@ func (m *MessagePayload) ProtoMessage() {}
 
 // Content mirrors chat.v1.Content (proto3).
 type Content struct {
-	Text string
-	Media []*Media
-	ReplyTo uint64
+	Text     string
+	Media    []*Media
+	ReplyTo  uint64
 	Mentions []uint64
 }
 
@@ -2215,11 +2224,11 @@ func (m *Content) ProtoMessage() {}
 
 // MsgNew mirrors chat.v1.MsgNew (proto3).
 type MsgNew struct {
-	MsgId uint64
-	Seq uint64
+	MsgId    uint64
+	Seq      uint64
 	SenderId uint64
-	Content *MessagePayload
-	SentAt uint64
+	Content  *MessagePayload
+	SentAt   uint64
 }
 
 func (m *MsgNew) GetMsgId() uint64 {
@@ -2367,10 +2376,10 @@ func (m *MsgNew) ProtoMessage() {}
 
 // MsgAck mirrors chat.v1.MsgAck (proto3).
 type MsgAck struct {
-	MsgId uint64
-	Seq uint64
+	MsgId       uint64
+	Seq         uint64
 	ClientMsgId string
-	Status uint32
+	Status      uint32
 }
 
 func (m *MsgAck) GetMsgId() uint64 {
@@ -2491,9 +2500,9 @@ func (m *MsgAck) ProtoMessage() {}
 
 // MsgEdit mirrors chat.v1.MsgEdit (proto3).
 type MsgEdit struct {
-	MsgId uint64
+	MsgId  uint64
 	ConvId uint64
-	Text string
+	Text   string
 }
 
 func (m *MsgEdit) GetMsgId() uint64 {
@@ -2594,8 +2603,8 @@ func (m *MsgEdit) ProtoMessage() {}
 
 // MsgDelete mirrors chat.v1.MsgDelete (proto3).
 type MsgDelete struct {
-	MsgId uint64
-	ConvId uint64
+	MsgId       uint64
+	ConvId      uint64
 	ForEveryone bool
 }
 
@@ -2699,7 +2708,7 @@ func (m *MsgDelete) ProtoMessage() {}
 
 // MsgRecall mirrors chat.v1.MsgRecall (proto3).
 type MsgRecall struct {
-	MsgId uint64
+	MsgId  uint64
 	ConvId uint64
 }
 
@@ -2783,9 +2792,9 @@ func (m *MsgRecall) ProtoMessage() {}
 
 // MsgForward mirrors chat.v1.MsgForward (proto3).
 type MsgForward struct {
-	MsgId uint64
+	MsgId      uint64
 	FromConvId uint64
-	ToConvId uint64
+	ToConvId   uint64
 }
 
 func (m *MsgForward) GetMsgId() uint64 {
@@ -2889,8 +2898,8 @@ func (m *MsgForward) ProtoMessage() {}
 // MsgSearch mirrors chat.v1.MsgSearch (proto3).
 type MsgSearch struct {
 	ConvId uint64
-	Query string
-	Limit uint32
+	Query  string
+	Limit  uint32
 }
 
 func (m *MsgSearch) GetConvId() uint64 {
@@ -2992,7 +3001,7 @@ func (m *MsgSearch) ProtoMessage() {}
 // MsgSearchResult mirrors chat.v1.MsgSearchResult (proto3).
 type MsgSearchResult struct {
 	Messages []*MsgNew
-	HasMore bool
+	HasMore  bool
 }
 
 func (m *MsgSearchResult) GetMessages() []*MsgNew {
@@ -3079,9 +3088,9 @@ func (m *MsgSearchResult) ProtoMessage() {}
 
 // Member mirrors chat.v1.Member (proto3).
 type Member struct {
-	UserId uint64
-	Role uint32
-	JoinedAt uint64
+	UserId     uint64
+	Role       uint32
+	JoinedAt   uint64
 	MutedUntil uint64
 }
 
@@ -3205,12 +3214,12 @@ func (m *Member) ProtoMessage() {}
 
 // ConvPayload mirrors chat.v1.ConvPayload (proto3).
 type ConvPayload struct {
-	ConvId uint64
-	Title string
-	ConvType uint32
+	ConvId    uint64
+	Title     string
+	ConvType  uint32
 	CreatedAt uint64
-	Members []*Member
-	Version uint32
+	Members   []*Member
+	Version   uint32
 }
 
 func (m *ConvPayload) GetConvId() uint64 {
@@ -3375,8 +3384,8 @@ func (m *ConvPayload) ProtoMessage() {}
 
 // ConvCreate mirrors chat.v1.ConvCreate (proto3).
 type ConvCreate struct {
-	Title string
-	ConvType uint32
+	Title     string
+	ConvType  uint32
 	MemberIds []uint64
 }
 
@@ -3478,8 +3487,8 @@ func (m *ConvCreate) ProtoMessage() {}
 
 // ConvUpdate mirrors chat.v1.ConvUpdate (proto3).
 type ConvUpdate struct {
-	ConvId uint64
-	Title string
+	ConvId  uint64
+	Title   string
 	Version uint32
 }
 
@@ -3581,9 +3590,9 @@ func (m *ConvUpdate) ProtoMessage() {}
 
 // MemberOp mirrors chat.v1.MemberOp (proto3).
 type MemberOp struct {
-	ConvId uint64
+	ConvId  uint64
 	UserIds []uint64
-	Role uint32
+	Role    uint32
 }
 
 func (m *MemberOp) GetConvId() uint64 {
@@ -3687,7 +3696,7 @@ func (m *MemberOp) ProtoMessage() {}
 // MutePayload mirrors chat.v1.MutePayload (proto3).
 type MutePayload struct {
 	ConvId uint64
-	Until uint64
+	Until  uint64
 }
 
 func (m *MutePayload) GetConvId() uint64 {
@@ -3771,7 +3780,7 @@ func (m *MutePayload) ProtoMessage() {}
 // PinPayload mirrors chat.v1.PinPayload (proto3).
 type PinPayload struct {
 	ConvId uint64
-	MsgId uint64
+	MsgId  uint64
 	Pinned bool
 }
 
@@ -3960,7 +3969,7 @@ func (m *Typing) ProtoMessage() {}
 // Draft mirrors chat.v1.Draft (proto3).
 type Draft struct {
 	ConvId uint64
-	Text string
+	Text   string
 }
 
 func (m *Draft) GetConvId() uint64 {
@@ -4041,17 +4050,17 @@ func (m *Draft) ProtoMessage() {}
 
 // Media mirrors chat.v1.Media (proto3).
 type Media struct {
-	MediaId string
-	Mtype int32
-	Name string
-	Size int64
-	Width uint32
-	Height uint32
-	DurationMs uint32
-	Mime string
+	MediaId     string
+	Mtype       int32
+	Name        string
+	Size        int64
+	Width       uint32
+	Height      uint32
+	DurationMs  uint32
+	Mime        string
 	ThumbInline []byte
-	Waveform []byte
-	Status int32
+	Waveform    []byte
+	Status      int32
 }
 
 func (m *Media) GetMediaId() string {
@@ -4305,8 +4314,8 @@ func (m *Media) ProtoMessage() {}
 // MediaPresignRequest mirrors chat.v1.MediaPresignRequest (proto3).
 type MediaPresignRequest struct {
 	MediaId string
-	Mime string
-	Size int64
+	Mime    string
+	Size    int64
 }
 
 func (m *MediaPresignRequest) GetMediaId() string {
@@ -4405,10 +4414,10 @@ func (m *MediaPresignRequest) ProtoMessage() {}
 
 // MediaPresignResult mirrors chat.v1.MediaPresignResult (proto3).
 type MediaPresignResult struct {
-	MediaId string
-	Method string
+	MediaId   string
+	Method    string
 	UploadUrl string
-	Headers map[string]string
+	Headers   map[string]string
 	ExpiresAt uint64
 }
 
@@ -4677,7 +4686,7 @@ func (m *MediaExpire) ProtoMessage() {}
 // MediaThumb mirrors chat.v1.MediaThumb (proto3).
 type MediaThumb struct {
 	MediaId string
-	Thumb []byte
+	Thumb   []byte
 }
 
 func (m *MediaThumb) GetMediaId() string {
@@ -4756,8 +4765,8 @@ func (m *MediaThumb) ProtoMessage() {}
 
 // CallSignal mirrors chat.v1.CallSignal (proto3).
 type CallSignal struct {
-	CallId uint64
-	Sdp string
+	CallId    uint64
+	Sdp       string
 	Candidate string
 }
 
@@ -4857,9 +4866,9 @@ func (m *CallSignal) ProtoMessage() {}
 
 // CallEvent mirrors chat.v1.CallEvent (proto3).
 type CallEvent struct {
-	CallId uint64
+	CallId     uint64
 	FromUserId uint64
-	Reason string
+	Reason     string
 }
 
 func (m *CallEvent) GetCallId() uint64 {
@@ -4962,7 +4971,7 @@ func (m *CallEvent) ProtoMessage() {}
 type PresenceUpdate struct {
 	UserId uint64
 	Status int32
-	At uint64
+	At     uint64
 }
 
 func (m *PresenceUpdate) GetUserId() uint64 {
@@ -5191,9 +5200,9 @@ func (m *PresenceUnsubscribe) ProtoMessage() {}
 
 // ProfileUpdate mirrors chat.v1.ProfileUpdate (proto3).
 type ProfileUpdate struct {
-	DisplayName string
+	DisplayName   string
 	AvatarMediaId string
-	Bio string
+	Bio           string
 }
 
 func (m *ProfileUpdate) GetDisplayName() string {
@@ -5456,8 +5465,8 @@ func (m *ReportPayload) ProtoMessage() {}
 
 // AdminBroadcast mirrors chat.v1.AdminBroadcast (proto3).
 type AdminBroadcast struct {
-	Text string
-	ConvIds []uint64
+	Text      string
+	ConvIds   []uint64
 	ExpiresAt uint64
 }
 
@@ -5560,7 +5569,7 @@ func (m *AdminBroadcast) ProtoMessage() {}
 // Announce mirrors chat.v1.Announce (proto3).
 type Announce struct {
 	Title string
-	Text string
+	Text  string
 	Level string
 }
 
@@ -5659,7 +5668,7 @@ func (m *Announce) ProtoMessage() {}
 // Maintenance mirrors chat.v1.Maintenance (proto3).
 type Maintenance struct {
 	BeginAt uint64
-	EndAt uint64
+	EndAt   uint64
 	Message string
 }
 
@@ -5764,10 +5773,10 @@ type InternalFrame struct {
 	Envelope *Envelope
 	SrcLayer string
 	DstLayer string
-	SrcNode string
-	DstNode string
-	ConnId uint64
-	TraceId string
+	SrcNode  string
+	DstNode  string
+	ConnId   uint64
+	TraceId  string
 }
 
 func (m *InternalFrame) GetEnvelope() *Envelope {
@@ -5945,9 +5954,9 @@ func (m *InternalFrame) ProtoMessage() {}
 
 // InternalHello mirrors chat.v1.InternalHello (proto3).
 type InternalHello struct {
-	Nonce []byte
-	Layer string
-	Node string
+	Nonce        []byte
+	Layer        string
+	Node         string
 	Capabilities []string
 }
 
@@ -6065,7 +6074,7 @@ func (m *InternalHello) ProtoMessage() {}
 
 // InternalSubscribe mirrors chat.v1.InternalSubscribe (proto3).
 type InternalSubscribe struct {
-	Topic string
+	Topic      string
 	TtlSeconds uint32
 }
 
@@ -6210,7 +6219,7 @@ func (m *FrameAck) ProtoMessage() {}
 
 // Heartbeat mirrors chat.v1.Heartbeat (proto3).
 type Heartbeat struct {
-	At uint64
+	At    uint64
 	RttMs uint32
 }
 
@@ -6295,8 +6304,8 @@ func (m *Heartbeat) ProtoMessage() {}
 // ControlPayload mirrors chat.v1.ControlPayload (proto3).
 type ControlPayload struct {
 	Command string
-	Params map[string]string
-	Data []byte
+	Params  map[string]string
+	Data    []byte
 }
 
 func (m *ControlPayload) GetCommand() string {
@@ -6404,7 +6413,7 @@ func (m *ControlPayload) ProtoMessage() {}
 // ShutdownNotice mirrors chat.v1.ShutdownNotice (proto3).
 type ShutdownNotice struct {
 	Deadline uint64
-	Reason string
+	Reason   string
 }
 
 func (m *ShutdownNotice) GetDeadline() uint64 {
@@ -6485,7 +6494,7 @@ func (m *ShutdownNotice) ProtoMessage() {}
 
 // ConfigUpdate mirrors chat.v1.ConfigUpdate (proto3).
 type ConfigUpdate struct {
-	Source string
+	Source  string
 	Changed map[string]string
 }
 
@@ -6575,10 +6584,10 @@ func (m *ConfigUpdate) ProtoMessage() {}
 
 // NodeInfo mirrors chat.v1.NodeInfo (proto3).
 type NodeInfo struct {
-	Layer string
-	Node string
+	Layer  string
+	Node   string
 	Topics []string
-	Since uint64
+	Since  uint64
 }
 
 func (m *NodeInfo) GetLayer() string {
@@ -6697,7 +6706,7 @@ func (m *NodeInfo) ProtoMessage() {}
 
 // Topology mirrors chat.v1.Topology (proto3).
 type Topology struct {
-	At uint64
+	At    uint64
 	Nodes []*NodeInfo
 }
 
@@ -6785,9 +6794,9 @@ func (m *Topology) ProtoMessage() {}
 
 // ReadHistory mirrors chat.v1.ReadHistory (proto3).
 type ReadHistory struct {
-	ConvId uint64
-	SinceSeq uint64
-	Limit uint32
+	ConvId    uint64
+	SinceSeq  uint64
+	Limit     uint32
 	ColdMerge bool
 }
 
@@ -6911,10 +6920,10 @@ func (m *ReadHistory) ProtoMessage() {}
 
 // ReadHistoryResult mirrors chat.v1.ReadHistoryResult (proto3).
 type ReadHistoryResult struct {
-	ConvId uint64
+	ConvId   uint64
 	Messages []*MsgNew
 	FromCold bool
-	HasMore bool
+	HasMore  bool
 }
 
 func (m *ReadHistoryResult) GetConvId() uint64 {
@@ -7041,9 +7050,9 @@ func (m *ReadHistoryResult) ProtoMessage() {}
 
 // ConvDataRequest mirrors chat.v1.ConvDataRequest (proto3).
 type ConvDataRequest struct {
-	Op uint32
-	ConvId uint64
-	Body []byte
+	Op        uint32
+	ConvId    uint64
+	Body      []byte
 	RequestId string
 }
 
@@ -7163,10 +7172,10 @@ func (m *ConvDataRequest) ProtoMessage() {}
 
 // DataResult mirrors chat.v1.DataResult (proto3).
 type DataResult struct {
-	Op uint32
-	Ok bool
-	Error string
-	Body []byte
+	Op        uint32
+	Ok        bool
+	Error     string
+	Body      []byte
 	RequestId string
 }
 
@@ -7304,9 +7313,9 @@ func (m *DataResult) ProtoMessage() {}
 
 // IdentityRequest mirrors chat.v1.IdentityRequest (proto3).
 type IdentityRequest struct {
-	Op uint32
-	UserId uint64
-	Body []byte
+	Op        uint32
+	UserId    uint64
+	Body      []byte
 	RequestId string
 }
 
@@ -7426,9 +7435,9 @@ func (m *IdentityRequest) ProtoMessage() {}
 
 // SecurityRequest mirrors chat.v1.SecurityRequest (proto3).
 type SecurityRequest struct {
-	Op uint32
-	UserId uint64
-	Body []byte
+	Op        uint32
+	UserId    uint64
+	Body      []byte
 	RequestId string
 }
 
@@ -7548,9 +7557,9 @@ func (m *SecurityRequest) ProtoMessage() {}
 
 // FlagRequest mirrors chat.v1.FlagRequest (proto3).
 type FlagRequest struct {
-	Key string
-	Value string
-	Write bool
+	Key       string
+	Value     string
+	Write     bool
 	RequestId string
 }
 
@@ -7668,7 +7677,7 @@ func (m *FlagRequest) ProtoMessage() {}
 
 // FlagResult mirrors chat.v1.FlagResult (proto3).
 type FlagResult struct {
-	Flags map[string]string
+	Flags     map[string]string
 	RequestId string
 }
 
@@ -7758,8 +7767,8 @@ func (m *FlagResult) ProtoMessage() {}
 
 // JobTrigger mirrors chat.v1.JobTrigger (proto3).
 type JobTrigger struct {
-	Job string
-	DryRun bool
+	Job       string
+	DryRun    bool
 	RequestId string
 }
 
@@ -7859,9 +7868,9 @@ func (m *JobTrigger) ProtoMessage() {}
 
 // JobStatus mirrors chat.v1.JobStatus (proto3).
 type JobStatus struct {
-	Job string
-	State string
-	At uint64
+	Job    string
+	State  string
+	At     uint64
 	Detail string
 }
 
@@ -7979,9 +7988,9 @@ func (m *JobStatus) ProtoMessage() {}
 
 // DiagLoopback mirrors chat.v1.DiagLoopback (proto3).
 type DiagLoopback struct {
-	Echo []byte
+	Echo   []byte
 	SentAt uint64
-	Hop uint32
+	Hop    uint32
 }
 
 func (m *DiagLoopback) GetEcho() []byte {
@@ -8079,4 +8088,3 @@ func (m *DiagLoopback) Reset() { *m = DiagLoopback{} }
 func (m *DiagLoopback) String() string { return "DiagLoopback" }
 
 func (m *DiagLoopback) ProtoMessage() {}
-

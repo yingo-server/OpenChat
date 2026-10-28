@@ -70,9 +70,9 @@ func New(capacity int) *Cache {
 
 // entry is one cached value, linked into its shard's recency list.
 type entry struct {
-	key      string
-	val      any
-	expireAt time.Time // zero = never (tests)
+	key        string
+	val        any
+	expireAt   time.Time // zero = never (tests)
 	prev, next *entry
 }
 

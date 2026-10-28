@@ -19,7 +19,7 @@ import "context"
 // range by seqalloc, awaiting flusher's group commit. Fields align 1:1 with
 // msg_messages_hot columns.
 type PendingMsg struct {
-	MsgID       int64  // snowflake, assigned before flush
+	MsgID       int64 // snowflake, assigned before flush
 	Cid         int64
 	Seq         int64
 	SenderID    int64
@@ -146,10 +146,10 @@ type ConvMeta struct {
 
 // Member mirrors conv_members. Role: 0 member, 1 admin, 2 owner.
 type Member struct {
-	Cid       int64
-	UID       int64
-	Role      int
-	JoinedAt  int64
+	Cid        int64
+	UID        int64
+	Role       int
+	JoinedAt   int64
 	MutedUntil int64
 }
 

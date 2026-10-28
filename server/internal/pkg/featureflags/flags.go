@@ -10,11 +10,11 @@ import (
 
 // 默认 flag 集合常量：同名 key 的默认值。
 const (
-	KeyVideoEnabled  = "video_enabled"
-	KeyE2EE          = "e2ee"
-	KeyRegistration  = "registration"
-	KeyReadonly      = "readonly"
-	KeyCallEnabled   = "call_enabled"
+	KeyVideoEnabled = "video_enabled"
+	KeyE2EE         = "e2ee"
+	KeyRegistration = "registration"
+	KeyReadonly     = "readonly"
+	KeyCallEnabled  = "call_enabled"
 )
 
 // Defaults 返回默认 flag 集合的副本。

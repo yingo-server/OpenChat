@@ -1,0 +1,442 @@
+package main
+
+// main_test.go: end-to-end smoke test of the embedded assembly.
+//
+// No mocks: a real SQLite hot DB (temp dir), the real embedded transport, the
+// real user gateway, the real data pipe, the real bridge pipeline, a real HTTP
+// listener on a random port and a real WebSocket client.
+//
+// Covered:
+//   - GET /healthz  → 200
+//   - WS upgrade    → authenticated with a test-signed Ed25519 access token
+//   - MSG_SEND      → committed to SQLite and answered with MSG_ACK
+//   - guest login   → /api/auth/guest, refresh rotation, replay → 401
+//   - SIGTERM path  → shutdown() drains without panicking, run() returns
+
+import (
+	"bytes"
+	"context"
+	"crypto/ed25519"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/gorilla/websocket"
+
+	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
+	"github.com/yingo-server/OpenChat/server/internal/data/policy"
+	"github.com/yingo-server/OpenChat/server/internal/data/store"
+	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
+	"github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
+	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenChat/server/internal/user/core/authn"
+	"github.com/yingo-server/OpenChat/server/internal/user/net/frame"
+)
+
+const testUID int64 = 4242
+
+func testConfig(t *testing.T) *config {
+	t.Helper()
+	dir := t.TempDir()
+	cfg := defaultConfig()
+	cfg.Listen = "127.0.0.1:0"
+	cfg.AdminListen = "127.0.0.1:0"
+	// The REST plane binds its own loopback listener; :0 keeps it ephemeral so
+	// a developer machine (or a parallel test) cannot collide on 7781.
+	cfg.AdminRESTListen = "127.0.0.1:0"
+	cfg.PublicOrigin = ""
+	cfg.HotDB = filepath.Join(dir, "hot.db")
+	cfg.AdminDB = filepath.Join(dir, "admin.db")
+	cfg.PolicyPath = filepath.Join(dir, "policy.json")
+	cfg.JWTKeyPath = filepath.Join(dir, "keys", "jwt_sign_key.pem")
+	cfg.PIIKeyPath = filepath.Join(dir, "keys", "phone_lookup_key")
+	cfg.MediaDir = filepath.Join(dir, "media")
+	cfg.LogLevel = "error"
+	cfg.DevOTP = false
+	cfg.ShutdownTimeout = 5
+
+	body, err := json.Marshal(policy.Default())
+	if err != nil {
+		t.Fatalf("marshal policy: %v", err)
+	}
+	if err := os.WriteFile(cfg.PolicyPath, body, 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	return cfg
+}
+
+// startAssembly builds + runs the real process wiring and returns it with a
+// cancel func; cleanup terminates it.
+func startAssembly(t *testing.T) (*assembly, context.CancelFunc) {
+	t.Helper()
+	log.SetLevel(log.ErrorLevel)
+	if os.Getenv("CHATD_TEST_LOG") == "debug" {
+		log.SetLevel(log.DebugLevel)
+	}
+	cfg := testConfig(t)
+	a, err := newAssembly(cfg, log.For("chatd-test"))
+	if err != nil {
+		t.Fatalf("newAssembly: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- a.run(ctx) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if addr := a.user.Addr(); addr != "" && !strings.HasSuffix(addr, ":0") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if strings.HasSuffix(a.user.Addr(), ":0") {
+		cancel()
+		t.Fatalf("usergw did not start listening (addr=%q)", a.user.Addr())
+	}
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Errorf("assembly did not stop")
+		}
+		a.close()
+	})
+	return a, cancel
+}
+
+func TestHealthz(t *testing.T) {
+	a, _ := startAssembly(t)
+	resp, err := http.Get("http://" + a.user.Addr() + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz status = %d, want 200", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode healthz: %v", err)
+	}
+	if body["ok"] != true {
+		t.Fatalf("healthz body = %v", body)
+	}
+	if body["db"] != "ok" {
+		t.Fatalf("healthz db = %v", body["db"])
+	}
+}
+
+// signedAccessToken uses the very same key file the assembly generated, so the
+// gateway's verifier accepts it (a real signed JWT, not an injected bypass).
+func signedAccessToken(t *testing.T, cfgPath string) string {
+	t.Helper()
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read signing key: %v", err)
+	}
+	priv, err := parsePrivateKey(body)
+	if err != nil {
+		t.Fatalf("parse signing key: %v", err)
+	}
+	signer := newTestSigner(priv)
+	return signer
+}
+
+func TestWebSocketMsgSendAck(t *testing.T) {
+	a, _ := startAssembly(t)
+	ctx := context.Background()
+
+	token := signedAccessToken(t, a.cfg.JWTKeyPath)
+
+	// The sender must be a member: create a conversation owned by testUID
+	// through the real store.
+	cid, err := a.hot.CreateConv(ctx, &store.ConvMeta{
+		CType: 1, Title: "smoke", CreatedBy: testUID, CreatedAt: time.Now().Unix(),
+	}, testUID)
+	if err != nil {
+		t.Fatalf("CreateConv: %v", err)
+	}
+
+	hdr := http.Header{}
+	hdr.Set("Cookie", "access_token="+token)
+	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	conn, resp, err := dialer.Dial("ws://"+a.user.Addr()+"/ws", hdr)
+	if err != nil {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("ws dial: %v (status=%d)", err, status)
+	}
+	defer conn.Close()
+
+	// --- unauthenticated upgrade must be refused before the socket exists ---
+	if _, badResp, derr := dialer.Dial("ws://"+a.user.Addr()+"/ws", nil); derr == nil {
+		t.Fatal("ws dial without a token succeeded")
+	} else if badResp == nil || badResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %v, want 401", badResp)
+	}
+
+	// --- MSG_SEND → MSG_ACK ---
+	payload, err := (&chatpb.MessagePayload{ClientMsgId: "smoke-1", Text: "hello"}).Marshal()
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	env := &chatpb.Envelope{
+		Id: 1, Kind: kinds.KindMsgSend, RequestId: "trace-smoke",
+		Target:  &chatpb.Envelope_ConvId{ConvId: uint64(cid)},
+		Payload: payload,
+	}
+	raw, err := frame.Encode(env)
+	if err != nil {
+		t.Fatalf("encode envelope: %v", err)
+	}
+	if err := conn.WriteMessage(websocket.BinaryMessage, raw); err != nil {
+		t.Fatalf("ws write: %v", err)
+	}
+
+	// One deadline for the whole wait: gorilla treats any read error as fatal,
+	// so a per-iteration timeout would poison the connection.
+	_ = conn.SetReadDeadline(time.Now().Add(8 * time.Second))
+	var ack wire.MsgAck
+	var seen []string
+	for {
+		_, data, rerr := conn.ReadMessage()
+		if rerr != nil {
+			rows, _ := a.hot.ReadHot(context.Background(), cid, 0, 10, true)
+			t.Fatalf("no MSG_ACK: read failed after kinds=%v: %v (forwarder=%+v bridge=%v rows=%+v)",
+				seen, rerr, a.user.Forwarder().Stats(), a.pipeline.Snapshot(), rows)
+		}
+		got, derr := frame.Decode(data)
+		if derr != nil {
+			seen = append(seen, "undecodable")
+			continue
+		}
+		if got.Kind != kinds.KindMsgAck {
+			detail := kinds.KindName(got.Kind)
+			if got.Kind == kinds.KindError {
+				detail += "(" + string(got.Payload) + ")"
+			}
+			seen = append(seen, detail) // heartbeats/control
+			continue
+		}
+		if err := json.Unmarshal(got.Payload, &ack); err != nil {
+			t.Fatalf("ack payload is not the wire MsgAck: %v (%q)", err, got.Payload)
+		}
+		break
+	}
+	if ack.ClientMsgID != "smoke-1" {
+		t.Fatalf("ack client_msg_id = %q, want smoke-1", ack.ClientMsgID)
+	}
+	if ack.Seq == 0 || ack.MsgID == 0 {
+		t.Fatalf("ack = %+v, want non-zero msg_id and seq", ack)
+	}
+
+	// The message really landed in SQLite.
+	rows, err := a.hot.ReadHot(ctx, cid, 0, 10, true)
+	if err != nil {
+		t.Fatalf("ReadHot: %v", err)
+	}
+	if len(rows) != 1 || rows[0].SenderID != testUID || rows[0].Seq != int64(ack.Seq) {
+		t.Fatalf("stored rows = %+v", rows)
+	}
+}
+
+func TestAuthGuestRefreshReplay(t *testing.T) {
+	a, _ := startAssembly(t)
+	base := "http://" + a.user.Addr()
+
+	var guest struct {
+		UserID       int64  `json:"user_id"`
+		DeviceID     string `json:"device_id"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		SessionID    string `json:"session_id"`
+		ExpiresAt    int64  `json:"expires_at"`
+		Guest        bool   `json:"guest"`
+	}
+	if code, body := postJSON(t, base+"/api/auth/guest", `{"nickname":"tester"}`, &guest); code != http.StatusOK {
+		t.Fatalf("guest login status=%d body=%s", code, body)
+	}
+	if guest.UserID == 0 || guest.AccessToken == "" || guest.RefreshToken == "" {
+		t.Fatalf("guest response = %+v", guest)
+	}
+	if guest.DeviceID != guest.SessionID || !strings.HasPrefix(guest.DeviceID, "g_") {
+		t.Fatalf("guest device id = %q session = %q", guest.DeviceID, guest.SessionID)
+	}
+	if !guest.Guest {
+		t.Fatal("guest flag not set")
+	}
+	if guest.ExpiresAt <= time.Now().UnixMilli() {
+		t.Fatalf("expires_at (%d) is not a future unix-milli timestamp", guest.ExpiresAt)
+	}
+
+	// refresh rotates: the new token works, the old one triggers family revoke.
+	var rotated struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if code, body := postJSON(t, base+"/api/auth/refresh",
+		fmt.Sprintf(`{"refresh_token":%q}`, guest.RefreshToken), &rotated); code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", code, body)
+	}
+	if rotated.RefreshToken == "" || rotated.RefreshToken == guest.RefreshToken {
+		t.Fatal("refresh token was not rotated")
+	}
+
+	// Replay of the consumed token → 401 REFRESH_REPLAY.
+	var replay struct {
+		Code string `json:"code"`
+	}
+	if code, body := postJSON(t, base+"/api/auth/refresh",
+		fmt.Sprintf(`{"refresh_token":%q}`, guest.RefreshToken), &replay); code != http.StatusUnauthorized {
+		t.Fatalf("replay status=%d body=%s, want 401", code, body)
+	}
+	if replay.Code != "REFRESH_REPLAY" {
+		t.Fatalf("replay code = %q, want REFRESH_REPLAY", replay.Code)
+	}
+
+	// The whole family is revoked, so even the rotated token is now dead.
+	if code, body := postJSON(t, base+"/api/auth/refresh",
+		fmt.Sprintf(`{"refresh_token":%q}`, rotated.RefreshToken), &replay); code != http.StatusUnauthorized {
+		t.Fatalf("family revoke check status=%d body=%s, want 401", code, body)
+	}
+}
+
+func TestGracefulShutdown(t *testing.T) {
+	a, cancel := startAssembly(t)
+	if err := a.hot.PingContext(context.Background()); err != nil {
+		t.Fatalf("hot ping: %v", err)
+	}
+	// shutdown must be safe to run while the layers are live and idempotent.
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	a.shutdown()
+}
+
+// ---------------------------------------------------------------- helpers
+
+// newTestSigner mints an access token with the production signer, so the test
+// exercises the exact claims/code path a real login uses.
+func newTestSigner(priv ed25519.PrivateKey) string {
+	signer := authn.NewSigner(priv)
+	tok, err := signer.SignAccess(testUID, "dev-smoke", 15*time.Minute)
+	if err != nil {
+		panic("sign test access token: " + err.Error())
+	}
+	return tok
+}
+
+func postJSON(t *testing.T, url, body string, out any) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(body)))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if out != nil {
+		if err := json.Unmarshal(raw, out); err != nil && resp.StatusCode == http.StatusOK {
+			t.Fatalf("decode %s: %v (%s)", url, err, raw)
+		}
+	}
+	return resp.StatusCode, string(raw)
+}
+
+// ensure httptest stays referenced for future HTTP-level cases.
+var _ = httptest.NewRequest
+
+func TestReloadAndStatusDump(t *testing.T) {
+	a, _ := startAssembly(t)
+
+	// SIGUSR1 path: one JSON line with the expected shape.
+	var buf bytes.Buffer
+	a.dump(&buf)
+	var dump struct {
+		Event  string         `json:"event"`
+		Status map[string]any `json:"status"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &dump); err != nil {
+		t.Fatalf("dump is not JSON: %v (%s)", err, buf.String())
+	}
+	if dump.Event != "status_dump" || dump.Status["conns"] == nil || dump.Status["bridge"] == nil {
+		t.Fatalf("dump = %+v", dump)
+	}
+
+	if a.policy == nil {
+		t.Fatal("policy store missing")
+	}
+	before := a.policy.Current().Version
+
+	// SIGHUP path: rewrite policy + change a flag, then reload.
+	changed := policy.Default()
+	changed.HotRetentionDays = 45
+	body, err := json.Marshal(changed)
+	if err != nil {
+		t.Fatalf("marshal policy: %v", err)
+	}
+	if err := os.WriteFile(a.cfg.PolicyPath, body, 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	if err := a.hot.UpsertFlag(context.Background(), &store.Flag{Key: "video_enabled", Value: "true"}); err != nil {
+		t.Fatalf("upsert flag: %v", err)
+	}
+	a.reload(context.Background())
+
+	if got := a.policy.Current().Version; got != before+1 {
+		t.Fatalf("policy version = %d, want %d", got, before+1)
+	}
+	if !a.flags.Bool("video_enabled", false) {
+		t.Fatal("flag delta was not applied on reload")
+	}
+}
+
+func TestAdminSurfaceHealthz(t *testing.T) {
+	a, _ := startAssembly(t)
+	resp, err := http.Get("http://" + a.admin.Addr() + "/healthz")
+	if err != nil {
+		t.Fatalf("admin healthz: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin healthz status = %d", resp.StatusCode)
+	}
+	// /api/admin/* on the injector port is a misroute: the RBAC REST layer has
+	// its own loopback listener (admin_rest_listen).
+	resp2, err := http.Post("http://"+a.admin.Addr()+"/api/admin/v1/users", "application/json", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatalf("admin api: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNotFound {
+		t.Fatalf("injector port /api/admin status = %d, want 404", resp2.StatusCode)
+	}
+
+	// Unauthenticated request to the real REST surface must be 401, not 404:
+	// that proves the RBAC layer is mounted and enforcing.
+	url := "http://" + a.adminREST.Addr() + "/api/v1/whoami"
+	resp3, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("admin rest whoami: %v", err)
+	}
+	defer resp3.Body.Close()
+	if resp3.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("rest whoami status = %d, want 401", resp3.StatusCode)
+	}
+}

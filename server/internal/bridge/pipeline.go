@@ -7,9 +7,12 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/yingo-server/OpenChat/server/internal/bridge/ack"
+	"github.com/yingo-server/OpenChat/server/internal/bridge/adminapi"
 	"github.com/yingo-server/OpenChat/server/internal/bridge/egress"
 	"github.com/yingo-server/OpenChat/server/internal/bridge/framerw"
 	"github.com/yingo-server/OpenChat/server/internal/bridge/router"
@@ -31,6 +34,16 @@ type Config struct {
 	Egress     egress.Config              // Egress 队列/水位
 	// Sender 按层选择性发送（embedded 注入 Bridge.SendTo；nil 按 Peer.Layer 匹配）。
 	Sender func(layer string, f *proto.Frame) error
+	// AdminAuth 是 AdminAPI（POST /admin/inject）的入站鉴权。
+	// nil = embedded 本机信任模式（只监听 UDS/loopback 时使用）。
+	// 生产装配注入 adminapi.NewHMACAuthorizer(...)，见 AdminAPI()。
+	AdminAuth adminapi.Authorizer
+
+	// Signals 注入信号源。nil（默认）= supervisor 自己 signal.Notify 接管
+	// SIGHUP/SIGTERM/SIGUSR1；非 nil = 由装配层统一分发（embedded 的 chatd 需要
+	// 跨层排空顺序 usergw → pipe → bridge），此时传一个永不触发的空 channel，
+	// supervisor 只响应 ctx 取消。
+	Signals <-chan os.Signal
 }
 
 // Pipeline 一条完整桥接流水线 + 旁路组件。
@@ -52,6 +65,9 @@ type Pipeline struct {
 	chEgress chan *proto.Frame // verifier → route+pub → egress
 	rejects  chan *proto.Reject
 	runErr   chan error
+
+	adminOnce sync.Once
+	adminAPI  *adminapi.API
 }
 
 // Assemble 装配流水线。peers 为接入的各层（embedded 或 remote Peer）。
@@ -136,7 +152,7 @@ func (p *Pipeline) Run(ctx context.Context) error {
 	go p.rejectLoop(ctx)
 	go p.sweepLoop(ctx)
 
-	code, err := p.sup.Run(ctx, nil)
+	code, err := p.sup.Run(ctx, p.cfg.Signals)
 	if err != nil && code == 0 {
 		return err
 	}
@@ -271,6 +287,26 @@ func (p *Pipeline) sweepLoop(ctx context.Context) {
 
 // Drain 优雅排空。
 func (p *Pipeline) Drain(ctx context.Context) { p.sup.Drain(ctx) }
+
+// SetRoute 覆盖/追加一条 kind 的投递规则（SIGHUP 白名单：路由表热更）。
+// 装配层用它补齐 101→data、103→user 这类精确路由。
+func (p *Pipeline) SetRoute(kind uint32, targets []router.Target) { p.rtr.Set(kind, targets) }
+
+// Snapshot 返回总线/egress 的观测快照（SIGUSR1 状态 dump、指标采集）。
+func (p *Pipeline) Snapshot() map[string]string {
+	return map[string]string{
+		"bus":    fmt.Sprintf("%+v", p.bus.Stats()),
+		"egress": fmt.Sprintf("%+v", p.eg.Stats()),
+	}
+}
+
+// AdminAPI 返回与本流水线绑定的 AdminAPI handler（POST /admin/inject 是唯一
+// 非 socket 入口）。鉴权来自 Config.AdminAuth：nil 即 embedded 本机信任模式。
+// 首次调用时构造，之后复用同一个 handler/计数器。
+func (p *Pipeline) AdminAPI() *adminapi.API {
+	p.adminOnce.Do(func() { p.adminAPI = adminapi.New(p.cfg.AdminAuth, p) })
+	return p.adminAPI
+}
 
 // Pub 实现 adminapi.Publisher：管理面 HTTP 注入唯一入口。
 func (p *Pipeline) Pub(topic string, f *proto.Frame) {

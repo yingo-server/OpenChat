@@ -15,11 +15,11 @@ import (
 // FakeMsgStore implements store.MsgWriter + store.MsgReader with counters.
 type FakeMsgStore struct {
 	mu        sync.Mutex
-	NextSeqV  int64            // next seq to hand out (per all convs for simplicity)
+	NextSeqV  int64 // next seq to hand out (per all convs for simplicity)
 	Appended  []store.PendingMsg
-	Batches   int // number of AppendMessages calls
+	Batches   int                     // number of AppendMessages calls
 	Rows      map[string]store.HotMsg // clientMsgKey -> row
-	AppendErr error                    // injected failure
+	AppendErr error                   // injected failure
 }
 
 func NewFakeMsgStore() *FakeMsgStore {
@@ -107,9 +107,9 @@ func (f *FakeMsgStore) Snapshot() []store.PendingMsg {
 
 // FakeConvStore implements store.ConvStore with a member map.
 type FakeConvStore struct {
-	mu      sync.Mutex
-	Convs   map[int64]*store.ConvMeta
-	Members map[[2]int64]*store.Member
+	mu       sync.Mutex
+	Convs    map[int64]*store.ConvMeta
+	Members  map[[2]int64]*store.Member
 	NextSeqs map[int64]int64
 }
 
@@ -190,12 +190,12 @@ func (f *FakeConvStore) NextSeq(ctx context.Context, cid int64) (int64, error) {
 
 // FakeSysStore implements store.SysStore minimally.
 type FakeSysStore struct {
-	mu       sync.Mutex
-	Flags    map[string]store.Flag
-	Presence map[int64]*store.Presence
-	Counters map[string]int64
+	mu        sync.Mutex
+	Flags     map[string]store.Flag
+	Presence  map[int64]*store.Presence
+	Counters  map[string]int64
 	Penalties map[string]*store.Penalty
-	Calls    int // RateLimitIncr invocations
+	Calls     int // RateLimitIncr invocations
 }
 
 func NewFakeSysStore() *FakeSysStore {
@@ -266,13 +266,13 @@ func (f *FakeSysStore) SetPenalty(ctx context.Context, p *store.Penalty) error {
 
 // FakeArchive implements store.ArchiveTarget with call recording.
 type FakeArchive struct {
-	hot []store.HotMsg
-	mu     sync.Mutex
-	Copied []store.HotMsg
+	hot                    []store.HotMsg
+	mu                     sync.Mutex
+	Copied                 []store.HotMsg
 	CopyCalls, DeleteCalls int
-	DeletedBefore int64
-	Deleted int64
-	FailCopy bool
+	DeletedBefore          int64
+	Deleted                int64
+	FailCopy               bool
 }
 
 func (f *FakeArchive) CopyBatch(ctx context.Context, rows []store.HotMsg) (int64, error) {

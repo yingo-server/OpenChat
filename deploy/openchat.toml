@@ -28,6 +28,11 @@ admin_db = "/var/lib/openchat/admin.db"
 # 媒体根目录（LUKS 卷挂载点，0750）
 media_dir = "/var/lib/openchat/media"
 
+# 密钥路径（install.sh 生成到 /etc/openchat/keys/，私钥 0640 root:openchat）
+# jwt_sign_key.pem 用于用户 token 签名；phone_lookup_key 是 PII 索引 HMAC 密钥。
+jwt_key_path = "/etc/openchat/keys/jwt_sign_key.pem"
+pii_hmac_key_path = "/etc/openchat/keys/phone_lookup_key"
+
 # 冷库 Postgres（外部实例；sslmode=require 为底线）
 cold_dsn = "postgres://openchat@db.internal:5432/openchat?sslmode=require"
 

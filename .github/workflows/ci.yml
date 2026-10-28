@@ -3,14 +3,26 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  GOFLAGS: -mod=mod
+
 jobs:
+  # ---------------------------------------------------------------------------
+  # Go：不依赖前端产物。server/web/{client,admin} 里始终有 .gitkeep，
+  # 因此未执行 make web 时 go:embed 仍可编译（Handler 在运行时返回 503）。
+  # protoc 可选：make proto 在缺少 protoc 时保留仓库内已提交的 chatpb 实现。
+  # ---------------------------------------------------------------------------
   go:
     runs-on: ubuntu-latest
     steps:
@@ -18,14 +30,16 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
-          cache: false
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
 
-      # chatpb is committed as a wire-compatible implementation so the build
-      # does not depend on protoc. When protoc is available the Makefile target
-      # regenerates it from proto/chat.proto.
-      - name: Generate proto (optional)
+      # 有 protoc 时重新生成；没有则直接使用已提交的 wire 兼容实现（exit 0）。
+      - name: Generate proto (optional, protoc not required)
         run: make proto
+
+      - name: Verify committed chatpb fallback exists
+        run: test -f server/internal/proto/gen/chatpb/chatpb.go
 
       - name: Lint
         run: make lint
@@ -33,15 +47,23 @@ jobs:
       - name: Test
         run: make test
 
-      - name: Build
+      # 显式验证「没有前端产物也能构建」——go job 不得依赖 web job。
+      - name: Build (no frontend artifacts)
         run: make build
 
+  # ---------------------------------------------------------------------------
+  # 前端：client 与 admin 各自独立 npm ci + build（矩阵，任一失败不掩盖另一个）。
+  # 两个应用都有 package-lock.json，必须用 npm ci 保证可复现。
+  # ---------------------------------------------------------------------------
   web:
     runs-on: ubuntu-latest
-    if: hashFiles('apps/client/package.json') != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [client, admin]
     defaults:
       run:
-        working-directory: apps/client
+        working-directory: apps/${{ matrix.app }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,10 +71,70 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: apps/client/package-lock.json
+          cache-dependency-path: apps/${{ matrix.app }}/package-lock.json
 
-      - run: npm ci
+      - name: Install
+        run: npm ci --prefer-offline
 
-      - run: npm run build
+      - name: Build
+        run: npm run build
 
-      - run: npm run test --if-present
+      - name: Test
+        run: npm run test --if-present
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-${{ matrix.app }}
+          path: apps/${{ matrix.app }}/dist
+          retention-days: 3
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 发布：只在 tag push（v*）时执行。
+  # make release-all = make web（两端 npm ci+build 并复制到 server/web/）
+  #                  + go build -trimpath -ldflags "-s -w"
+  #                  + dist/openchat-<ver>-linux-<arch>.tar.gz + SHA256SUMS
+  # checkout 必须 fetch-depth: 0，否则 git describe --tags 取不到 tag，
+  # 版本号会退化成日期。
+  # ---------------------------------------------------------------------------
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [go, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            apps/client/package-lock.json
+            apps/admin/package-lock.json
+
+      - name: Build release artifact
+        run: make release-all
+
+      - name: Show artifacts
+        run: |
+          ls -lh dist/
+          cat dist/SHA256SUMS
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: openchat-${{ github.ref_name }}-linux-amd64
+          path: |
+            dist/openchat-*-linux-*.tar.gz
+            dist/SHA256SUMS
+          retention-days: 30
+          if-no-files-found: error

@@ -17,10 +17,10 @@ import (
 // 任何组件不得原地改写入队时间戳或入口连接标识——需要派生新帧时
 // 必须复制（Clone）出新 Frame，原帧所有权属于产出它的组件。
 type Frame struct {
-	Seq  uint32         // 连接内传输 seq（AckTracker 确认/重发单位）
-	Kind uint32         // 冗余缓存 Envelope.Kind，Router 查表免解 payload
+	Seq  uint32           // 连接内传输 seq（AckTracker 确认/重发单位）
+	Kind uint32           // 冗余缓存 Envelope.Kind，Router 查表免解 payload
 	Env  *chatpb.Envelope // 业务帧本体（payload 按 kind 二次解码）
-	Meta *FrameMeta     // FrameRW 打上，全程只读
+	Meta *FrameMeta       // FrameRW 打上，全程只读
 }
 
 // FrameMeta 是帧的入界快照：trace_id、入口连接、入队时间戳。

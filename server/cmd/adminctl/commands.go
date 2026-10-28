@@ -49,6 +49,17 @@ func postJSON(c *client, path string, body any, out io.Writer, output string) er
 	return render(out, raw, output)
 }
 
+// putJSON is the idempotent-write sibling of postJSON. The admin route table
+// registers PUT /api/v1/flags (docs/admin-data-design.md §8: writes are
+// idempotent), so a POST here would 405.
+func putJSON(c *client, path string, body any, out io.Writer, output string) error {
+	raw, err := c.do("PUT", path, body, true)
+	if err != nil {
+		return err
+	}
+	return render(out, raw, output)
+}
+
 func cmdWhoami(g globals, args []string, out io.Writer) error {
 	fs := newFlagSet("whoami", io.Discard)
 	if err := parseFlags(fs, args); err != nil {
@@ -335,7 +346,7 @@ func cmdFlags(g globals, args []string, out io.Writer) error {
 			b, _ := json.Marshal(value) // convenience: bare strings are quoted
 			value = string(b)
 		}
-		return postJSON(c, "/api/v1/flags", map[string]any{"key": key, "value": value}, out, g.Output)
+		return putJSON(c, "/api/v1/flags", map[string]any{"key": key, "value": value}, out, g.Output)
 	default:
 		return &usageError{msg: "flags requires list|set"}
 	}

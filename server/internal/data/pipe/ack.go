@@ -10,7 +10,11 @@ import (
 
 // buildAckEnv composes the ack env for a committed (or replayed) message.
 // status 0 = OK; non-zero is the failure code (flusher nack path).
-func buildAckEnv(cid int64, clientMsgID string, msgID, seq int64, status uint32) *env {
+//
+// senderID is carried as env.UserID: the ack is addressed to the SENDER, and
+// the bridge's default route for 100-499 fans out by conv_id/user_id only.
+// Without the uid the ack is unroutable on a real bridge (assembly contract).
+func buildAckEnv(senderID, cid int64, clientMsgID string, msgID, seq int64, status uint32) *env {
 	ack := wire.MsgAck{
 		MsgID:       uint64(msgID),
 		Seq:         uint64(seq),
@@ -18,7 +22,8 @@ func buildAckEnv(cid int64, clientMsgID string, msgID, seq int64, status uint32)
 		Status:      status,
 	}
 	pl, _ := wire.Marshal(ack)
-	return &env{Kind: uint32(kinds.KindMsgAck), ConvID: uint64(cid), Payload: pl}
+	return &env{Kind: uint32(kinds.KindMsgAck), ConvID: uint64(cid),
+		UserID: uint64(senderID), Payload: pl}
 }
 
 // buildErrEnv composes an ERROR envelope reply.

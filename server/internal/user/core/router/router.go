@@ -41,10 +41,10 @@ type Router struct {
 	logger *log.Logger
 
 	// Metrics 可选钩子（nil 安全）。
-	OnDrop     func(kind uint32, verdict limit.Verdict)
-	OnForward  func(kind uint32)
-	OnDeliver  func(kind uint32, connID uint64)
-	OnKick     func(uid int64, reason string)
+	OnDrop    func(kind uint32, verdict limit.Verdict)
+	OnForward func(kind uint32)
+	OnDeliver func(kind uint32, connID uint64)
+	OnKick    func(uid int64, reason string)
 }
 
 // New 构造 router。

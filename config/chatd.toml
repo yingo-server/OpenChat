@@ -1,11 +1,54 @@
-# chatd embedded 模式默认配置（简化 TOML：key = value，# 注释）
+# chatd embedded 模式配置（简化 TOML：key = value，# 注释，[section] 仅用于 feature flags）
+#
+# 生产安装位置 /etc/openchat/openchat.toml（0640 root:openchat）；
+# 仓库内这份是开发/单机默认值，路径均在 ./data 下，开箱即可 go run ./server/cmd/chatd。
+#
+# 策略类参数（保留天数、归档/备份 cron、限流阈值）不在本文件：
+# 唯一真源是 policy.json（SIGHUP 热加载）。
+
 mode = "embedded"
 
-# bridge 监听地址（split 模式的 BUS_SOCKET；embedded 记录用）
-listen = "unix:///run/openchat/bus.sock"
-
-# 日志级别：debug | info | warn | error（stdout JSON lines → journald）
-log_level = "info"
-
-# AdminAPI HTTP 监听地址（空 = 不启动）
+# ---- 监听 ----
+# 用户层 HTTP：/ws（WebSocket）+ /api/auth/* + /healthz + SPA 静态资源，同一端口。
+listen = "127.0.0.1:8080"
+# 管理层 HTTP：POST /admin/inject（桥接 AdminAPI）+ /api/admin/*（本批次 501）。
+# 只允许 loopback —— 公网入口只能经 Caddy（deploy/Caddyfile）。
 admin_listen = "127.0.0.1:7780"
+# 对外站点：精确匹配 CORS Origin，https 时给 Cookie 加 Secure。
+public_origin = ""
+
+# ---- 存储 ----
+# 热库（SQLite，WAL）。目录必须存在且属主为运行用户。
+hot_db = "./data/chatd.db"
+# 管理库（独立 admin.db：adm_admins / adm_admin_sessions）。
+admin_db = "./data/admin.db"
+# 冷库 Postgres（本批次仅解析，不连接：cold store 尚未接线，读路径退化为纯热库）。
+cold_dsn = ""
+# 媒体根目录（生产为 LUKS 挂载点）。
+media_dir = "./data/media"
+
+# ---- 策略与密钥 ----
+policy_path = "./config/policy.json"
+# Ed25519 PKCS#8 PEM（access/refresh 签名）。缺失时自动生成（仅限首启/开发）。
+jwt_key_path = "./data/keys/jwt_sign_key.pem"
+# 手机号/邮箱 HMAC 索引密钥（phone_lookup_key，hex 32B）。缺失时自动生成。
+# 留空 = 与 jwt_key_path 同目录的 phone_lookup_key。
+pii_hmac_key_path = ""
+
+# ---- 运行参数 ----
+log_level = "info"
+# SIGTERM 排空总预算（秒）：usergw → 数据层最后组提交 → 桥接。
+shutdown_timeout_sec = 30
+# access(15m)/refresh(30d)，security-spec §2.1/§2.2 的默认值。
+access_ttl_sec = 900
+refresh_ttl_sec = 2592000
+# 固定验证码 123456，仅 APP_ENV=dev 时允许（否则启动直接失败）。
+dev_otp = false
+
+# ---- feature flags 初始值（写库仅补缺失 key；已有值以库为准）----
+[feature_flags]
+video_enabled = false
+e2ee = false
+registration = true
+readonly = false
+call_enabled = false

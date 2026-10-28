@@ -2,6 +2,7 @@ package pipe
 
 import (
 	"context"
+	"sync"
 
 	"github.com/yingo-server/OpenChat/server/internal/data/cache"
 	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
@@ -21,9 +22,9 @@ type ColdDeps struct {
 }
 
 const (
-	writeChBuf     = 128    // D-1 red line: 满则 BUSY NACK，绝不阻塞
-	outChBuf       = 128    // outbound lane to the peer
-	dedupCapacity  = 100000 // memory dedup LRU: 10 万
+	writeChBuf    = 128    // D-1 red line: 满则 BUSY NACK，绝不阻塞
+	outChBuf      = 128    // outbound lane to the peer
+	dedupCapacity = 100000 // memory dedup LRU: 10 万
 )
 
 // HotStores is the hot-store surface the pipe needs. *sqlite.DB satisfies it;
@@ -68,6 +69,12 @@ type Pipe struct {
 	cache *cache.Cache
 
 	senderDone chan struct{}
+
+	// outMu guards writes to writeCh/outCh against Drain closing them.
+	// RLock for every send, Lock for Drain (close). Removes the classic
+	// "send on closed channel" panic during SIGTERM.
+	outMu    sync.RWMutex
+	draining bool
 }
 
 // New assembles the pipe over the real hot SQLite store. cold carries
@@ -147,14 +154,29 @@ func (p *Pipe) sender() {
 // Drain implements SIGTERM semantics: stop accepting writes, flush every
 // buffered message with one final group commit, then let the outbound lane
 // empty. The 30s budget is the CALLER's deadline (pass ctx with timeout).
+//
+// Idempotent and safe to call concurrently with dispatch: all senders hold
+// outMu.RLock, Drain takes outMu.Lock before closing the channels.
 func (p *Pipe) Drain(ctx context.Context) {
+	p.outMu.Lock()
+	if p.draining {
+		p.outMu.Unlock()
+		return
+	}
+	p.draining = true
 	close(p.writeCh) // flusher: final flush on channel close, then exits
+	p.outMu.Unlock()
+
 	select {
 	case <-p.fl.done:
 	case <-ctx.Done():
 		p.lg.Warn("drain: flusher deadline exceeded")
 	}
+
+	p.outMu.Lock()
 	close(p.outCh)
+	p.outMu.Unlock()
+
 	select {
 	case <-p.senderDone:
 	case <-ctx.Done():
@@ -194,7 +216,7 @@ func (p *Pipe) onMsgSend(ctx context.Context, req Req) {
 	switch {
 	case admit.Replay != nil:
 		// dedup hit: replay the ORIGINAL ack (same msg_id/seq).
-		p.reply(buildAckEnv(cid, pld.ClientMsgID, admit.Replay.MsgID, admit.Replay.Seq, 0))
+		p.reply(buildAckEnv(sender, cid, pld.ClientMsgID, admit.Replay.MsgID, admit.Replay.Seq, 0))
 		return
 	case admit.Code != 0:
 		// 403 etc: result composed HERE; the message never enters writech.
@@ -215,9 +237,18 @@ func (p *Pipe) onMsgSend(ctx context.Context, req Req) {
 	ready := ReadyMsg{Msg: msgs[0], Trace: req.TraceID}
 
 	// D-1 red line: writech full → immediate BUSY NACK; never block.
+	// The RLock makes the send safe against Drain closing writeCh
+	// (assembly contract: Drain is called from another goroutine on SIGTERM).
+	p.outMu.RLock()
+	if p.draining {
+		p.outMu.RUnlock()
+		return // shutting down: the peer is gone, nobody to answer
+	}
 	select {
 	case p.writeCh <- ready:
+		p.outMu.RUnlock()
 	default:
+		p.outMu.RUnlock()
 		p.reply(buildErrEnv(req, 503, "busy"))
 	}
 }
@@ -301,6 +332,11 @@ func (p *Pipe) onFlag(ctx context.Context, req Req) {
 // reply places one env on the outbound lane (non-blocking: the lane is
 // bounded; a full lane drops the reply — clients retry idempotently).
 func (p *Pipe) reply(e *env) {
+	p.outMu.RLock()
+	defer p.outMu.RUnlock()
+	if p.draining {
+		return // outCh is (or is about to be) closed
+	}
 	select {
 	case p.outCh <- e:
 	default:

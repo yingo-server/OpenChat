@@ -169,7 +169,9 @@ func (d *DB) FirstSeqAfter(ctx context.Context, cid int64, since int64) (int64, 
 	return d.msgr.FirstSeqAfter(ctx, cid, since)
 }
 
-func (d *DB) UpsertUser(ctx context.Context, u *store.User) error { return d.identity.UpsertUser(ctx, u) }
+func (d *DB) UpsertUser(ctx context.Context, u *store.User) error {
+	return d.identity.UpsertUser(ctx, u)
+}
 
 func (d *DB) LookupByIdentity(ctx context.Context, idType int, idValue string) (int64, error) {
 	return d.identity.LookupByIdentity(ctx, idType, idValue)

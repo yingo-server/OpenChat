@@ -48,6 +48,10 @@ type Config struct {
 	ReadTimeout       time.Duration
 	MaxFrameBytes     int
 	WriteChanCap      int
+	// ExtraRoutes is the non-/ws handler (auth API, health, SPA). The app layer
+	// passes it from app.Config so the whole user-facing surface stays on ONE
+	// HTTP listener/port (Caddy then proxies a single upstream).
+	ExtraRoutes http.Handler
 }
 
 // FrameEvent 上行帧事件：acceptor 解码后交给 router（唯一的生产者）。
@@ -68,6 +72,11 @@ type Conn struct {
 	closeErr   error
 	createdAt  time.Time
 	remoteAddr string
+
+	// jsonMode 记录本连接的线格式：浏览器客户端默认发 JSON 文本帧
+	// （apps/client 的 JSON codec），原生客户端发 protobuf 二进制帧。回帧
+	// 必须与对端一致，否则客户端解析失败——格式是传输属性，不是信任边界。
+	jsonMode atomic.Bool
 
 	// 统计（atomic）：写缓冲满丢弃数。
 	dropped atomic.Uint64
@@ -163,6 +172,9 @@ type Acceptor struct {
 	// OnDisconnect 连接注销回调（session.Unregister）。
 	OnDisconnect func(*Conn)
 
+	// extra 非 /ws 路径的处理器（装配层注入，nil = 404）。
+	extra http.Handler
+
 	nextID atomic.Uint64
 	mu     sync.Mutex
 	conns  map[uint64]*Conn
@@ -193,6 +205,7 @@ func NewAcceptor(cfg Config, authn Authn, logger *log.Logger) *Acceptor {
 		Upstream: make(chan *FrameEvent, 1024),
 		conns:    make(map[uint64]*Conn),
 	}
+	a.extra = cfg.ExtraRoutes
 	a.up = websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
@@ -201,9 +214,28 @@ func NewAcceptor(cfg Config, authn Authn, logger *log.Logger) *Acceptor {
 	return a
 }
 
-// ServeHTTP 实现 http.Handler：仅接受 GET /ws。
+// ExtraRoutes 注入 /ws 之外的 HTTP 路由（认证 API、健康检查、SPA）。
+// 必须在 Run/Serve 之前调用；运行期再替换会有竞态，故不再暴露热替换。
+func (a *Acceptor) ExtraRoutes(h http.Handler) {
+	a.mu.Lock()
+	a.extra = h
+	a.mu.Unlock()
+}
+
+func (a *Acceptor) extraHandler() http.Handler {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.extra
+}
+
+// ServeHTTP 实现 http.Handler：GET /ws 升级为 WebSocket，其余路径交给
+// 装配层注入的 ExtraRoutes（同一个 HTTP server/端口）。
 func (a *Acceptor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/ws" {
+		if h := a.extraHandler(); h != nil {
+			h.ServeHTTP(w, r)
+			return
+		}
 		http.NotFound(w, r)
 		return
 	}
@@ -344,8 +376,15 @@ func (a *Acceptor) readLoop(c *Conn) {
 		if err != nil {
 			return
 		}
-		if mt != websocket.BinaryMessage {
-			continue // 协议只走二进制帧；文本帧忽略
+		switch mt {
+		case websocket.BinaryMessage:
+			// protobuf wire form (native clients)
+		case websocket.TextMessage:
+			// JSON wire form (browser client). The codec sniffs the format, so
+			// both go through the same validation path.
+			c.jsonMode.Store(true)
+		default:
+			continue // ping/pong/close 由库处理，其余类型无意义
 		}
 		env, err := frame.Decode(data)
 		if err != nil {
@@ -371,7 +410,18 @@ func (a *Acceptor) writeLoop(c *Conn) {
 		select {
 		case b := <-c.send:
 			_ = c.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := c.ws.WriteMessage(websocket.BinaryMessage, b); err != nil {
+			mt, out := websocket.BinaryMessage, b
+			if c.jsonMode.Load() {
+				// Upper layers always hand us protobuf; a JSON peer gets the
+				// JSON form of the same envelope. A frame that cannot be
+				// re-encoded is a bug — drop it rather than send garbage.
+				if env, err := frame.Decode(b); err == nil {
+					if jb, jerr := frame.EncodeJSON(env); jerr == nil {
+						mt, out = websocket.TextMessage, jb
+					}
+				}
+			}
+			if err := c.ws.WriteMessage(mt, out); err != nil {
 				a.closeConn(c)
 				return
 			}

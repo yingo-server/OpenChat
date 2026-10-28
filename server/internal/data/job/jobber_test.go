@@ -24,9 +24,9 @@ func TestParseCronKind(t *testing.T) {
 		{"@daily 25:00", 0, 0, 0, true},
 		{"@daily 4", 0, 0, 0, true},
 		{"interval 0", 0, 0, 0, true},
-		{"*/5 * * * *", 0, 0, 0, true},   // unsupported syntax rejected
-		{"0 4 * * 1", 0, 0, 0, true},     // weekly schedules are not expressible: fail fast
-		{"1 2 3", 0, 0, 0, true},         // not 5 fields
+		{"*/5 * * * *", 0, 0, 0, true}, // unsupported syntax rejected
+		{"0 4 * * 1", 0, 0, 0, true},   // weekly schedules are not expressible: fail fast
+		{"1 2 3", 0, 0, 0, true},       // not 5 fields
 	}
 	for _, c := range cases {
 		k, h, m, err := ParseCronKind(c.in)

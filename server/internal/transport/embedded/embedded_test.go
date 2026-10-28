@@ -11,18 +11,18 @@ import (
 
 // mockLayer 模拟一个层。
 type mockLayer struct {
-	name     string
-	outbound chan *proto.Frame
+	name      string
+	outbound  chan *proto.Frame
 	delivered []*proto.Frame
-	mu       sync.Mutex
+	mu        sync.Mutex
 }
 
 func newMockLayer(name string) *mockLayer {
 	return &mockLayer{name: name, outbound: make(chan *proto.Frame, 8)}
 }
 
-func (m *mockLayer) LayerName() string                { return m.name }
-func (m *mockLayer) Outbound() <-chan *proto.Frame    { return m.outbound }
+func (m *mockLayer) LayerName() string             { return m.name }
+func (m *mockLayer) Outbound() <-chan *proto.Frame { return m.outbound }
 func (m *mockLayer) Deliver(f *proto.Frame) error {
 	m.mu.Lock()
 	m.delivered = append(m.delivered, f)

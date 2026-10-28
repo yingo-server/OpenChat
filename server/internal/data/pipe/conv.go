@@ -30,10 +30,10 @@ type convDomain struct {
 }
 
 type convResult struct {
-	Op     uint32
-	OK     bool
-	Error  string
-	Cid    int64
+	Op      uint32
+	OK      bool
+	Error   string
+	Cid     int64
 	Payload []byte
 }
 

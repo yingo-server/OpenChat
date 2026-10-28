@@ -66,7 +66,10 @@ func (f *flusher) run(ctx context.Context) {
 			buf = append(buf, m)
 			if len(buf) >= f.batchSize {
 				if !t.Stop() {
-					select { case <-t.C: default: }
+					select {
+					case <-t.C:
+					default:
+					}
 				}
 				t.Reset(f.interval)
 				flushNow()
@@ -105,7 +108,7 @@ func (f *flusher) flush(ctx context.Context, buf []ReadyMsg) {
 // lane. Non-blocking: the lane is bounded and the client's retry path
 // (dedup memory + DB UNIQUE) is the safety net for a dropped ack.
 func (f *flusher) emit(m store.PendingMsg, status uint32, reason string) {
-	e := buildAckEnv(m.Cid, m.ClientMsgID, m.MsgID, m.Seq, status)
+	e := buildAckEnv(m.SenderID, m.Cid, m.ClientMsgID, m.MsgID, m.Seq, status)
 	select {
 	case f.out <- e:
 	default:

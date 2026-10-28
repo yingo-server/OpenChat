@@ -81,7 +81,9 @@
 		#     }
 		# }
 
-		reverse_proxy 127.0.0.1:8081 {
+		# 端口：split 形态的用户层默认 8081；embedded 单进程用
+		# OPENCHAT_WS_PORT=8080 覆盖（与 openchat.toml 的 listen 一致）。
+		reverse_proxy 127.0.0.1:{$OPENCHAT_WS_PORT:8081} {
 			# WS 需要长连接：关闭响应缓冲与超时
 			flush_interval -1
 			transport http {
@@ -139,7 +141,8 @@
 	handle @metrics {
 		@metricsDenied not remote_ip 127.0.0.1/32 10.0.0.0/8 192.168.0.0/16
 		respond @metricsDenied "Not Found" 404
-		reverse_proxy 127.0.0.1:8080
+		# 指到 openchat.toml 的 metrics_listen（默认 9090），不是用户层端口。
+		reverse_proxy 127.0.0.1:{$OPENCHAT_METRICS_PORT:9090}
 	}
 
 	# ------------------------------------------------------------------

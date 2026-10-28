@@ -52,18 +52,18 @@ type Error struct {
 
 // ReadHistory mirrors chat.v1.ReadHistory (920).
 type ReadHistory struct {
-	ConvID   uint64 `json:"convId,omitempty"`
-	SinceSeq uint64 `json:"sinceSeq,omitempty"`
-	Limit    uint32 `json:"limit,omitempty"`
-	ColdMerge bool  `json:"coldMerge,omitempty"`
+	ConvID    uint64 `json:"convId,omitempty"`
+	SinceSeq  uint64 `json:"sinceSeq,omitempty"`
+	Limit     uint32 `json:"limit,omitempty"`
+	ColdMerge bool   `json:"coldMerge,omitempty"`
 }
 
 // MsgNew mirrors chat.v1.MsgNew (used inside ReadHistoryResult 921).
 type MsgNew struct {
-	MsgID    uint64          `json:"msgId,omitempty"`
-	Seq      uint64          `json:"seq,omitempty"`
-	SenderID uint64          `json:"senderId,omitempty"`
-	SentAt   int64           `json:"sentAt,omitempty"`
+	MsgID    uint64 `json:"msgId,omitempty"`
+	Seq      uint64 `json:"seq,omitempty"`
+	SenderID uint64 `json:"senderId,omitempty"`
+	SentAt   int64  `json:"sentAt,omitempty"`
 	// Content is the opaque Envelope payload, base64-encoded on the wire
 	// (same as protobuf bytes -> JSON). Never embed raw bytes as JSON.
 	Content []byte `json:"content,omitempty"`
@@ -71,10 +71,10 @@ type MsgNew struct {
 
 // ReadHistoryResult mirrors chat.v1.ReadHistoryResult (921).
 type ReadHistoryResult struct {
-	ConvID    uint64   `json:"convId,omitempty"`
-	Messages  []MsgNew `json:"messages,omitempty"`
-	FromCold  bool     `json:"fromCold,omitempty"`
-	HasMore   bool     `json:"hasMore,omitempty"`
+	ConvID   uint64   `json:"convId,omitempty"`
+	Messages []MsgNew `json:"messages,omitempty"`
+	FromCold bool     `json:"fromCold,omitempty"`
+	HasMore  bool     `json:"hasMore,omitempty"`
 }
 
 // DataResult mirrors chat.v1.DataResult (931/941/961…).

@@ -115,4 +115,3 @@ func equalTrim(a, b []TrimRule) bool {
 	}
 	return true
 }
-

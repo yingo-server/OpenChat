@@ -3,8 +3,10 @@
 package app
 
 import (
+	"net/http"
 	"time"
 
+	"github.com/yingo-server/OpenChat/server/internal/pkg/featureflags"
 	"github.com/yingo-server/OpenChat/server/internal/user/core/policy"
 	"github.com/yingo-server/OpenChat/server/internal/user/net/limit"
 )
@@ -41,6 +43,14 @@ type Config struct {
 
 	// EnableRateLimit 为 false 时所有规则置为极大值（仅测试/压测使用）。
 	EnableRateLimit bool
+
+	// ExtraRoutes 是 /ws 之外同一 HTTP 端口上的处理器（/api/auth/*、
+	// /healthz、SPA 静态资源）。nil = 非 /ws 路径返回 404。
+	ExtraRoutes http.Handler
+
+	// Flags 是进程级 feature flag 集；nil 时 New 自建一份默认集合。
+	// 装配层注入共享实例后，SIGHUP 重下发的 flag 对用户层立即可见。
+	Flags *featureflags.Flags
 }
 
 // RateLimit 单 kind 限流参数覆盖（对应 security-spec §1.2.2 一行）。

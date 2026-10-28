@@ -14,15 +14,15 @@ type Kind = uint32
 // 0-99 系统层：连接生命周期 / 鉴权 / 同步 / 错误
 // -------------------------------------------------------------------
 const (
-	KindHello        Kind = 1  // C→S 连接后首帧
-	KindAuth         Kind = 2  // C→S 鉴权
-	KindAuthResult   Kind = 3  // S→C 鉴权结果
+	KindHello        Kind = 1 // C→S 连接后首帧
+	KindAuth         Kind = 2 // C→S 鉴权
+	KindAuthResult   Kind = 3 // S→C 鉴权结果
 	KindPing         Kind = 4
 	KindPong         Kind = 5
-	KindResume       Kind = 6  // 断线重连补拉(last_seq)
+	KindResume       Kind = 6 // 断线重连补拉(last_seq)
 	KindResumeResult Kind = 7
-	KindSyncRequest  Kind = 8  // SYNC 请求
-	KindSyncResult   Kind = 9  // SYNC 应答
+	KindSyncRequest  Kind = 8 // SYNC 请求
+	KindSyncResult   Kind = 9 // SYNC 应答
 	KindError        Kind = 10
 	KindKicked       Kind = 11 // 全设备踢下线+断连
 	KindFeatureFlags Kind = 12 // 广播到 sys.> 的策略开关

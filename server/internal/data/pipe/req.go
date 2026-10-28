@@ -95,3 +95,20 @@ func (closedErr) Error() string { return "peer closed" }
 var errPeerClosed error = closedErr{}
 
 var _ transport.Peer = (*TestPeer)(nil)
+
+// SetEmit installs the assembly's chatpb-backed emitter without exposing the
+// unexported env type. The adapter receives the plain fields, so cmd/ can build
+// a *proto.Frame (Envelope + FrameMeta) while the pipe keeps its wire-agnostic
+// outbound representation.
+func SetEmit(fn func(kind uint32, requestID string, convID, userID uint64, payload []byte) *proto.Frame) {
+	if fn == nil {
+		Emit = DefaultEmit
+		return
+	}
+	Emit = func(e *env) *proto.Frame {
+		if e == nil {
+			return nil
+		}
+		return fn(e.Kind, e.RequestID, e.ConvID, e.UserID, e.Payload)
+	}
+}

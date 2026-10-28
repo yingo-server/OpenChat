@@ -28,30 +28,41 @@ type fakeConn struct {
 	closed bool
 }
 
-func (c *fakeConn) ID() uint64             { return c.id }
-func (c *fakeConn) UserID() int64          { return c.uid }
-func (c *fakeConn) DeviceID() string       { return c.device }
-func (c *fakeConn) Write(b []byte) bool    { c.mu.Lock(); c.got = append(c.got, append([]byte(nil), b...)); c.mu.Unlock(); return true }
-func (c *fakeConn) Close() error           { c.mu.Lock(); c.closed = true; c.mu.Unlock(); return nil }
-func (c *fakeConn) frames() [][]byte       { c.mu.Lock(); defer c.mu.Unlock(); return append([][]byte(nil), c.got...) }
-func (c *fakeConn) isClosed() bool         { c.mu.Lock(); defer c.mu.Unlock(); return c.closed }
+func (c *fakeConn) ID() uint64       { return c.id }
+func (c *fakeConn) UserID() int64    { return c.uid }
+func (c *fakeConn) DeviceID() string { return c.device }
+func (c *fakeConn) Write(b []byte) bool {
+	c.mu.Lock()
+	c.got = append(c.got, append([]byte(nil), b...))
+	c.mu.Unlock()
+	return true
+}
+func (c *fakeConn) Close() error { c.mu.Lock(); c.closed = true; c.mu.Unlock(); return nil }
+func (c *fakeConn) frames() [][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([][]byte(nil), c.got...)
+}
+func (c *fakeConn) isClosed() bool { c.mu.Lock(); defer c.mu.Unlock(); return c.closed }
 
 type fakeSession struct {
 	mu    sync.Mutex
 	conns map[uint64]*fakeConn
 }
 
-func newFakeSession() *fakeSession { return &fakeSession{conns: map[uint64]*fakeConn{}} }
+func newFakeSession() *fakeSession     { return &fakeSession{conns: map[uint64]*fakeConn{}} }
 func (s *fakeSession) add(c *fakeConn) { s.mu.Lock(); s.conns[c.id] = c; s.mu.Unlock() }
 func (s *fakeSession) Lookup(id uint64) session.Conn {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if c, ok := s.conns[id]; ok {
 		return c
 	}
 	return nil
 }
 func (s *fakeSession) GetByUser(uid int64) []session.Conn {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []session.Conn
 	for _, c := range s.conns {
 		if c.uid == uid {
@@ -70,7 +81,8 @@ func (s *fakeSession) Broadcast(uid int64, b []byte) int {
 	return n
 }
 func (s *fakeSession) All() []session.Conn {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var out []session.Conn
 	for _, c := range s.conns {
 		out = append(out, c)
@@ -89,10 +101,10 @@ type fakePeer struct {
 func newFakePeer() *fakePeer {
 	return &fakePeer{sent: make(chan *proto.Frame, 100), frames: make(chan *proto.Frame, 100), closed: make(chan struct{})}
 }
-func (p *fakePeer) Send(f *proto.Frame) error { p.sent <- f; return nil }
+func (p *fakePeer) Send(f *proto.Frame) error   { p.sent <- f; return nil }
 func (p *fakePeer) Frames() <-chan *proto.Frame { return p.frames }
-func (p *fakePeer) Close() error { p.once.Do(func() { close(p.closed) }); return nil }
-func (p *fakePeer) Layer() string { return "bridge" }
+func (p *fakePeer) Close() error                { p.once.Do(func() { close(p.closed) }); return nil }
+func (p *fakePeer) Layer() string               { return "bridge" }
 
 var _ transport.Peer = (*fakePeer)(nil)
 

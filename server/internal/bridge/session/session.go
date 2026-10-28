@@ -112,7 +112,10 @@ func (m *Manager) ConsumeControl(connID uint64, f *proto.Frame) bool {
 	case kinds.KindInternalHeartbeat, kinds.KindPing, kinds.KindPong:
 		m.touch(connID)
 		return true
-	case kinds.KindInternalFrameAck, kinds.KindMsgAck:
+	case kinds.KindInternalFrameAck:
+		// 904 是唯一的传输层帧确认。MSG_ACK(103) 是业务消息，必须走
+		// Router/Egress 回给用户层——曾在此被旁路吞掉，导致数据层 ack 永远
+		// 到不了客户端（装配验收用例：MSG_SEND → MSG_ACK）。
 		m.touch(connID)
 		return true
 	case kinds.KindInternalSubscribe:

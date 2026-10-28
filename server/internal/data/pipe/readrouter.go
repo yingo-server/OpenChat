@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
 	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
+	"github.com/yingo-server/OpenChat/server/internal/data/store"
 	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
 )
 
