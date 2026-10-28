@@ -37,3 +37,16 @@ CREATE TABLE IF NOT EXISTS sys.archive_runs (
     moved_rows   BIGINT,
     status       TEXT   NOT NULL  -- running / ok / failed
 );
+
+-- Append-only enforcement: the application write role may only INSERT.
+-- Defense-in-depth on the DB side (docs/security-spec.md §5.5):
+-- triggers reject UPDATE/DELETE on sys.audit_log.
+CREATE OR REPLACE FUNCTION sys.audit_log_block_mutation() RETURNS trigger AS $$
+BEGIN
+    RAISE EXCEPTION 'sys.audit_log is append-only';
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_audit_log_no_update
+    BEFORE UPDATE OR DELETE ON sys.audit_log
+    FOR EACH ROW EXECUTE FUNCTION sys.audit_log_block_mutation();
