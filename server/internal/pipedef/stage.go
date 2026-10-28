@@ -39,6 +39,10 @@ func (s *TeeStage) Run(ctx context.Context) error {
 	if s.In == nil || s.Out == nil {
 		return nil
 	}
+	// A passthrough stage owns Out: downstream ranges until it is closed, so
+	// every return path (In closed / ctx done) closes it. Without this the
+	// pipeline would stall forever on shutdown.
+	defer close(s.Out)
 	for {
 		select {
 		case <-ctx.Done():
@@ -116,4 +120,12 @@ func (s *EchoStage) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+// Target 是路由/投递目标的级间契约：层 + bus topic。
+// 定义在契约层（非兄弟组件包），router 产出、egress 消费，
+// 二者不得互相 import（CI import-lint）。
+type Target struct {
+	Layer string
+	Topic string
 }

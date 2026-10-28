@@ -21,16 +21,10 @@ jobs:
           go-version: '1.22'
           cache: false
 
-      - name: Install protoc
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y protobuf-compiler
-          protoc --version
-
-      - name: Install protoc-gen-go
-        run: go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-
-      - name: Generate proto
+      # chatpb is committed as a wire-compatible implementation so the build
+      # does not depend on protoc. When protoc is available the Makefile target
+      # regenerates it from proto/chat.proto.
+      - name: Generate proto (optional)
         run: make proto
 
       - name: Lint

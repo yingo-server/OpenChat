@@ -42,7 +42,7 @@ func TestTeeStagePassesAndCopies(t *testing.T) {
 
 	got := 0
 	for f := range out {
-		if f.Seq != got+1 {
+		if int(f.Seq) != got+1 {
 			t.Errorf("out of order: %v", f.Seq)
 		}
 		got++

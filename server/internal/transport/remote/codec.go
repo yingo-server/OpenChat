@@ -22,8 +22,6 @@ import (
 	"sync"
 	"time"
 
-	"google.golang.org/protobuf/encoding/protojson"
-
 	chatpb "github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
 
 	"github.com/yingo-server/OpenChat/server/internal/proto"
@@ -38,9 +36,6 @@ const (
 	// MaxBodyLen 单帧 body 上限（>256KB 判非法帧断连，FrameRW 契约）。
 	MaxBodyLen = 256 * 1024
 )
-
-// Kind 与 kinds 包一致：uint32。
-type Kind = uint32
 
 // ErrBadFrame 非法帧（magic/版本/超长）。
 var ErrBadFrame = errors.New("remote: bad frame")
@@ -107,12 +102,17 @@ func DecodeFrame(r io.Reader) (*proto.Frame, error) {
 // DecodeFrameKind 从连接读一帧，返回 (frame, wireKind)。wireKind 是线路
 // 头部的 kind（握手帧的 kind 在头部而非 body）。
 func DecodeFrameKind(r io.Reader) (*proto.Frame, uint32, error) {
+	// Read the magic first: a bad peer must be rejected without waiting for a
+	// full header (a slow/incomplete writer would otherwise pin the reader).
 	hdr := make([]byte, HeaderLen)
-	if _, err := io.ReadFull(r, hdr); err != nil {
+	if _, err := io.ReadFull(r, hdr[:4]); err != nil {
 		return nil, 0, err
 	}
 	if string(hdr[:4]) != Magic {
 		return nil, 0, ErrBadFrame
+	}
+	if _, err := io.ReadFull(r, hdr[4:]); err != nil {
+		return nil, 0, err
 	}
 	if hdr[4] != Version1 {
 		return nil, 0, ErrBadFrame
@@ -134,11 +134,15 @@ func marshalEnvelope(f *proto.Frame) json.RawMessage {
 	if f == nil || f.Env == nil {
 		return nil
 	}
-	b, err := protojson.Marshal(f.Env)
+	b, err := f.Env.Marshal()
 	if err != nil {
 		return nil
 	}
-	return b
+	enc, err := json.Marshal(b) // []byte -> base64 string
+	if err != nil {
+		return nil
+	}
+	return enc
 }
 
 func decodeBody(kind uint32, body []byte) (*proto.Frame, error) {
@@ -156,8 +160,12 @@ func decodeBody(kind uint32, body []byte) (*proto.Frame, error) {
 	}
 	f.Meta = meta
 	if len(fw.Envelope) > 0 {
+		var raw []byte
+		if err := json.Unmarshal(fw.Envelope, &raw); err != nil {
+			return nil, fmt.Errorf("remote: bad envelope: %w", err)
+		}
 		env := &chatpb.Envelope{}
-		if err := protojson.Unmarshal(fw.Envelope, env); err != nil {
+		if err := env.Unmarshal(raw); err != nil {
 			return nil, fmt.Errorf("remote: bad envelope: %w", err)
 		}
 		f.Env = env

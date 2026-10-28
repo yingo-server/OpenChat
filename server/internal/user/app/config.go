@@ -1,0 +1,107 @@
+// Package app 组装 usergw（docs/user-frontend-design.md §1.2 app 层）：
+// config + server.go。main 只做接线，任何业务逻辑不在这里。
+package app
+
+import (
+	"time"
+
+	"github.com/yingo-server/OpenChat/server/internal/user/core/policy"
+	"github.com/yingo-server/OpenChat/server/internal/user/net/limit"
+)
+
+func limitRule(rate, burst, capacity float64, maxPayload int, silent bool) limit.Rule {
+	return limit.Rule{Rate: rate, Burst: burst, Capacity: capacity, MaxPayload: maxPayload, Silent: silent}
+}
+
+// Config 是 usergw 的装配配置（监听/桥接/限流/日志）。
+// 可热更字段见 policy.Config（SIGHUP 由批 3 的 sig 包调用 Server.ReloadPolicy）。
+type Config struct {
+	// ListenAddr WS 监听地址，如 ":8081"。
+	ListenAddr string
+	// PublicOrigin 允许的浏览器 Origin（如 https://chat.example.com）；
+	// 为空时仅做 Host 同源比较。
+	PublicOrigin string
+	// BridgeAddr 桥接地址（TCP/UDS）。本批次 Peer 由装配层注入，仅记录与健康展示。
+	BridgeAddr string
+	// CookieName 承载 access token 的 Cookie 名，默认 access_token。
+	CookieName string
+	// LogLevel "debug"/"info"/"warn"/"error"，默认 info。
+	LogLevel string
+
+	// 以下为零值即取 policy 默认值的覆盖项。
+	HeartbeatInterval time.Duration
+	ReadTimeout       time.Duration
+	MaxFrameBytes     int
+	WriteChanCap      int
+	MaxConnsPerUser   int
+	DrainTimeout      time.Duration
+
+	// RateLimits 覆盖默认限流规则（key=kind）。nil 表示使用 security-spec 默认表。
+	RateLimits map[uint32]RateLimit
+
+	// EnableRateLimit 为 false 时所有规则置为极大值（仅测试/压测使用）。
+	EnableRateLimit bool
+}
+
+// RateLimit 单 kind 限流参数覆盖（对应 security-spec §1.2.2 一行）。
+type RateLimit struct {
+	Rate       float64
+	Burst      float64
+	Capacity   float64
+	MaxPayload int
+	Silent     bool
+}
+
+// DefaultConfig 返回一个可直接监听本机端口的默认配置（测试/开发）。
+func DefaultConfig() Config {
+	return Config{
+		ListenAddr:        "127.0.0.1:8081",
+		PublicOrigin:      "",
+		CookieName:        "access_token",
+		LogLevel:          "info",
+		HeartbeatInterval: 25 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		MaxFrameBytes:     64 << 10,
+		WriteChanCap:      64,
+		MaxConnsPerUser:   3,
+		DrainTimeout:      10 * time.Second,
+		EnableRateLimit:   true,
+	}
+}
+
+// Policy 把 app.Config 展开成 policy.Config（默认值 + 覆盖）。
+func (c Config) Policy() policy.Config {
+	p := policy.Default()
+	if c.HeartbeatInterval > 0 {
+		p.Heartbeat.Interval = c.HeartbeatInterval
+	}
+	if c.ReadTimeout > 0 {
+		p.Heartbeat.ReadTimeout = c.ReadTimeout
+	}
+	if c.MaxFrameBytes > 0 {
+		p.MaxFrameBytes = c.MaxFrameBytes
+	}
+	if c.WriteChanCap > 0 {
+		p.WriteChanCap = c.WriteChanCap
+	}
+	if c.MaxConnsPerUser > 0 {
+		p.MaxConnsPerUser = c.MaxConnsPerUser
+	}
+	if c.DrainTimeout > 0 {
+		p.DrainTimeout = c.DrainTimeout
+	}
+	for kind, r := range c.RateLimits {
+		p.Limits.Rules[kind] = limitRule(r.Rate, r.Burst, r.Capacity, r.MaxPayload, r.Silent)
+	}
+	if !c.EnableRateLimit {
+		// 测试/压测：放大到实际上无限。
+		for k, r := range p.Limits.Rules {
+			r.Rate = 1e9
+			r.Burst = 1e9
+			r.Capacity = 1e9
+			p.Limits.Rules[k] = r
+		}
+		p.Limits.DefaultRule = limitRule(1e9, 1e9, 1e9, 0, false)
+	}
+	return p
+}

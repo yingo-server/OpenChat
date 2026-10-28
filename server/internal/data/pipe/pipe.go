@@ -1,0 +1,309 @@
+package pipe
+
+import (
+	"context"
+
+	"github.com/yingo-server/OpenChat/server/internal/data/cache"
+	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
+	"github.com/yingo-server/OpenChat/server/internal/data/store"
+	"github.com/yingo-server/OpenChat/server/internal/data/store/sqlite"
+	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
+	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenChat/server/internal/transport"
+)
+
+// ColdDeps bundles the optional cold-store dependencies of the pipe. Any nil
+// field means the feature is absent — the pipe degrades (hot-only reads, no
+// audit) rather than refusing to start.
+type ColdDeps struct {
+	Cold  ColdReader         // read path cold-merge (optional)
+	Audit store.AuditJournal // domain event audit trail (optional)
+}
+
+const (
+	writeChBuf     = 128    // D-1 red line: 满则 BUSY NACK，绝不阻塞
+	outChBuf       = 128    // outbound lane to the peer
+	dedupCapacity  = 100000 // memory dedup LRU: 10 万
+)
+
+// HotStores is the hot-store surface the pipe needs. *sqlite.DB satisfies it;
+// tests inject fakes.
+type HotStores interface {
+	store.MsgWriter
+	store.MsgReader
+	store.IdentityStore
+	store.ConvStore
+	store.SysStore
+}
+
+// Pipe is the data layer's entry assembly: consumes internal frames from a
+// transport.Peer, dispatches to domain handlers, drives the write pipeline
+// (seqalloc → writech → flusher group commit) and the read router, and sends
+// replies back over the peer.
+//
+// Goroutine group (docs: 单 goroutine 组): dispatcher loop (Run), one flusher
+// goroutine, one sender goroutine. All channels bounded; backpressure is
+// channel semantics.
+type Pipe struct {
+	peer transport.Peer
+	hot  HotStores
+	cold ColdDeps
+	lg   *log.Logger
+
+	writeCh chan ReadyMsg
+	outCh   chan *env
+
+	// FrameSource converts *proto.Frame → Req (assembly installs the
+	// chatpb-backed one; default is the shell source).
+	FrameSource FrameSource
+
+	dedup *Dedup
+	seq   *seqAlloc
+	fl    *flusher
+	rr    *readRouter
+	msg   *msgDomain
+	conv  *convDomain
+	ident *identityDomain
+	sys   *sysDomain
+	cache *cache.Cache
+
+	senderDone chan struct{}
+}
+
+// New assembles the pipe over the real hot SQLite store. cold carries
+// optional cold deps; pol is accepted for signature stability but unused by
+// the pipe's mechanism (policy is the jobs'/callers' concern — mechanism/
+// policy separation); lg is the component logger.
+//
+// p := pipe.New(peer, hot, coldDeps, pol, lg); go p.Run(ctx);
+// SIGTERM: p.Drain(ctx) → exit 143.
+func New(peer transport.Peer, hot *sqlite.DB, cold ColdDeps, pol any, lg *log.Logger) *Pipe {
+	return NewStores(peer, hot, cold, lg)
+}
+
+// NewStores is New with the hot store behind the structural interface
+// (tests inject fakes; production passes *sqlite.DB).
+func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger) *Pipe {
+	if lg == nil {
+		lg = log.For("data")
+	}
+	p := &Pipe{
+		peer:        peer,
+		hot:         hot,
+		cold:        cold,
+		lg:          lg,
+		writeCh:     make(chan ReadyMsg, writeChBuf),
+		outCh:       make(chan *env, outChBuf),
+		FrameSource: ShellFrameSource,
+		dedup:       NewDedup(dedupCapacity),
+		cache:       cache.New(cache.DefaultCapacity),
+		senderDone:  make(chan struct{}),
+	}
+	p.seq = &seqAlloc{w: hot}
+	p.fl = newFlusher(hot, p.outCh, p.writeCh, p.dedup, lg)
+	p.rr = &readRouter{r: hot, cold: cold.Cold}
+	p.msg = &msgDomain{conv: hot, cache: p.cache, msg: hot, dedup: p.dedup}
+	p.conv = &convDomain{conv: hot, cache: p.cache}
+	p.ident = &identityDomain{id: hot, cache: p.cache}
+	p.sys = &sysDomain{sys: hot}
+	return p
+}
+
+// Outbound exposes the outbound env lane (tests/assembly tapping).
+func (p *Pipe) Outbound() <-chan *env { return p.outCh }
+
+// Run starts the goroutine group and blocks until ctx is canceled or the
+// peer's frame stream closes.
+func (p *Pipe) Run(ctx context.Context) {
+	fctx, fcancel := context.WithCancel(ctx)
+	defer fcancel()
+	go p.fl.run(fctx)
+	go p.sender()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case f, ok := <-p.peer.Frames():
+			if !ok {
+				return
+			}
+			p.dispatch(ctx, p.FrameSource(f))
+		}
+	}
+}
+
+// sender drains outCh into the peer via Emit. Send errors are logged, not
+// fatal (crash-only; acks are recoverable through dedup + DB constraint).
+func (p *Pipe) sender() {
+	defer close(p.senderDone)
+	for e := range p.outCh {
+		if err := p.peer.Send(Emit(e)); err != nil {
+			p.lg.Warn("pipe: peer send failed", "err", err.Error())
+		}
+	}
+}
+
+// Drain implements SIGTERM semantics: stop accepting writes, flush every
+// buffered message with one final group commit, then let the outbound lane
+// empty. The 30s budget is the CALLER's deadline (pass ctx with timeout).
+func (p *Pipe) Drain(ctx context.Context) {
+	close(p.writeCh) // flusher: final flush on channel close, then exits
+	select {
+	case <-p.fl.done:
+	case <-ctx.Done():
+		p.lg.Warn("drain: flusher deadline exceeded")
+	}
+	close(p.outCh)
+	select {
+	case <-p.senderDone:
+	case <-ctx.Done():
+		p.lg.Warn("drain: sender deadline exceeded; outbound lane may hold acks")
+	}
+}
+
+func (p *Pipe) dispatch(ctx context.Context, req Req) {
+	switch req.Kind {
+	case uint32(kinds.KindMsgSend): // 101 on the internal lane
+		p.onMsgSend(ctx, req)
+	case uint32(kinds.KindReadHistory): // 920
+		p.onReadHistory(ctx, req)
+	case uint32(kinds.KindConvDataRequest): // 930
+		p.onConvData(ctx, req)
+	case uint32(kinds.KindIdentityRequest): // 940
+		p.onIdentity(ctx, req)
+	case uint32(kinds.KindFlagGet), uint32(kinds.KindFlagSet): // 970/971
+		p.onFlag(ctx, req)
+	default:
+		p.lg.Debug("pipe: unhandled kind", "kind", kinds.KindName(req.Kind))
+	}
+}
+
+// onMsgSend: write-path gates then writech enqueue (docs §1.2).
+func (p *Pipe) onMsgSend(ctx context.Context, req Req) {
+	var pld wire.MessagePayload
+	if len(req.Payload) > 0 {
+		if err := wire.Unmarshal(req.Payload, &pld); err != nil {
+			p.reply(buildErrEnv(req, 400, "bad payload"))
+			return
+		}
+	}
+	cid, sender := int64(req.ConvID), int64(req.UserID)
+
+	admit := p.msg.admit(ctx, cid, sender, pld, nowMilli())
+	switch {
+	case admit.Replay != nil:
+		// dedup hit: replay the ORIGINAL ack (same msg_id/seq).
+		p.reply(buildAckEnv(cid, pld.ClientMsgID, admit.Replay.MsgID, admit.Replay.Seq, 0))
+		return
+	case admit.Code != 0:
+		// 403 etc: result composed HERE; the message never enters writech.
+		p.reply(buildErrEnv(req, admit.Code, admit.Reason))
+		return
+	}
+
+	// seqalloc: allocate the seq (per-conv grouping happens when multiple
+	// messages share one dispatch pass; here one message per frame).
+	msgs := []store.PendingMsg{{
+		Cid: cid, SenderID: sender, ClientMsgID: pld.ClientMsgID,
+		Content: req.Payload, SentAt: nowSec(),
+	}}
+	if err := p.seq.assign(ctx, msgs); err != nil {
+		p.reply(buildErrEnv(req, 500, "seq alloc failed"))
+		return
+	}
+	ready := ReadyMsg{Msg: msgs[0], Trace: req.TraceID}
+
+	// D-1 red line: writech full → immediate BUSY NACK; never block.
+	select {
+	case p.writeCh <- ready:
+	default:
+		p.reply(buildErrEnv(req, 503, "busy"))
+	}
+}
+
+func (p *Pipe) onReadHistory(ctx context.Context, req Req) {
+	var r wire.ReadHistory
+	if err := wire.Unmarshal(req.Payload, &r); err != nil {
+		p.reply(buildErrEnv(req, 400, "bad payload"))
+		return
+	}
+	if _, err := p.msg.memberCheck(ctx, int64(r.ConvID), int64(req.UserID)); err != nil {
+		p.reply(buildErrEnv(req, 403, "not a member"))
+		return
+	}
+	res, err := p.rr.handle(ctx, r, int64(req.UserID))
+	if err != nil {
+		p.reply(buildErrEnv(req, 500, "read failed"))
+		return
+	}
+	p.reply(buildResultEnv(req, uint32(kinds.KindReadHistoryResult), readHistoryResultPayload(res)))
+}
+
+func (p *Pipe) onConvData(ctx context.Context, req Req) {
+	var raw struct {
+		Op        uint32 `json:"op,omitempty"`
+		ConvID    uint64 `json:"convId,omitempty"`
+		Body      []byte `json:"body,omitempty"`
+		RequestID string `json:"requestId,omitempty"`
+	}
+	if err := wire.Unmarshal(req.Payload, &raw); err != nil {
+		p.reply(buildErrEnv(req, 400, "bad payload"))
+		return
+	}
+	cid := raw.ConvID
+	if cid == 0 {
+		cid = req.ConvID
+	}
+	r := p.conv.handle(ctx, int64(req.UserID), raw.Op, cid, raw.Body)
+	pl, _ := wire.Marshal(wire.DataResult{Op: raw.Op, Ok: r.OK, Error: r.Error, RequestID: raw.RequestID})
+	p.reply(buildResultEnv(req, uint32(kinds.KindConvDataResult), pl))
+}
+
+func (p *Pipe) onIdentity(ctx context.Context, req Req) {
+	var raw struct {
+		Op        uint32 `json:"op,omitempty"`
+		UserID    uint64 `json:"userId,omitempty"`
+		Body      []byte `json:"body,omitempty"`
+		RequestID string `json:"requestId,omitempty"`
+	}
+	if err := wire.Unmarshal(req.Payload, &raw); err != nil {
+		p.reply(buildErrEnv(req, 400, "bad payload"))
+		return
+	}
+	uid := raw.UserID
+	if uid == 0 {
+		uid = req.UserID
+	}
+	r := p.ident.handle(ctx, raw.Op, uid, raw.Body)
+	pl, _ := wire.Marshal(wire.DataResult{Op: raw.Op, Ok: r.OK, Error: r.Error, RequestID: raw.RequestID})
+	p.reply(buildResultEnv(req, uint32(kinds.KindIdentityResult), pl))
+}
+
+func (p *Pipe) onFlag(ctx context.Context, req Req) {
+	var fr wire.FlagRequest
+	if err := wire.Unmarshal(req.Payload, &fr); err != nil {
+		p.reply(buildErrEnv(req, 400, "bad payload"))
+		return
+	}
+	if req.Kind == uint32(kinds.KindFlagSet) {
+		fr.Write = true
+	}
+	res, err := p.sys.handleFlag(ctx, fr)
+	if err != nil {
+		p.reply(buildErrEnv(req, 500, err.Error()))
+		return
+	}
+	pl, _ := wire.Marshal(res)
+	p.reply(buildResultEnv(req, uint32(kinds.KindFlagResult), pl))
+}
+
+// reply places one env on the outbound lane (non-blocking: the lane is
+// bounded; a full lane drops the reply — clients retry idempotently).
+func (p *Pipe) reply(e *env) {
+	select {
+	case p.outCh <- e:
+	default:
+		p.lg.Warn("pipe: outbound lane full; reply dropped")
+	}
+}

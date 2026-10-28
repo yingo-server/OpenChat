@@ -1,6 +1,7 @@
 package migrate
 
 import (
+	"strconv"
 	"os"
 	"path/filepath"
 	"testing"
@@ -120,9 +121,10 @@ func TestSortMigrations(t *testing.T) {
 		{Domain: "conv", Version: 2},
 	}
 	got := SortMigrations(ms)
-	want := []string{"identity/1", "conv/2", "conv/10", "msg/1", "msg/2"}
+	// Deterministic order: domain name ascending, then version ascending.
+	want := []string{"conv/2", "conv/10", "identity/1", "msg/1", "msg/2"}
 	for i, w := range want {
-		g := got[i].Domain + "/" + string(rune('0'+got[i].Version))
+		g := got[i].Domain + "/" + strconv.Itoa(got[i].Version)
 
 		if g != w {
 			t.Fatalf("pos %d: got %s want %s", i, g, w)

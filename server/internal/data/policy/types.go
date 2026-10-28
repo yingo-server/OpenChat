@@ -28,7 +28,14 @@ type Policy struct {
 
 // ArchiveConfig is the archive job policy.
 type ArchiveConfig struct {
-	Cron         string `json:"cron"`           // e.g. "0 4 * * *"
+	Cron string `json:"cron"` // e.g. "0 4 * * *"
+	// NOTE (jobber contract): the job scheduler does NOT implement full cron.
+	// It accepts exactly three forms: "@daily HH:00", "@daily HH:MM" and
+	// "interval N" (seconds). Classic 5-field values like "0 4 * * *" are
+	// ALSO accepted by job.ParseCronKind but reduced to their hour:minute
+	// (daily semantics); fields with */n or lists are rejected at parse time.
+	// Complex schedules must be simplified by the ASSEMBLY layer into the
+	// "@daily HH:MM" form before registering the job unit.
 	BatchSize    int    `json:"batch_size"`    // rows per copy transaction, 1..50000
 	BatchPauseMS int    `json:"batch_pause_ms"` // pause between batches, 0 allowed
 	// ActiveExempt: conversations with recent activity are skipped this run.

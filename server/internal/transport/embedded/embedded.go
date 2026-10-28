@@ -4,6 +4,7 @@
 package embedded
 
 import (
+	"time"
 	"errors"
 	"sync"
 
@@ -174,6 +175,10 @@ func (b *Bridge) Close() error {
 
 // ---- 总线端 Peer ----
 
+// fanoutGrace bounds how long the in-process bus waits for one layer before
+// treating it as slow and dropping the frame.
+const fanoutGrace = 100 * time.Millisecond
+
 type busPeer struct{ b *Bridge }
 
 func (p *busPeer) Layer() string { return "bridge" }
@@ -190,7 +195,7 @@ func (p *busPeer) Send(f *proto.Frame) error {
 		select {
 		case lk.toLayer <- f:
 		case <-lk.done():
-		default: // 层消费慢 → 丢弃（bus 禁令：不做背压决策）
+		case <-time.After(fanoutGrace): // 层消费慢（超过宽限）→ 丢弃（bus 不做背压决策）
 		}
 	}
 	return nil
@@ -221,3 +226,35 @@ func (p *layerPeer) Close() error {
 	p.lk.close()
 	return nil
 }
+
+// SendTo 向指定层投递一帧（按层名选择性发送）。
+// 用于桥接流水线 Egress 按 Target.Layer 精确下发——busPeer.Send 是
+// 全层扇出，无法区分目标层。层不存在返回 ErrNoLayer。
+var ErrNoLayer = errors.New("embedded transport: no such layer")
+
+func (b *Bridge) SendTo(layer string, f *proto.Frame) error {
+	b.mu.Lock()
+	links := append([]*link(nil), b.links...)
+	closed := b.closed
+	b.mu.Unlock()
+	if closed {
+		return ErrClosed
+	}
+	for _, lk := range links {
+		if lk.layer != layer {
+			continue
+		}
+		select {
+		case lk.toLayer <- f:
+			return nil
+		case <-lk.done():
+			return ErrClosed
+		default:
+			return ErrLayerBusy
+		}
+	}
+	return ErrNoLayer
+}
+
+// ErrLayerBusy 目标层消费慢（队列满）。
+var ErrLayerBusy = errors.New("embedded transport: layer queue full")

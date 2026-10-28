@@ -108,20 +108,20 @@ func (r *Runner) Discover() ([]Migration, error) {
 
 	byDomain := map[string][]Migration{}
 	for _, p := range files {
-		rel, rerr := fs.Rel(r.Dir, p)
-		if rerr != nil {
-			return nil, rerr
-		}
-		parts := strings.Split(rel, "/") // root/domain/file.sql
-		if len(parts) != 3 {
+		// fs.FS paths are slash-separated and rooted at the FS root; derive
+		// the relative path by trimming the walk root prefix (fs.Rel does not
+		// exist in the stdlib).
+		rel := strings.TrimPrefix(p, root+"/")
+		parts := strings.Split(rel, "/") // domain/file.sql (root already trimmed)
+		if len(parts) != 2 {
 			return nil, fmt.Errorf("migrate: unexpected layout %q (want %s/{domain}/{NNNN}_{name}.sql)", rel, root)
 		}
-		domain, base := parts[1], parts[2]
+		domain, base := parts[0], parts[1]
 		version, ok := parseVersion(base)
 		if !ok {
 			return nil, fmt.Errorf("migrate: bad file name %q (want NNNN_name.sql)", base)
 		}
-		body, rerr := r.Dir.ReadFile(p)
+		body, rerr := fs.ReadFile(r.Dir, p)
 		if rerr != nil {
 			return nil, fmt.Errorf("migrate: read %s: %w", p, rerr)
 		}

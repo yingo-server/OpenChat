@@ -44,6 +44,7 @@ type Redactor interface {
 type redactedString struct{ s string }
 
 func (r redactedString) String() string    { return r.s }
+func (r redactedString) Redacted() string { return r.s }
 func (r redactedString) MarshalJSON() ([]byte, error) { return json.Marshal(r.s) }
 
 // RedactPhone 手机号脱敏：保留前 3 后 4（138****1234）；不足 7 位则全遮蔽。
@@ -99,15 +100,6 @@ func (g *Logger) log(level Level, msg string, kv ...any) {
 		return
 	}
 	rec := make(map[string]json.RawMessage, 5+len(kv)/2)
-	put := func(k string, v any) {
-		var b []byte
-		if r, ok := v.(Redactor); ok {
-			b, _ = json.Marshal(r.Redacted())
-		} else {
-			b, _ = json.Marshal(v)
-		}
-		rec[k] = b
-	}
 	var fields map[string]json.RawMessage
 	if len(kv) > 0 {
 		fields = make(map[string]json.RawMessage, len(kv)/2)

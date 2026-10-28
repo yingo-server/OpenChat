@@ -42,6 +42,7 @@ type remotePeer struct {
 
 	closeOnce sync.Once
 	closeErr  error
+	ctrl chan *proto.Frame // 控制面帧（旁路）
 }
 
 // peerFramesChan 接收流缓冲深度。
@@ -54,6 +55,7 @@ func newRemotePeer(layer string, conn net.Conn) *remotePeer {
 		conn:   conn,
 		cw:     newConnWriter(conn),
 		frames: make(chan *proto.Frame, framesChanCap),
+		ctrl:   make(chan *proto.Frame, controlChanCap),
 	}
 	return p
 }
@@ -80,6 +82,7 @@ func (p *remotePeer) Close() error {
 // readLoop 读 goroutine：解码 → frames channel；任何错误即关连接+关 channel。
 func (p *remotePeer) readLoop(ctx context.Context) {
 	defer close(p.frames)
+	defer close(p.ctrl)
 	for {
 		_ = p.conn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		f, err := DecodeFrame(p.conn)
@@ -88,11 +91,15 @@ func (p *remotePeer) readLoop(ctx context.Context) {
 			p.Close()
 			return
 		}
-		switch f.Kind {
-		case kinds.KindInternalHeartbeat:
-			continue // 心跳由读循环自应答（见下）
-		case kinds.KindInternalFrameAck:
-			continue // ACK 由 AckTracker 层处理，传输层透传丢弃
+		// 控制面（902-909：HELLO/SUBSCRIBE/FRAME_ACK/HEARTBEAT）不进数据面
+		// 流水线：它们经 Control() 交给 SessionManager 旁路消费（一切皆帧，
+		// 但控制面与数据面严格分离）。
+		if f.Kind >= kinds.KindInternalHello && f.Kind <= controlCeiling {
+			select {
+			case p.ctrl <- f:
+			default: // 控制面队列满：丢弃并计数（心跳等可丢）
+			}
+			continue
 		}
 		select {
 		case p.frames <- f:
@@ -103,13 +110,23 @@ func (p *remotePeer) readLoop(ctx context.Context) {
 	}
 }
 
+// controlChanCap 控制面帧队列容量（心跳等允许丢弃）。
+const controlChanCap = 64
+
+// controlCeiling 是控制面帧号段上界（902..909）。
+const controlCeiling = 909
+
+// Control 暴露控制面帧流（SessionManager 旁路消费）。非接口方法：需要它的
+// 装配层用类型断言或接口 ControlPeer 取用。
+func (p *remotePeer) Control() <-chan *proto.Frame { return p.ctrl }
+
 // Serve 在监听器上循环接受层连接：accept → HMAC 握手 → 启动 Peer 泵。
 // ctx 结束即关闭监听器并返回。auth 为 nil 表示跳过握手（仅测试）。
 func Serve(ctx context.Context, ln net.Listener, auth *HMACAuth) error {
 	if ul, ok := ln.(*net.UnixListener); ok {
 		// UDS 文件权限 0600：仅本进程属主可连
 		_ = os.Chmod(ul.Addr().String(), 0o600)
-		_ = ul.SetUnlinkOnClose(true)
+		ul.SetUnlinkOnClose(true)
 	}
 	go func() {
 		<-ctx.Done()

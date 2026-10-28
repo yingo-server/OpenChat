@@ -1,0 +1,11 @@
+# chatd embedded 模式默认配置（简化 TOML：key = value，# 注释）
+mode = "embedded"
+
+# bridge 监听地址（split 模式的 BUS_SOCKET；embedded 记录用）
+listen = "unix:///run/openchat/bus.sock"
+
+# 日志级别：debug | info | warn | error（stdout JSON lines → journald）
+log_level = "info"
+
+# AdminAPI HTTP 监听地址（空 = 不启动）
+admin_listen = "127.0.0.1:7780"

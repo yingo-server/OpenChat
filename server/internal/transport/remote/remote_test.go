@@ -168,14 +168,19 @@ func TestPipeHandshakeBidirectional(t *testing.T) {
 		serverDone <- p
 	}()
 
-	// 客户端握手（复用 Dial 的握手逻辑但注入管道连接）
-	go func() {
-		_ = c1.SetDeadline(time.Now().Add(handshakeTimeout))
-		hello, _ := auth.ClientHello("user", []string{"sys.>"})
-		buf, _ := EncodeControl(1, kinds.KindInternalHello, hello)
-		_, _ = c1.Write(buf)
-		_ = c1.SetDeadline(time.Time{})
-	}()
+	// 客户端握手（复用 Dial 的握手逻辑但注入管道连接）。握手必须与
+	// readLoop 串行：两条 goroutine 同时读同一个 net.Conn 会互相切碎流。
+	hello, _ := auth.ClientHello("user", []string{"sys.>"})
+	buf, _ := EncodeControl(1, kinds.KindInternalHello, hello)
+	if _, werr := c1.Write(buf); werr != nil {
+		t.Fatalf("client write hello: %v", werr)
+	}
+	// The server answers HELLO with HELLO_ACK on the same socket; a real Dial
+	// consumes it before handing the conn to the peer.
+	if _, derr := DecodeControl(c1); derr != nil {
+		t.Fatalf("client read hello_ack: %v", derr)
+	}
+	_ = c1.SetDeadline(time.Time{})
 	clientPeer := newRemotePeer("user", c1)
 	go clientPeer.readLoop(ctx)
 
@@ -234,6 +239,12 @@ func TestHandshakeWrongKeyRejected(t *testing.T) {
 		hello, _ := badAuth.ClientHello("user", nil)
 		buf, _ := EncodeControl(1, kinds.KindInternalHello, hello)
 		_, _ = c1.Write(buf)
+		// The server answers HELLO with HELLO_ACK on the same socket; a real
+		// Dial consumes it before handing the conn to the peer. Mirror that
+		// here, otherwise the ack would surface as the first data frame.
+		if _, derr := DecodeControl(c1); derr != nil {
+			return
+		}
 		_ = c1.SetDeadline(time.Time{})
 	}()
 
@@ -300,7 +311,7 @@ func TestFrameCodecRoundTrip(t *testing.T) {
 	f := &proto.Frame{
 		Seq:  99,
 		Kind: 100,
-		Meta: &proto.FrameMeta{TraceID: "trace-99", ConnID: "c1", UserID: "u1"},
+		Meta: &proto.FrameMeta{TraceID: "trace-99", ConnID: 1},
 	}
 	buf, err := EncodeFrame(f, 0)
 	if err != nil {
@@ -315,7 +326,7 @@ func TestFrameCodecRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Seq != 99 || got.Kind != 100 || got.Meta.TraceID != "trace-99" ||
-		got.Meta.ConnID != "c1" || got.Meta.UserID != "u1" {
+		got.Meta.ConnID != 1 {
 		t.Fatalf("round trip mismatch: %+v", got)
 	}
 }

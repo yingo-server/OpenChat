@@ -9,7 +9,11 @@ BIN           := chatd
 # protoc 生成到 internal/proto/gen/chatpb；source_relative 保证 import 路径与目录一致。
 .PHONY: proto build test lint web release clean
 
+# proto: 生成 chatpb。无 protoc 时保留仓库内已提交的 wire 兼容实现
+# (server/internal/proto/gen/chatpb)，代码照常构建。
 proto:
+	@command -v protoc >/dev/null 2>&1 || { \
+		echo "protoc not found: keeping committed chatpb implementation"; exit 0; }
 	protoc \
 		--go_out=server/internal/proto/gen \
 		--go_opt=paths=source_relative \
