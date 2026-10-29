@@ -171,6 +171,7 @@ jobs:
           fi
           VER="$(git describe --tags --always 2>/dev/null | tr -c 'A-Za-z0-9._-' '-')"
           NAME="openchat-$VER-$GOOS-$GOARCH.$PKG"
+          mkdir -p dist
           if [ "$PKG" = zip ]; then (cd stage && zip -qr "../dist/$NAME" .); else tar -czf "dist/$NAME" -C stage .; fi
           ls -lh dist/
 
