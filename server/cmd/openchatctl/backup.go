@@ -72,7 +72,7 @@ func cmdBackup(ctx context.Context, e *environment, g globals, args []string) er
 	path := hotDBPath(e, *dbPath)
 	fi, statErr := e.stat(path)
 	if statErr != nil {
-		return fmt.Errorf("热库不存在: %s (%v)", path, statErr)
+		return notFoundf("热库不存在: %s (%v)", path, statErr)
 	}
 	dir := *to
 	if dir == "" {
@@ -117,7 +117,7 @@ func cmdBackup(ctx context.Context, e *environment, g globals, args []string) er
 func findBackupScript(e *environment, explicit string) (string, error) {
 	if explicit != "" {
 		if _, err := e.stat(explicit); err != nil {
-			return "", fmt.Errorf("备份脚本不存在: %s (%v)", explicit, err)
+			return "", notFoundf("备份脚本不存在: %s (%v)", explicit, err)
 		}
 		return explicit, nil
 	}

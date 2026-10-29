@@ -10,7 +10,7 @@
  * outbox 队列本身很小（只有内容引用，不含二进制），持久化用 localStorage，
  * 保持 IndexedDB 严格三库（messages/convs/mediaUrls）不变。
  */
-import { createEnvelope } from '../proto/codec';
+import { createEnvelope, newRequestId } from '../proto/codec';
 import { encodeMessageSend, type Media, type MsgAckPayload } from '../proto/payload';
 import { KINDS } from '../protocol/kinds';
 import type { ConnState, NetClient } from '../transport/types';
@@ -28,6 +28,8 @@ export type OutboxStatus = 'queued' | 'sending' | 'failed';
 export interface OutboxItem {
   localId: string;
   clientMsgId: string;
+  /** 前端生成的 trace id（Envelop.request_id，framerw 提取为 TraceID 透传） */
+  traceId: string;
   convId: number;
   content: OutboxContent;
   status: OutboxStatus;
@@ -139,7 +141,12 @@ export class Outbox {
   /** 启动时恢复未发送队列，并重新插入乐观消息。 */
   async load(): Promise<void> {
     const stored = await this.persistence.load();
-    this.items = stored.map((item) => ({ ...item, status: item.status === 'sending' ? 'queued' : item.status }));
+    // 旧队列条目无 traceId：补生成（存量兼容）
+    this.items = stored.map((item) => ({
+      ...item,
+      traceId: item.traceId || newRequestId(),
+      status: item.status === 'sending' ? 'queued' : item.status,
+    }));
     for (const item of this.items) this.sink.onOptimistic(item);
     this.notify();
   }
@@ -149,6 +156,7 @@ export class Outbox {
     const item: OutboxItem = {
       localId: `l_${clientMsgId}`,
       clientMsgId,
+      traceId: newRequestId(),
       convId: input.convId,
       content: {
         clientMsgId,
@@ -267,7 +275,9 @@ export class Outbox {
         const env = createEnvelope({
           kind: KINDS.MSG_SEND,
           convId: next.convId,
-          requestId: next.clientMsgId,
+          // request_id = 独立前端生成的 trace id（framerw 提取为 TraceID 透传），
+          // 兜底 client_msg_id（ACK 关联语义不变：outbox.ack 按 client_msg_id 匹配）。
+          requestId: next.traceId || next.clientMsgId,
           payload: encodeMessageSend({
             clientMsgId: next.clientMsgId,
             text: next.content.text,

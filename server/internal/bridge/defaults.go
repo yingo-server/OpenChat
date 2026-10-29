@@ -11,10 +11,15 @@ func defaultCaps() map[string][]kinds.Kind {
 			kinds.KindReadHistory, kinds.KindConvDataRequest, kinds.KindIdentityRequest,
 			kinds.KindSecurityRequest, kinds.KindFlagGet, kinds.KindJobTrigger,
 			kinds.KindShutdownNotice, kinds.KindFlagSync, kinds.KindConfigUpdate,
+			// Conversation user kinds are translated to 930 by chatd's
+			// FrameSource. They are listed on the data layer too so any
+			// direct/embedded frame source with SrcLayer=data passes the
+			// verifier instead of being dropped as "outside capability".
+			kinds.KindConvCreate, kinds.KindConvUpdate, kinds.KindMemberAdd, kinds.KindMemberRemove,
 			// 数据层回程：提交后的 ack / 错误 / 读结果必须能上行到 bridge，
 			// 否则 101 的 ack 会被 Verifier 以「能力外」丢弃。
 			kinds.KindMsgAck, kinds.KindMsgNew, kinds.KindError,
-			kinds.KindReadHistoryResult, kinds.KindConvDataResult,
+			kinds.KindReadHistoryResult, kinds.KindConvDataResult, kinds.KindConvPayload,
 			kinds.KindIdentityResult, kinds.KindFlagResult, kinds.KindJobStatus,
 		},
 		"admin": {
@@ -33,10 +38,11 @@ func defaultCaps() map[string][]kinds.Kind {
 
 func allUserKinds() []kinds.Kind {
 	return []kinds.Kind{
-		kinds.KindMsgSend, kinds.KindMsgNew, kinds.KindMsgAck, kinds.KindMsgRead, kinds.KindMsgDelivered,
+		kinds.KindMsgSend, kinds.KindSyncRequest, kinds.KindMsgNew, kinds.KindMsgAck, kinds.KindMsgRead, kinds.KindMsgDelivered,
 		kinds.KindMsgEdit, kinds.KindMsgDelete, kinds.KindMsgRecall, kinds.KindMsgForward, kinds.KindMsgSync, kinds.KindMsgSearch,
 		kinds.KindConvCreate, kinds.KindConvUpdate, kinds.KindConvPayload, kinds.KindMemberAdd, kinds.KindMemberRemove,
 		kinds.KindMemberUpdate, kinds.KindRoleSet, kinds.KindMute, kinds.KindPin, kinds.KindTyping, kinds.KindDraft,
+		kinds.KindConvDataResult,
 		kinds.KindMediaPresignRequest, kinds.KindMediaReady, kinds.KindMediaExpire, kinds.KindMediaThumb,
 		kinds.KindPresenceUpdate, kinds.KindPresenceSubscribe, kinds.KindPresenceUnsubscribe,
 		kinds.KindProfileUpdate, kinds.KindBlock, kinds.KindUnblock, kinds.KindReport,

@@ -8,6 +8,10 @@
 //	import _ "github.com/jackc/pgx/v5/stdlib"   // or lib/pq — deployer's choice
 //	cold, err := pg.Open(dsn)                   // driverName = "postgres"
 //
+// Method set: CopyBatch/DeleteHot (store.ArchiveTarget), Append
+// (store.AuditJournal), Search (trgm full-text), ReadCold (pipe.ColdReader —
+// kind 920 cold-merge paging) and the archive_runs ledger (StartRun/FinishRun).
+//
 // Open(dsn) defaults to driverName "postgres"; pg.OpenDriver(dsn, "pgx-registered-name")
 // exists for alternative registrations. Tests never connect: they exercise the
 // pure logic (hash-chain canonicalization, SQL string generation) only.
@@ -202,6 +206,52 @@ func (c *ColdDB) Search(ctx context.Context, q string, cid int64, limit int) ([]
 			return nil, fmt.Errorf("pg: search scan: %w", err)
 		}
 		m.Content = []byte(txt.String)
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ------------------------------------------------------------------ cold read
+
+// readColdSQL serves kind 920 cold-merge: the archive page for one cid,
+// newest-first (descending seq), keyset cursor = beforeSeq. Parameterized
+// ($1..$4); the two fixed shapes below are the whole whitelist — no input
+// ever reaches the SQL text.
+const readColdCursoredSQL = `SELECT msg_id, cid, seq, sender_id, sent_at, content
+FROM msg.messages_archive WHERE cid = $1 AND seq < $2 ORDER BY seq DESC LIMIT $3`
+
+const readColdHeadSQL = `SELECT msg_id, cid, seq, sender_id, sent_at, content
+FROM msg.messages_archive WHERE cid = $1 ORDER BY seq DESC LIMIT $2`
+
+// ReadCold returns up to limit archived messages of cid ordered by seq DESC,
+// i.e. the same paging shape as sqlite.ReadHot(asc=false). beforeSeq is the
+// keyset cursor (only rows with seq < beforeSeq); beforeSeq <= 0 means "no
+// cursor" — read from the newest end. Content is the verbatim envelope bytes
+// (HotMsg.Content semantics: opaque, interpreted by the envelope layer — the
+// readrouter's hotToMsgNew carries it through unchanged).
+func (c *ColdDB) ReadCold(ctx context.Context, cid, beforeSeq int64, limit int) ([]store.HotMsg, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("pg: read cold: limit must be >= 1 (cid=%d limit=%d)", cid, limit)
+	}
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if beforeSeq > 0 {
+		rows, err = c.DB.QueryContext(ctx, readColdCursoredSQL, cid, beforeSeq, limit)
+	} else {
+		rows, err = c.DB.QueryContext(ctx, readColdHeadSQL, cid, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("pg: read cold cid=%d: %w", cid, err)
+	}
+	defer rows.Close()
+	var out []store.HotMsg
+	for rows.Next() {
+		var m store.HotMsg
+		if err := rows.Scan(&m.MsgID, &m.Cid, &m.Seq, &m.SenderID, &m.SentAt, &m.Content); err != nil {
+			return nil, fmt.Errorf("pg: scan cold msg: %w", err)
+		}
 		out = append(out, m)
 	}
 	return out, rows.Err()

@@ -14,8 +14,12 @@ export interface AuthSession {
   token: string;
   refreshToken?: string;
   userId: number;
+  /** authsvc 下发（= session_id）；多设备踢下线/RESUME 需要 */
+  deviceId?: string;
   sessionId: string;
   expiresAt: number;
+  /** 是否首次注册即登录（authsvc sessionResponse.is_new_user） */
+  isNewUser?: boolean;
   profile?: {
     displayName?: string;
     avatar?: string;
@@ -58,16 +62,25 @@ export function isChallenge(value: AuthSession | AuthChallenge): value is AuthCh
   return typeof (value as AuthChallenge).challengeId === 'string';
 }
 
-/** 后端 snake_case 应答 → 前端领域对象（所有 provider 共用一份映射）。 */
+/**
+ * 后端 snake_case 应答 → 前端领域对象（所有 provider 共用一份映射）。
+ * 契约唯一权威：server/internal/authsvc/tokens.go sessionResponse
+ * （user_id/device_id/access_token/token/refresh_token/expires_at/
+ * expires_at_unix/session_id/guest/is_new_user/profile{display_name}）。
+ * mockBridge 返回同形应答，双形态（snake/camel）兜底已删除。
+ */
 export interface RawAuthSession {
   token?: string;
   access_token?: string;
   refresh_token?: string;
   user_id?: number;
+  device_id?: string;
   session_id?: string;
   expires_at?: number;
-  profile?: { display_name?: string; displayName?: string; avatar?: string };
+  expires_at_unix?: number;
   guest?: boolean;
+  is_new_user?: boolean;
+  profile?: { display_name?: string; avatar?: string };
 }
 
 export interface RawAuthChallenge {
@@ -79,29 +92,19 @@ export interface RawAuthChallenge {
 }
 
 export function mapAuthSession(raw: RawAuthSession): AuthSession {
-  const compatible = raw as RawAuthSession & {
-    userId?: number;
-    sessionId?: string;
-    expiresAt?: number;
-    refreshToken?: string;
-    displayName?: string;
-  };
   const token = raw.token ?? raw.access_token ?? '';
   if (!token) throw new AuthError('登录应答缺少 token', 'BAD_RESPONSE');
   const profile = raw.profile
-    ? {
-        displayName: raw.profile.display_name ?? raw.profile.displayName,
-        avatar: raw.profile.avatar,
-      }
-    : compatible.displayName
-      ? { displayName: compatible.displayName }
-      : undefined;
+    ? { displayName: raw.profile.display_name, avatar: raw.profile.avatar }
+    : undefined;
   return {
     token,
-    refreshToken: raw.refresh_token ?? compatible.refreshToken,
-    userId: Number(raw.user_id ?? compatible.userId ?? 0),
-    sessionId: raw.session_id ?? compatible.sessionId ?? '',
-    expiresAt: Number(raw.expires_at ?? compatible.expiresAt ?? Date.now() + 7 * 24 * 3600 * 1000),
+    refreshToken: raw.refresh_token,
+    userId: Number(raw.user_id ?? 0),
+    deviceId: raw.device_id,
+    isNewUser: Boolean(raw.is_new_user),
+    sessionId: raw.session_id ?? '',
+    expiresAt: Number(raw.expires_at ?? Date.now() + 7 * 24 * 3600 * 1000),
     guest: Boolean(raw.guest),
     profile,
   };

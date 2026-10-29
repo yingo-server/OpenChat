@@ -1019,20 +1019,23 @@ adminctl --server http://127.0.0.1:7780 audit --since-id $((N-5)) --limit 11 --o
 
 ## 附录 A：骨架阶段差异（联调必读）
 
-部署件按**目标形态**编写；当前仓库的 `chatd` 仍在逐层接入。下表只列会被实测到、且会让
-"照文档做却起不来"的差异，逐条给绕过方式：
+部署件按**目标形态**编写；当前仓库的 `chatd` 已具备 1.0 装配（管理 REST、冷库与归档作业、媒体上传/下载、
+内嵌 SPA 均已接线）。下表只列仍会被实测到、且会让"照文档做却起不来"的差异，逐条给绕过方式：
 
 | # | 差异 | 现象 | 临时绕过 / 上线前要求 |
 |---|---|---|---|
 | A.1 | 未实现 `sd_notify(READY=1)`，但 unit 是 `Type=notify` + `WatchdogSec=15` | `start operation timed out`，`Restart=always` 反复重启 | **仅联调**：`sudo systemctl edit --full openchat`，把 `Type=notify` 改 `Type=exec`、`WatchdogSec=15` 改 `WatchdogSec=0`；**上线前必须恢复**并实现 notify + watchdog 心跳 |
 | A.2 | Prometheus `/metrics` 与 `metrics_listen` 未实现（管理 API 只有 `/api/v1/metrics` 摘要） | Caddy `/metrics` 对白名单内来源 502、对公网 404 | 先从管理 API 取指标；上线前接入 Prometheus handler 并监听 9090 |
 | A.3 | `install.sh` 只安装 `chatd`，不安装 `adminctl` / `openchatctl` | `command not found` | 按 §9.1 从 `current/bin` 或源码 `install` 到 `/usr/local/bin` |
-| A.4 | 管理 REST 层尚未挂载（启动日志 `admin.rest_layer="not_wired"`） | 管理后台 API 全 404 / 登录不可用 | 以 `journalctl -u openchat` 的 `chatd ready` / `admin surface listening` 字段判断进度；层就绪后 §4.4 原样执行 |
+| A.4 | 管理 REST 已挂载：`/api/v1/*` 在 `admin_rest_listen`（默认 `127.0.0.1:7781`） | 启动日志出现 `rest_layer="admin_rest_listen"`，管理 API 由该监听提供（不再有 `not_wired`） | 无需绕过；本机/内网按 §4.4 验证。注意 REST 端口与 `admin_listen`（7780，帧注入）是两个监听 |
 | A.5 | `deploy/openchat.toml` 中部分契约字段当前二进制未消费 | 改了 `metrics_listen`/上传上限等无效果 | 见 §3.1 表后的「消费进度」注记 |
-| A.6 | 内嵌前端在 `server/web`（`go:embed`），`chatd` 在 `listen` 为 TCP 时托管 `/` 与 `/admin/` | 未 `make web` 的构建返回 503 `UI is not embedded` | 用发布包，或 `make web && make release`；不要手改 `server/web/*`，它由 `make web` 整目录替换 |
+| A.6 | SPA 已内嵌（`server/web`，`go:embed`），`chatd` 在 `listen` 为 TCP 时同时托管 `/` 与 `/admin/` | 发布包无需额外 web 目录；从源码构建若未执行 `make web`，前端资源为空，访问返回 503 `UI is not embedded` | 用发布包，或 `make web && make release`；不要手改 `server/web/*`，它由 `make web` 整目录替换 |
+| A.7 | 冷库与归档作业已接线（jobber 按 `policy.archive.cron` 调度），但 Postgres driver 需部署层注册 | `cold_dsn` 已配置但 driver 未注册时，启动日志报 `cold store disabled: driver not registered`；归档作业仅 dry-run/报错，审计降级为「只写日志不落盘」 | 部署层 import `github.com/lib/pq`（注册 `postgres` driver，匹配 `sql.Open("postgres", …)`）或注册同名 driver 的 pgx 包装（二进制按架构约定不携带 driver）；未注册前不要开启归档，审计按 security-spec §5.5 补接 |
+| A.8 | 媒体上传/下载已提供（MVP，无会话 ACL） | `POST /api/media/upload` 与 `GET /api/media/{id}` 可用；下载只校验登录态 + 不可枚举 `media_id`，无会话级 ACL，无异步病毒扫描 | 1.0 可用于可信小规模部署，勿把 `media_id` 外传给非会话成员；1.1 补会话 ACL 与 ClamAV |
 
 **发布前必须关闭的临时措施**：A.1 的 `Type=exec`/`WatchdogSec=0`（改回 notify 前先确认
-`READY=1` 与 `WATCHDOG=1` 已实现）。其余项只影响功能完整性，不影响安全基线。
+`READY=1` 与 `WATCHDOG=1` 已实现）。A.7 的 driver 注册与审计落盘、A.8 的媒体会话 ACL 属于生产
+安全基线，上线前必须补齐或明确接受风险；其余项只影响功能完整性。
 
 ---
 

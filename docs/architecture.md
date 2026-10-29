@@ -6,12 +6,13 @@ OpenChat 由四个服务层级与一个桥接枢纽组成。所有层间通信�
 
 ```
                             前端 SPA (React, embed)
-                     WS(用户通道) ════╗            ╔═ HTTPS(仅登录/管理后台)
-                                    ▼            ▼
-┌────────────────────────── 用户层 usergw ──┐  ┌─ 管理层 admin ─┐
-│ acceptor→codec→limiter→router→forwarder   │  │ middleware 链   │
+         WS(用户通道) ═╗   HTTP ╗(登录/媒体: /api/auth/* /api/media/*)   HTTPS ╗(管理后台)
+                      ▼        ▼                                        ▼
+┌──────────────── 用户层 usergw ─────────────┐  ┌─ 管理层 admin ─┐
+│ acceptor→codec→limiter→router→forwarder    │  │ middleware 链   │
 │ (管道组件, channel 串联)                    │  │ handler/service│
-└───────────────┬───────────────────────────┘  └───────┬────────┘
+│ HTTP 面(同端口): /api/auth/* /api/media/*  │  └───────┬────────┘
+└───────────────┬────────────────────────────┘          │
           socket ══╗ (内部长连接)                 HTTP API ══╗
                    ║   socket ═══════╗                 ║ (唯一例外)
                    ▼                 ▼                  ▼
@@ -31,6 +32,8 @@ OpenChat 由四个服务层级与一个桥接枢纽组成。所有层间通信�
 
 管理层指令经 AdminAPI 翻译成 5xx 帧注入总线，与 socket 帧同构：管理指令的审计日志即帧日志。
 
+> 说明（P2-1）：用户层 usergw 除 WS 用户通道外，还在**同一监听端口**上提供两个 HTTP 面——`/api/auth/*`（登录/刷新/登出，须在 WS 握手前完成鉴权）与 `/api/media/*`（媒体上传/下载；帧编解码上限 64KB，媒体字节不走 WS 通道，security-spec §2.3/§4.3 有出处）。此为前端→用户层入口，不构成「绕过 Envelope」的红线违反。
+
 ## 统一 kind 号段（全局唯一真相源，定义于 proto/）
 
 | 号段 | 归属 | 内容 |
@@ -38,7 +41,7 @@ OpenChat 由四个服务层级与一个桥接枢纽组成。所有层间通信�
 | 0-99 | 系统层 | HELLO/AUTH/PING/PONG/RESUME/SYNC/ERROR/KICKED/FEATURE_FLAGS/RATE_LIMITED |
 | 100-199 | 消息层 | MSG_SEND/NEW/ACK/READ/DELIVERED/EDIT/DELETE/RECALL/FORWARD/SYNC/SEARCH |
 | 200-299 | 会话层 | CONV_CREATE/UPDATE/MEMBER_*/ROLE/MUTE/PIN/TYPING/DRAFT |
-| 300-349 | 媒体层 | MEDIA_PRESIGN/READY/EXPIRE/THUMB |
+| 300-349 | 媒体层 | MEDIA_PRESIGN/READY/EXPIRE/THUMB（其中 300-304：v1.0 未启用——媒体走 HTTP 直传，presign 为 1.1 预留，P2-2） |
 | 350-399 | 通话预留 | CALL_OFFER/ANSWER/CANDIDATE/BUSY/HANGUP（flag 关闭） |
 | 400-449 | presence | PRESENCE_UPDATE/SUBSCRIBE/UNSUBSCRIBE |
 | 450-499 | 用户层 | PROFILE_UPDATE/BLOCK/UNBLOCK/REPORT |
@@ -52,7 +55,8 @@ OpenChat 由四个服务层级与一个桥接枢纽组成。所有层间通信�
 | 960-969 | 安全域 | 封禁/审计/举报数据操作 |
 | 970-979 | 系统 flag | feature flag 读写（flag 即策略表） |
 | 980-989 | 运维作业 | archive/backup/trim/audit-verify 触发与状态 |
-| 990-999 | 诊断 | 环回压测帧 |
+| 990-999 | 诊断 | 环回压测帧（990 已定义，handler 未实现，P3-4） |
+| ≥1_000_000 | 限流器内部合成 | 限流器内部合成 kind：`limit.KindPriority`（Envelope.Flags 的 PriorityFlag 映射），**非线上帧**（P2-3） |
 
 ## 跨层全链路时序
 
@@ -64,8 +68,8 @@ OpenChat 由四个服务层级与一个桥接枢纽组成。所有层间通信�
   Bridge: FrameRW→Verifier(会话READY+能力)→Router(kind 101→data层)→Bus(topic: conv.{cid})
   →Egress ─socket─► data层: connector→dispatcher→cache.member.Check(越权拦截点)
   →seqalloc(区间分配seq+snowflake msg_id)→dedupguard(client_msg_id幂等)→writech
-  →flusher(1000条/50ms组提交, SQLite事务)→outbound 911 ack{msg_id,seq}
-  ──► Bridge Router(kind 911→user层 + 911投递→conv.{cid}订阅者)
+  →flusher(1000条/50ms组提交, SQLite事务)→outbound 103 MSG_ACK{msg_id,seq}
+  ──► Bridge Router(kind 103→user层 + 103 投递→conv.{cid}订阅者)
   ──► usergw router 查session表 → 全设备投递 MSG_NEW + 发送者收 MSG_ACK
   ──► 对端前端 sync引擎(seq连续性校验)→先写IndexedDB→进内存store→渲染
 ```
@@ -90,9 +94,9 @@ adminctl ban 123 / 后台按钮 ─HTTPS─► admin: authn→rbac→csrf→hand
 ├─ proto/                          # 唯一契约源(所有kind定义+Envelope)
 ├─ server/
 │  ├─ cmd/
-│  │  ├─ chatd/          # embedded 单进程装配(<200行,零逻辑)
-│  │  ├─ chatd-bridge/ chatd-user/ chatd-data/ chatd-admin/   # split 多进程
-│  │  └─ chatd-ctl/ datactl/ adminctl/    # 三个CLI(均API客户端,非旁路)
+│  │  ├─ chatd/          # embedded 单进程装配(只装配、零业务规则)
+│  │  ├─ chatd-bridge/ chatd-user/ chatd-data/ chatd-admin/   # split 多进程 —— 见下方 ⚠️(v1.0 未实现)
+│  │  └─ openchatctl/ adminctl/          # 两件CLI(openchatctl=系统级运维, adminctl=管理面API; 均API客户端,非旁路)
 │  ├─ internal/
 │  │  ├─ proto/ pipedef/            # Frame契约 + Stage接口
 │  │  ├─ transport/remote|embedded/ # 层间socket双形态(同代码两部署)
@@ -110,9 +114,11 @@ adminctl ban 123 / 后台按钮 ─HTTPS─► admin: authn→rbac→csrf→hand
 └─ deploy/systemd/ Caddyfile release.sh backup.sh
 ```
 
+> ⚠️ 未实现（v1.0）：`chatd` 仅 embedded 模式——`server/cmd` 实际只有 `chatd`、`openchatctl`、`adminctl` 三个二进制，`server/cmd/chatd/main.go` 对非 embedded 的 `[mode]` 直接报错（this build is embedded-only），不存在 `chatd-bridge/chatd-user/chatd-data/chatd-admin`。`deploy/systemd/openchat-{bridge,user,data,admin}.service` 的 `ExecStart` 指向不存在的 `bin/chatd-*`，split 的 4 个 systemd unit 为 1.1 预留，**启用会启动失败** — 计划 v1.1（P1-5/P1-6）。
+
 ## 贯穿全系统的设计律（CI 强制）
 
-1. **单一职责**：每组件一包一职责表，import-lint 禁止兄弟组件互相 import、禁止反向依赖（`cmd→app→core→net`）
+1. **单一职责**：每组件一包一职责表，import-lint 禁止兄弟组件互相 import、禁止反向依赖（`cmd→app→core→net`）（已落地：`scripts/importlint.sh`，挂 `make lint` 与 CI）
 2. **一切皆帧**：控制/数据/管理/指标全是 Envelope，一套编解码日志 trace
 3. **机制策略分离**：`policy.json` 是策略真源（retention/限流/归档 cron），代码出现"90天/4:00"常量即评审打回；feature flag 即策略数据
 4. **crash-only**：所有层零必须存活状态，故障=systemd 1s 拉起+RESYNC 恢复；唯一例外 AckTracker 不变量破坏 exit(70)
@@ -122,7 +128,7 @@ adminctl ban 123 / 后台按钮 ─HTTPS─► admin: authn→rbac→csrf→hand
 ## 部署形态
 
 - **embedded**（2C2G 起步）：单 `chatd` 二进制，四层进程内流水线+EmbeddedTransport（chan 直连），一个 systemd unit
-- **split**（扩展期）：同代码编译出 5 个二进制分机部署，层间改走 UDS/TCP socket——只改配置 `[mode]` 段
+- **split**（扩展期，⚠️ v1.0 未实现，见上方目录结构注记）：同代码编译出 5 个二进制分机部署，层间改走 UDS/TCP socket——只改配置 `[mode]` 段
 - 冷库 Postgres 始终在外部，本机内存与用户量增长解耦
 
 ## 实施顺序
@@ -132,5 +138,5 @@ adminctl ban 123 / 后台按钮 ─HTTPS─► admin: authn→rbac→csrf→hand
 2. data 层写管道+读路由（SQLite）+ 用户身份/登录链路
 3. usergw + 前端 sync 引擎（消息闭环）
 4. 媒体直传 + admin 层 + 审计
-5. 归档/备份 job + 冷库 + CLI 三件套
-6. 压测（chatd-ctl bench）→ 2C2G 调优（GOMEMLIMIT、journald 限速、SQLite cache）
+5. 归档/备份 job + 冷库 + CLI 两件套（`openchatctl` + `adminctl`）
+6. 压测（`openchatctl bench`，v1.0 未实现 P3-4）→ 2C2G 调优（GOMEMLIMIT、journald 限速、SQLite cache）

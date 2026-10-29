@@ -190,3 +190,48 @@ func decodeDoctor(t *testing.T, raw string) doctorReport {
 	}
 	return env.Data
 }
+
+func TestDoctorAuditStore(t *testing.T) {
+	hot := makeHotDB(t, 1)
+
+	// Empty OPENCHAT_COLD_DSN ⇒ audit store degraded (WARN, not fail).
+	fs := &fakeSystem{resp: []cmdResp{{prefix: "journalctl", out: ""}}}
+	e, out, _ := newTestEnv(t, fs)
+	if code := run([]string{"--json", "doctor", "--hot-db", hot}, e); code != exitOK {
+		t.Fatalf("empty-DSN exit = %d, want 0", code)
+	}
+	rep := decodeDoctor(t, out.String())
+	var got *check
+	for i := range rep.Checks {
+		if rep.Checks[i].Name == "audit_store" {
+			got = &rep.Checks[i]
+		}
+	}
+	if got == nil {
+		t.Fatal("audit_store check missing")
+	}
+	if got.Status != checkWarn || !strings.Contains(got.Detail, "degraded") {
+		t.Fatalf("empty-DSN audit_store = %+v, want warn/degraded", got)
+	}
+
+	// Configured but unreachable ⇒ FAIL.
+	fs2 := &fakeSystem{
+		resp:    []cmdResp{{prefix: "journalctl", out: ""}},
+		env:     map[string]string{"OPENCHAT_COLD_DSN": "postgres://u:p@127.0.0.1:5432/oc"},
+		dialErr: errors.New("connection refused"),
+	}
+	e2, out2, _ := newTestEnv(t, fs2)
+	if code := run([]string{"--json", "doctor", "--hot-db", hot}, e2); code != exitError {
+		t.Fatalf("unreachable audit_store exit = %d, want 1", code)
+	}
+	rep2 := decodeDoctor(t, out2.String())
+	for _, c := range rep2.Checks {
+		if c.Name == "audit_store" {
+			if c.Status != checkFail || !strings.Contains(c.Detail, "127.0.0.1:5432") {
+				t.Fatalf("unreachable audit_store = %+v, want fail", c)
+			}
+			return
+		}
+	}
+	t.Fatal("audit_store check missing on unreachable case")
+}

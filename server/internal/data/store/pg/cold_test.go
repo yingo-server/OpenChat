@@ -1,6 +1,7 @@
 package pg
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -60,6 +61,42 @@ func TestExtractText(t *testing.T) {
 	// E2EE content (random bytes) yields no text — search cannot see it.
 	if got := ExtractText([]byte{0x93, 0x2f, 0x81, 0x00, 0xd4}); got != "" {
 		t.Errorf("binary content should yield empty text, got %q", got)
+	}
+}
+
+// TestReadColdSQLShape pins the cold-read SQL shape (kind 920 cold merge):
+// keyset cursor + LIMIT, parameterized, newest-first. No connection — this
+// asserts the constants, which are the contract the readrouter merges against.
+func TestReadColdSQLShape(t *testing.T) {
+	if n := strings.Count(readColdCursoredSQL, "$"); n != 3 {
+		t.Fatalf("cursored SQL placeholders = %d, want 3 ($1 cid, $2 beforeSeq, $3 limit)", n)
+	}
+	if n := strings.Count(readColdHeadSQL, "$"); n != 2 {
+		t.Fatalf("head SQL placeholders = %d, want 2 ($1 cid, $2 limit)", n)
+	}
+	for _, sql := range []string{readColdCursoredSQL, readColdHeadSQL} {
+		if !strings.Contains(sql, "msg.messages_archive") {
+			t.Fatalf("SQL must read msg.messages_archive: %s", sql)
+		}
+		if !strings.Contains(sql, "ORDER BY seq DESC") {
+			t.Fatalf("cold page must be newest-first (readrouter merge contract): %s", sql)
+		}
+		if !strings.Contains(sql, "LIMIT $") {
+			t.Fatalf("SQL must take LIMIT as a parameter: %s", sql)
+		}
+	}
+	// Cursored form carries the keyset predicate; head form must not.
+	if !strings.Contains(readColdCursoredSQL, "seq < $2") {
+		t.Fatalf("cursored SQL missing keyset predicate: %s", readColdCursoredSQL)
+	}
+	if strings.Contains(readColdHeadSQL, "seq <") {
+		t.Fatalf("head SQL must not carry a cursor predicate: %s", readColdHeadSQL)
+	}
+	// ReadCold argument order is the real contract the shape pins.
+	ctx := context.Background()
+	c := &ColdDB{}
+	if _, err := c.ReadCold(ctx, 0, 0, 0); err == nil {
+		t.Fatal("limit <= 0 must be rejected before any query")
 	}
 }
 

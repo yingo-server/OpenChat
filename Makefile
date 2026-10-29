@@ -17,7 +17,12 @@ EMBED_ADMIN   := $(EMBED_ROOT)/admin
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || date -u +%Y%m%d%H%M%S)
 ARCH    ?= $(shell go env GOARCH 2>/dev/null || echo amd64)
 
-.PHONY: proto build test lint web web-client web-admin admin-web release release-all clean
+.PHONY: proto build test lint web web-client web-admin admin-web release release-all clean importlint
+
+# importlint: enforce docs/bridge-design.md §4.1 import red lines (P0-1).
+# Included in lint (therefore CI). Runs standalone too.
+importlint:
+	@bash scripts/importlint.sh
 
 # proto: 生成 chatpb。无 protoc 时保留仓库内已提交的 wire 兼容实现
 # (server/internal/proto/gen/chatpb)，代码照常构建 —— CI 无需预装 protoc。
@@ -46,6 +51,7 @@ lint:
 	if [ -n "$$fmt_out" ]; then \
 		echo "gofmt 需要格式化的文件:"; echo "$$fmt_out"; exit 1; \
 	fi
+	@bash scripts/importlint.sh
 
 # ---------------------------------------------------------------------------
 # 前端产物 → server/web/{client,admin}

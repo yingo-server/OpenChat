@@ -31,38 +31,43 @@ func (l *fakeLedger) FinishRun(ctx context.Context, id, fin, moved int64, status
 	return nil
 }
 
-// fakeReader with a cid=0 "all rows" convention (documented archiver seam).
-type fakeReader struct {
+// fakeScanner is the HotScanner test double: static row set, oldest-first.
+type fakeScanner struct {
 	rows []store.HotMsg
 	err  error
 }
 
-func (f *fakeReader) ReadHot(ctx context.Context, cid int64, before int64, limit int, asc bool) ([]store.HotMsg, error) {
+func (f *fakeScanner) ScanOlder(ctx context.Context, cutoff int64, limit int) ([]store.HotMsg, error) {
 	if f.err != nil {
 		return nil, f.err
 	}
-	out := append([]store.HotMsg(nil), f.rows...)
+	var out []store.HotMsg
+	for _, r := range f.rows { // ScanOlder contract: only rows < cutoff
+		if r.SentAt < cutoff {
+			out = append(out, r)
+		}
+	}
 	if len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil
 }
 
-func (f *fakeReader) FirstSeqAfter(ctx context.Context, cid int64, since int64) (int64, error) {
+func (f *fakeScanner) FirstSeqAfter(ctx context.Context, cid int64, since int64) (int64, error) {
 	return 0, nil
 }
 
 var cutoffNow int64 = 1000000
 
-func newArchiver(rows []store.HotMsg, cutoff int64) (*Archiver, *fakeReader, *pipefakes.FakeArchive) {
-	r := &fakeReader{rows: rows}
+func newArchiver(rows []store.HotMsg, cutoff int64) (*Archiver, *fakeScanner, *pipefakes.FakeArchive) {
+	s := &fakeScanner{rows: rows}
 	a := &pipefakes.FakeArchive{}
 	return &Archiver{
-		R: r, W: a,
+		S: s, W: a,
 		Cutoff:    func() int64 { return cutoff },
 		BatchSize: 2,
 		Now:       func() int64 { return cutoffNow },
-	}, r, a
+	}, s, a
 }
 
 func TestArchiverCopiesAndDeletes(t *testing.T) {
@@ -84,11 +89,7 @@ func TestArchiverCopiesAndDeletes(t *testing.T) {
 	if len(cold.Rows()) != 0 {
 		t.Fatalf("hot delete did not drop archived rows: %d remain", len(cold.Rows()))
 	}
-	// fresh row survives the delete (sent_at >= cutoff)
-	if len(arch.R.(*fakeReader).rows) != 3 {
-		// the fake reader is static; deletion is reflected via cold.Rows only
-		_ = 3
-	}
+	_ = arch.S.(*fakeScanner).rows // the fake scanner is static; deletion is reflected via cold.Rows only
 }
 
 // idempotent: re-run copies 0 new rows and deletes nothing harmful.
@@ -149,6 +150,36 @@ func TestArchiverLedgerBreakpoint(t *testing.T) {
 	arch2.W = failingArchive{}
 	if _, err := arch2.Run(context.Background(), false); err == nil {
 		t.Fatal("copy failure must surface")
+	}
+}
+
+// dry-run must use the SAME scan the real run uses (defect-fix pin).
+func TestArchiverDryRunUsesSameScan(t *testing.T) {
+	old1 := store.HotMsg{MsgID: 1, Cid: 5, Seq: 1, SenderID: 1, SentAt: 100}
+	old2 := store.HotMsg{MsgID: 2, Cid: 5, Seq: 2, SenderID: 1, SentAt: 200}
+	arch, s, cold := newArchiver([]store.HotMsg{old1, old2}, 1000)
+	arch.BatchSize = 1
+	dry, err := arch.Run(context.Background(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dry.DryRun || dry.MovedRows != 1 || dry.ConvsTouched != 1 {
+		t.Fatalf("dry-run over batch=1: %+v (want 1 row, 1 conv — same scan, limit honored)", dry)
+	}
+	if cold.CopyCalls != 0 {
+		t.Fatal("dry-run must not copy")
+	}
+	if s.rows == nil {
+		t.Fatal("scanner unchanged expectation violated")
+	}
+}
+
+// ScanOlder limit <= 0 must fail fast, not query.
+func TestArchiverRejectsBadScanner(t *testing.T) {
+	arch, _, _ := newArchiver(nil, 1000)
+	arch.S = nil
+	if _, err := arch.Run(context.Background(), false); err == nil {
+		t.Fatal("nil scanner must surface as an error, not panic")
 	}
 }
 

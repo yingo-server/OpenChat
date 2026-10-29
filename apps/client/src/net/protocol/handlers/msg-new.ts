@@ -7,7 +7,6 @@ import type { Handler } from '../registry';
 import type { StoredMessage } from '../../sync/types';
 
 export const handleMsgNew: Handler = (env, ctx) => {
-  if (!env.convId) return;
   let payload;
   try {
     payload = decodeMsgNew(env.payload);
@@ -15,10 +14,12 @@ export const handleMsgNew: Handler = (env, ctx) => {
     console.warn('[msg-new] bad payload', error);
     return;
   }
+  const convId = env.convId ?? payload.convId ?? 0;
+  if (!convId) return;
   const { content } = payload;
   const type = content.media.length > 0 ? content.media[0].type : content.text ? 'text' : 'system';
   const message: StoredMessage = {
-    convId: env.convId,
+    convId,
     seq: payload.seq,
     msgId: payload.msgId,
     senderId: payload.senderId,
@@ -33,7 +34,7 @@ export const handleMsgNew: Handler = (env, ctx) => {
     status: 'sent',
     clientMsgId: content.clientMsgId || undefined,
   };
-  void ctx.sync.ingestNew(env.convId, message).catch((error) => {
+  void ctx.sync.ingestNew(convId, message).catch((error) => {
     console.warn('[msg-new] ingest failed', error);
     ctx.session.toast('toast.syncFailed');
   });

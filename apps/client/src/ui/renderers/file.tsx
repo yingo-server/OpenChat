@@ -4,13 +4,9 @@
  */
 import type { Media } from '../../net/proto/payload';
 import { t } from '../i18n';
-import {
-  DownloadIcon,
-  FileIcon,
-  ImageIcon,
-  MicIcon,
-} from '../components/icons';
+import { DownloadIcon, FileIcon, ImageIcon, MicIcon } from '../components/icons';
 import { formatBytes } from '../utils/format';
+import { resolveMediaUrl } from '../../net/media';
 import { UnknownMessage } from './unknown';
 import type { RendererProps } from './registry';
 
@@ -35,6 +31,8 @@ export function FileMessage({ message }: RendererProps) {
     Math.min(100, Math.max(0, Number(message.payload.progress ?? (uploading ? 64 : 0)))),
   );
 
+  const downloadUrl = resolveMediaUrl(media);
+
   const body = (
     <span className="flex items-center gap-3 text-start">
       <span
@@ -55,9 +53,9 @@ export function FileMessage({ message }: RendererProps) {
 
   return (
     <span className="block" style={{ minWidth: 220, maxWidth: 300 }}>
-      {media.url && !uploading && !expired ? (
+      {downloadUrl && !uploading && !expired ? (
         <a
-          href={media.url}
+          href={downloadUrl}
           download={media.name}
           target="_blank"
           rel="noreferrer"

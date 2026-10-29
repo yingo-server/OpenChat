@@ -1,8 +1,8 @@
 /**
  * Composer（§3.2）：自适应高度、草稿持久化、Enter 发送（桌面）、
- * 500 字计数（90% 出现）、回复预览、离线仍可入队。
+ * 500 字计数（90% 出现）、回复预览、离线仍可入队；📎 媒体上传走 mediasvc。
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useConvStore } from '../../../core/stores/conv-store';
 import { useSessionStore } from '../../../core/stores/session-store';
 import { useConnStore } from '../../../core/stores/conn-store';
@@ -12,6 +12,14 @@ import { getAppServices } from '../../services/app-services';
 import { t } from '../../i18n';
 import { AttachIcon, CloseIcon, SendIcon } from '../../components/icons';
 import { toast } from '../../components/Toast';
+import {
+  MediaUploadError,
+  UPLOAD_ACCEPT,
+  UPLOAD_LIMITS,
+  mtypeToMediaType,
+  uploadMedia,
+} from '../../../net/media';
+import type { Media } from '../../../net/proto/payload';
 
 export interface ComposerProps {
   convId: number;
@@ -28,6 +36,9 @@ export function Composer({ convId, replyTo, replySenderName, onCancelReply, onSe
   const guest = useSessionStore((state) => state.status === 'guest');
   const maxLength = useSessionStore((state) => Number(state.flags['chat.max_length'] ?? 500) || 500);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadRatio, setUploadRatio] = useState(0);
 
   useEffect(() => {
     const element = textareaRef.current;
@@ -61,7 +72,41 @@ export function Composer({ convId, replyTo, replySenderName, onCancelReply, onSe
       toast.info(t('toast.mediaUnsupported'));
       return;
     }
-    toast.info(t('toast.comingSoon'));
+    if (uploading) {
+      toast.info(t('toast.mediaUploading'));
+      return;
+    }
+    fileInputRef.current?.click();
+  };
+
+  const onFilePicked = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = ''; // 允许重选同一文件
+    if (!file || !canSend) return;
+    void pickAndSend(file);
+  };
+
+  const pickAndSend = async (file: File) => {
+    const outbox = getAppServices().outbox;
+    if (!outbox) return;
+    setUploading(true);
+    setUploadRatio(0);
+    try {
+      const result = await uploadMedia(file, (ratio) => setUploadRatio(ratio));
+      const media = await buildMediaPayload(result, file);
+      outbox.enqueue({ convId, text: '', media: [media], replyTo: replyTo?.msgId || undefined });
+      setDraft(convId, '');
+      onCancelReply?.();
+      onSent?.();
+      if (useConnStore.getState().state !== 'online') {
+        toast.info(t('toast.queued'));
+      }
+    } catch (error) {
+      toast.danger(t('toast.mediaUploadFailed', { reason: reasonOf(error) }));
+    } finally {
+      setUploading(false);
+      setUploadRatio(0);
+    }
   };
 
   const remaining = maxLength - text.length;
@@ -91,12 +136,30 @@ export function Composer({ convId, replyTo, replySenderName, onCancelReply, onSe
           type="button"
           onClick={attach}
           aria-label={t('chat.attach')}
-          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-surface-2"
+          disabled={uploading}
+          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-surface-2 disabled:opacity-50"
         >
           <AttachIcon size={22} />
         </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={UPLOAD_ACCEPT}
+          className="hidden"
+          onChange={onFilePicked}
+          aria-hidden="true"
+          tabIndex={-1}
+        />
 
         <div className="relative min-w-0 flex-1">
+          {uploading ? (
+            <div className="mb-1 h-1 w-full overflow-hidden rounded-full bg-ink/15">
+              <div
+                className="h-full bg-primary-500 transition-[width] duration-normal"
+                style={{ width: `${Math.round(uploadRatio * 100)}%` }}
+              />
+            </div>
+          ) : null}
           <textarea
             ref={textareaRef}
             value={text}
@@ -148,4 +211,72 @@ function previewOfMessage(message: ChatMessage): string {
   if (type === 'video') return t('chat.video');
   if (type === 'file') return t('chat.file');
   return t('chat.unsupported');
+}
+
+/** 上传结果 → wire Media（media_id/mtype/name/size/mime/width/height…）。 */
+async function buildMediaPayload(
+  result: Awaited<ReturnType<typeof uploadMedia>>,
+  file: File,
+): Promise<Media> {
+  const type = mtypeToMediaType(result.mtype);
+  const media: Media = {
+    mediaId: result.mediaId,
+    type,
+    name: file.name,
+    size: result.size || file.size,
+    mime: result.mime || file.type || undefined,
+    status: 'ready',
+  };
+  if (type === 'image') {
+    // 图片宽高从 Image 对象取（读不到时渲染器自行兜底 800x600）
+    const dims = await imageSize(file);
+    if (dims) {
+      media.width = dims.width;
+      media.height = dims.height;
+    }
+  }
+  return media;
+}
+
+function imageSize(file: File): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(null);
+    };
+    image.src = objectUrl;
+  });
+}
+
+/** MediaUploadError.code → i18n key；未知错误给通用文案。 */
+function reasonOf(error: unknown): string {
+  if (error instanceof MediaUploadError) {
+    switch (error.code) {
+      case 'FILE_TOO_LARGE':
+        return t('toast.mediaTooLarge', {
+          image: formatMb(UPLOAD_LIMITS.image),
+          audio: formatMb(UPLOAD_LIMITS.audio),
+          file: formatMb(UPLOAD_LIMITS.file),
+        });
+      case 'UNSUPPORTED_TYPE':
+        return t('toast.mediaUnsupportedType');
+      case 'RATE_LIMITED':
+        return t('toast.mediaRateLimited', { count: 50 });
+      case 'UNAUTHORIZED':
+        return t('toast.mediaUnauthorized');
+      default:
+        break;
+    }
+  }
+  return t('toast.mediaNetworkError');
+}
+
+function formatMb(bytes: number): string {
+  return String(Math.round(bytes / (1024 * 1024)));
 }

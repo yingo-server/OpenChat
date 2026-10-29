@@ -48,6 +48,14 @@ type Config struct {
 	ReadTimeout       time.Duration
 	MaxFrameBytes     int
 	WriteChanCap      int
+	// Upgrade 限流（security-spec E-3/E-4）。零值取 upgradelimit.go 的默认：
+	// UpgradeRatePerMin=10, UpgradeBurst=20, UpgradeFailureThreshold=8,
+	// UpgradeFailureWindow=5min, UpgradeBanFor=15min。可由 policy 覆盖。
+	UpgradeRatePerMin       float64
+	UpgradeBurst            float64
+	UpgradeFailureThreshold int
+	UpgradeFailureWindow    time.Duration
+	UpgradeBanFor           time.Duration
 	// ExtraRoutes is the non-/ws handler (auth API, health, SPA). The app layer
 	// passes it from app.Config so the whole user-facing surface stays on ONE
 	// HTTP listener/port (Caddy then proxies a single upstream).
@@ -175,6 +183,9 @@ type Acceptor struct {
 	// extra 非 /ws 路径的处理器（装配层注入，nil = 404）。
 	extra http.Handler
 
+	// limiter 是 /ws upgrade 的按 IP 限流 + 失败熔断（E-3/E-4）。
+	limiter *UpgradeLimiter
+
 	nextID atomic.Uint64
 	mu     sync.Mutex
 	conns  map[uint64]*Conn
@@ -202,6 +213,7 @@ func NewAcceptor(cfg Config, authn Authn, logger *log.Logger) *Acceptor {
 		cfg:      cfg,
 		authn:    authn,
 		logger:   logger,
+		limiter:  NewUpgradeLimiter(cfg.UpgradeRatePerMin, cfg.UpgradeBurst, cfg.UpgradeFailureThreshold, cfg.UpgradeFailureWindow, cfg.UpgradeBanFor),
 		Upstream: make(chan *FrameEvent, 1024),
 		conns:    make(map[uint64]*Conn),
 	}
@@ -244,14 +256,23 @@ func (a *Acceptor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	// ---- upgrade 前限流（security-spec E-3/E-4）：被限直接 429，不建连 ----
+	ip := clientIP(r)
+	if ok, retry := a.limiter.Allow(ip); !ok {
+		w.Header().Set("Retry-After", retryAfterSeconds(retry))
+		http.Error(w, "too many upgrade attempts", http.StatusTooManyRequests)
+		return
+	}
 	// ---- upgrade 前鉴权（security-spec §2.3）----
 	token := a.tokenFromRequest(r)
 	if token == "" {
+		a.limiter.RecordFailure(ip) // 失败也消耗配额
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
 	identity, err := a.authn(token)
 	if err != nil || identity == nil || identity.UserID <= 0 {
+		a.limiter.RecordFailure(ip) // 401 额外扣一次 token
 		if a.logger != nil {
 			a.logger.Warn("ws handshake rejected", "remote", r.RemoteAddr, "err", errString(err))
 		}

@@ -29,7 +29,11 @@ import type { ConnState, ConnStateMeta, NetClient, ResumeTicket, StateListener }
 
 export interface WsClientOptions {
   url: string;
-  /** WS 升级前鉴权：拼到 query（usergw acceptor 读取） */
+  /**
+   * token 经 Sec-WebSocket-Protocol `["bearer", token]` 传给服务端
+   * （acceptor.go:288 只认 Cookie 与该头），仅在无 window 的原生壳生效。
+   * 浏览器默认 undefined → 同源 Cookie 鉴权（security-spec §2.3）。
+   */
   token?: () => string | null;
   deviceId?: () => string;
   sessionId?: () => string;
@@ -125,6 +129,7 @@ export class WsClient implements NetClient {
   private open(): void {
     const conn = new WsConnection(this.buildUrl(), {
       factory: this.options.socketFactory,
+      protocols: this.authProtocols(),
       binaryType: 'arraybuffer',
     });
     this.conn = conn;
@@ -238,18 +243,35 @@ export class WsClient implements NetClient {
     this.stopHeartbeat();
   }
 
+  /**
+   * 鉴权（security-spec §2.3 红线：token 禁止出现在 URL query —— 会进日志/Referer）：
+   *  - 浏览器：登录接口已种下 HttpOnly cookie `access_token`，WS 同源握手自动携带，
+   *    URL 不带任何凭据；
+   *  - 原生壳（token-store 有 token 但无 cookie）：token 走
+   *    Sec-WebSocket-Protocol: `bearer, <token>`（acceptor.go:288 支持的格式）。
+   */
   private buildUrl(): string {
-    const token = this.options.token?.();
     const deviceId = this.options.deviceId?.();
     try {
       const base = typeof location !== 'undefined' ? location.href : 'http://localhost/';
       const url = new URL(this.options.url, base);
-      if (token) url.searchParams.set('token', token);
       if (deviceId) url.searchParams.set('device_id', deviceId);
       return url.toString();
     } catch {
       return this.options.url;
     }
+  }
+
+  /**
+   * 非 Cookie 环境（原生壳等无 window/document 的运行时）的 subprotocol
+   * 凭据。浏览器必须为 undefined：浏览器 WS 若请求 subprotocol 而服务端
+   * （gorilla Upgrader 未配置 Subprotocols）不回显，握手会被浏览器直接
+   * 失败 —— 浏览器路径只依赖登录种下的同源 HttpOnly Cookie。
+   */
+  private authProtocols(): string[] | undefined {
+    if (typeof window !== 'undefined') return undefined;
+    const token = this.options.token?.();
+    return token ? ['bearer', token] : undefined;
   }
 
   private bindBrowserEvents(): void {

@@ -70,6 +70,7 @@ func New(cfg Config, authn AuthnFunc, peer transport.Peer) (*Server, error) {
 		flags = featureflags.New()
 	}
 	rtr := router.New(sess, lim, pol, fwd, flags, logger)
+	upg := pol.Snapshot()
 	acc := ws.NewAcceptor(ws.Config{
 		ListenAddr:        cfg.ListenAddr,
 		PublicOrigin:      cfg.PublicOrigin,
@@ -79,6 +80,12 @@ func New(cfg Config, authn AuthnFunc, peer transport.Peer) (*Server, error) {
 		MaxFrameBytes:     cfg.MaxFrameBytes,
 		WriteChanCap:      cfg.WriteChanCap,
 		ExtraRoutes:       cfg.ExtraRoutes,
+
+		UpgradeRatePerMin:       upg.UpgradeRatePerMin,
+		UpgradeBurst:            upg.UpgradeBurst,
+		UpgradeFailureThreshold: upg.UpgradeFailureThreshold,
+		UpgradeFailureWindow:    upg.UpgradeFailureWindow,
+		UpgradeBanFor:           upg.UpgradeBanFor,
 	}, authn, logger)
 
 	// 连接生命周期 → 连接表 + 限流器连接级状态。

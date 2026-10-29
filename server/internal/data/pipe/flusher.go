@@ -3,10 +3,12 @@ package pipe
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
 	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
+	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
 )
 
 const (
@@ -21,6 +23,7 @@ const (
 // batch answers the WHOLE batch with code=500 (all-or-nothing contract).
 type flusher struct {
 	w         store.MsgWriter
+	convs     store.ConvStore
 	out       chan<- *env
 	lg        *log.Logger
 	batchSize int
@@ -39,8 +42,8 @@ type ReadyMsg struct {
 	Trace string
 }
 
-func newFlusher(w store.MsgWriter, out chan<- *env, ready <-chan ReadyMsg, d *Dedup, lg *log.Logger) *flusher {
-	return &flusher{w: w, out: out, lg: lg, batchSize: defaultFlushBatch,
+func newFlusher(w store.MsgWriter, convs store.ConvStore, out chan<- *env, ready <-chan ReadyMsg, d *Dedup, lg *log.Logger) *flusher {
+	return &flusher{w: w, convs: convs, out: out, lg: lg, batchSize: defaultFlushBatch,
 		interval: defaultFlushEvery, readyCh: ready, dedup: d, done: make(chan struct{})}
 }
 
@@ -101,7 +104,110 @@ func (f *flusher) flush(ctx context.Context, buf []ReadyMsg) {
 			MsgID: m.Msg.MsgID, Seq: m.Msg.Seq, SentAt: m.Msg.SentAt, Status: 0,
 		})
 		f.emit(m.Msg, 0, "")
+		f.fanoutNew(m.Msg)
 	}
+}
+
+// fanoutNew delivers MSG_NEW to every other conversation member, one frame
+// per member addressed by user_id (multi-device delivery is the gateway's
+// Broadcast(uid) job). The sender's own devices rely on the ack/outbox path.
+func (f *flusher) fanoutNew(m store.PendingMsg) {
+	if f.convs == nil {
+		return
+	}
+	members, err := f.convs.ListMembers(context.Background(), m.Cid)
+	if err != nil {
+		f.lg.Warn("flusher: list members for MSG_NEW fanout failed", "cid", m.Cid, "err", err.Error())
+		return
+	}
+	payload := buildMsgNewPayload(m)
+	for _, member := range members {
+		if member.UID == m.SenderID {
+			continue
+		}
+		e := &env{Kind: uint32(kinds.KindMsgNew), ConvID: uint64(m.Cid), UserID: uint64(member.UID), Payload: payload}
+		select {
+		case f.out <- e:
+		default:
+			f.lg.Warn("flusher: outbound lane full; MSG_NEW dropped", "cid", m.Cid, "uid", member.UID)
+		}
+	}
+}
+
+// buildMsgNewPayload emits the client-facing snake_case JSON shape
+// (MSG_NEW payload), embedding the stored message content as a JSON object
+// rather than base64 bytes.
+func buildMsgNewPayload(m store.PendingMsg) []byte {
+	var c struct {
+		ClientMsgID      string `json:"client_msg_id"`
+		ClientMsgIDCamel string `json:"clientMsgId"`
+		Text             string `json:"text"`
+		ReplyTo          uint64 `json:"reply_to"`
+		ReplyToCamel     uint64 `json:"replyTo"`
+		Media            []struct {
+			MediaID    string `json:"media_id"`
+			MediaIDCam string `json:"mediaId"`
+			MType      int32  `json:"mtype"`
+			Name       string `json:"name"`
+			Size       int64  `json:"size"`
+			Mime       string `json:"mime"`
+			Width      uint32 `json:"width"`
+			Height     uint32 `json:"height"`
+			DurationMs uint32 `json:"duration_ms"`
+			DurationMc uint32 `json:"durationMs"`
+		} `json:"media"`
+	}
+	if len(m.Content) > 0 {
+		_ = json.Unmarshal(m.Content, &c)
+	}
+	clientMsgID := c.ClientMsgID
+	if clientMsgID == "" {
+		clientMsgID = c.ClientMsgIDCamel
+	}
+	replyTo := c.ReplyTo
+	if replyTo == 0 {
+		replyTo = c.ReplyToCamel
+	}
+	media := make([]map[string]any, 0, len(c.Media))
+	for _, mm := range c.Media {
+		id := mm.MediaID
+		if id == "" {
+			id = mm.MediaIDCam
+		}
+		dm := mm.DurationMs
+		if dm == 0 {
+			dm = mm.DurationMc
+		}
+		media = append(media, map[string]any{
+			"media_id":    id,
+			"mtype":       mm.MType,
+			"name":        mm.Name,
+			"size":        mm.Size,
+			"mime":        mm.Mime,
+			"width":       mm.Width,
+			"height":      mm.Height,
+			"duration_ms": dm,
+		})
+	}
+	content, _ := json.Marshal(map[string]any{
+		"client_msg_id": clientMsgID,
+		"text":          c.Text,
+		"reply_to":      replyTo,
+		"media":         media,
+		"mentions":      []any{},
+	})
+	out, _ := json.Marshal(struct {
+		MsgID    uint64          `json:"msg_id"`
+		Seq      uint64          `json:"seq"`
+		SenderID uint64          `json:"sender_id"`
+		SentAt   int64           `json:"sent_at"`
+		ConvID   uint64          `json:"conv_id"`
+		Content  json.RawMessage `json:"content"`
+	}{
+		MsgID: uint64(m.MsgID), Seq: uint64(m.Seq), SenderID: uint64(m.SenderID),
+		SentAt: m.SentAt * 1000, ConvID: uint64(m.Cid), Content: content,
+	})
+	return out
 }
 
 // emit sends the ack env for one message (status 0 = ok) on the outbound

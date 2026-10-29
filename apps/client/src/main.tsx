@@ -18,6 +18,7 @@ import { handleKicked } from './net/protocol/handlers/kicked';
 import { handleError } from './net/protocol/handlers/error';
 import { handleRateLimited } from './net/protocol/handlers/rate-limited';
 import { handleConvPayload } from './net/protocol/handlers/conv-payload';
+import { handleConvDataResult } from './net/protocol/handlers/conv-result';
 import { handleTyping } from './net/protocol/handlers/typing';
 import { handlePresence } from './net/protocol/handlers/presence';
 import { handlePong } from './net/protocol/handlers/pong';
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
   registry.register(KINDS.CONV_CREATE, handleConvPayload);
   registry.register(KINDS.CONV_UPDATE, handleConvPayload);
   registry.register(KINDS.CONV_PAYLOAD, handleConvPayload);
+  registry.register(KINDS.CONV_DATA_RESULT, handleConvDataResult);
   registry.register(KINDS.TYPING, handleTyping);
   registry.register(KINDS.PRESENCE_UPDATE, handlePresence);
   registry.register(KINDS.PONG, handlePong);

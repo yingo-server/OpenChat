@@ -52,7 +52,7 @@
 | **AdminAPI** | `bridge/adminapi` | HTTP 请求 → 帧对象的翻译器（唯一非 socket 入口），JWT/TOTP 校验 | 不执行管理动作本身 |
 | **Supervisor** | `bridge/supervisor` | 信号处理、生命周期、优雅排空 | 不碰任何帧 |
 
-**验收标准**：任何组件单测的 import 不得出现兄弟组件实现包。CI 加 import-lint 强制。
+**验收标准**：任何组件单测的 import 不得出现兄弟组件实现包。CI 加 import-lint 强制（已落地 `scripts/importlint.sh`，挂 `make lint` 与 CI）。**豁免范围**：仅 `internal/bridge` 根包的装配级测试（如 `pipeline_test.go`，需看到全部被装配组件），组件子包测试不豁免。
 
 ### 2.3 级间契约
 
@@ -92,7 +92,7 @@ type Frame struct {
 | 控制消息独立 API | HELLO/ACK/SUB/PING 都是 kind 9xx 帧 | 一套编解码/日志/metrics/trace 全覆盖 |
 | 管理指令走内部 RPC | AdminAPI 把 HTTP 翻译成 5xx 帧注入 Bus | 管理指令审计=帧日志，与消息同构 |
 | metrics 主动上报 | Bridge 指标=bridge.internal topic 的 913 TOPOLOGY 帧，exporter 是订阅者 | 指标管道与数据管道同一套代码 |
-| 健康检查 HTTP /health | 健康检查=HEARTBEAT 帧，systemd watchdog 由 Supervisor 转译 | 少一个端口、一条代码路径 |
+| 健康检查 HTTP /health | v1.0 保留 HTTP `/healthz`（探针生态刚需，user 端口与 admin 端口各挂一个）；HEARTBEAT 帧方案为 split 形态预留，systemd watchdog 由 Supervisor 转译（P2-4） | 探针可直接 HTTP 探活 |
 | feature flag 拉取 | FEATURE_FLAGS 帧(kind 911)广播到 `sys.>` | 已有机制，无新增 |
 
 每个连接是 Bus 上的"文件描述符"：订阅=open(topic)，退订=close，订阅 TTL=租约。SessionManager 长得像小内核的 fd 表。
@@ -122,13 +122,13 @@ chatd/
 └── deploy/systemd/chatd{,-bridge,-user,-data,-admin}.service
 ```
 
-**禁令清单（CI import-lint）**：
+**禁令清单（CI import-lint，已落地 `scripts/importlint.sh`，挂 `make lint` 与 CI；豁免仅限 `internal/bridge` 根包装配级测试）**：
 - `bridge/*` 组件包互相 import → 编译失败（只允许 pipeline.go 装配）
 - `user/ data/ admin/` import `bridge/` → 编译失败（只能 import transport/ + proto）
 - 任何包 import `os/signal` 除 pkg/signalset 与 bridge/supervisor → 编译失败
 - 任何包直接写文件做日志 → 编译失败
 
-**embedded 模式** = 四条进程内流水线 + EmbeddedTransport：`cmd/chatd/main.go` 读 TOML → 对每个启用层构造 pipeline → 全部接到同一个 bus → supervisor.Run()。装配代码 < 200 行。
+**embedded 模式** = 四条进程内流水线 + EmbeddedTransport：`cmd/chatd/main.go` 读 TOML → 对每个启用层构造 pipeline → 全部接到同一个 bus → supervisor.Run()。装配只做装配、零业务规则（不再承诺具体行数）。
 
 ## 5. 信号处理与生命周期
 
@@ -137,7 +137,7 @@ chatd/
 | **SIGTERM/SIGINT** | 优雅退出 | 广播 910 SHUTDOWN_NOTICE(deadline=now+5s) → 停止 accept → Egress 排空(≤5s) → 退出码 0 |
 | **SIGHUP** | 配置热重载 | 重读 TOML → diff → 只应用白名单项（背压阈值/路由表/日志级别/flags）→ 广播 912 CONFIG_UPDATE。语法错不退出，保持旧配置 |
 | **SIGUSR1** | 状态 dump | 连接表/队列水位/in-flight seq 打到 stdout，不影响服务 |
-| **SIGUSR2** | 预留 GC/heap dump | stdout 摘要 |
+| **SIGUSR2** | 预留 GC/heap dump — ⚠️ 未实现（预留） | handlers 未接线（signalset 映射为 Custom，chatd watch 未处理） |
 | **SIGQUIT** | 崩溃退出 | goroutine 全栈→stderr，systemd 拉起走 crash-only 恢复 |
 
 退出码契约：0 优雅退出；1 配置不可用；2 装配失败；70 不变量破坏（必须重启清状态）；75 临时失败（端口占用）。
@@ -167,7 +167,7 @@ INFO 转发日志按 kind 采样（消息 10%）；WARN/ERROR 全量；journald 
 | `chatd-ctl peers` | 读 TOPOLOGY 帧打印层拓扑 |
 | `chatd-ctl flags [--set k=v]` | flag 读写（AdminAPI→911 帧），落盘回写 TOML |
 | `chatd-ctl trace <trace_id>` | 跨全部 5 个 unit grep |
-| `chatd-ctl bench --layer data` | 注入诊断帧（990-999）环回压测 |
+| `chatd-ctl bench --layer data` | 注入诊断帧（990-999）环回压测 — ⚠️ v1.0 未实现（990 落 NO_ROUTE，无 handler，P3-4） |
 
 ctl 只通过信号与 AdminAPI 两个既有通道通信，不额外开 socket。
 

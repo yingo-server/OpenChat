@@ -282,7 +282,7 @@ const MessageRow = memo(function MessageRow({ id, prevId, isUnreadStart, onOpenM
   const gap = prev ? message.sentAt - prev.sentAt : Number.POSITIVE_INFINITY;
   const grouped = Boolean(prev) && gap < FIVE_MINUTES && prev?.senderId === message.senderId;
   const showAvatar = !mine && !grouped;
-  const showSenderName = !mine && !grouped && Boolean(conv && conv.convType !== 0);
+  const showSenderName = !mine && !grouped && Boolean(conv && conv.convType !== 1);
   const senderName = memberName(conv, message.senderId);
   const Renderer = getRenderer(message.type) ?? getRenderer('unknown');
   const plain = getRendererChrome(message.type) === 'plain';

@@ -40,6 +40,12 @@ type DB struct {
 	sqldriver string
 }
 
+// ScanOlder delegates to the message reader's archive scan (see msgreader.go).
+// Promotion: DB composes per-domain implementations; *DB satisfies job.HotScanner.
+func (db *DB) ScanOlder(ctx context.Context, cutoff int64, limit int) ([]store.HotMsg, error) {
+	return db.msgr.ScanOlder(ctx, cutoff, limit)
+}
+
 // Open opens (creating if needed) the hot SQLite database at path and applies
 // the hot migration tree. PRAGMAs per docs: WAL journaling (readers never
 // block the single writer), busy_timeout 5000ms (writers queue politely
@@ -211,6 +217,10 @@ func (d *DB) SetMemberRole(ctx context.Context, cid, uid int64, role int) error 
 
 func (d *DB) GetConvMeta(ctx context.Context, cid int64) (*store.ConvMeta, error) {
 	return d.conv.GetConvMeta(ctx, cid)
+}
+
+func (d *DB) SingleChatBetween(ctx context.Context, uid1, uid2 int64) (int64, error) {
+	return d.conv.SingleChatBetween(ctx, uid1, uid2)
 }
 
 func (d *DB) NextSeq(ctx context.Context, cid int64) (int64, error) { return d.conv.NextSeq(ctx, cid) }

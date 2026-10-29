@@ -126,15 +126,21 @@ func (c *apiClient) doJSON(ctx context.Context, method, path string, body any) (
 	return raw, nil
 }
 
-// classifyAPIError maps auth failures onto exit code 77 and leaves everything
-// else as a plain error (exit 1).
+// classifyAPIError maps auth failures onto exit code 77, missing targets
+// onto exit 65 (admin-data §7「目标不存在 65」), and leaves everything else
+// as a plain error (exit 1).
 func classifyAPIError(err error) error {
 	if err == nil {
 		return nil
 	}
 	var se *statusError
-	if errors.As(err, &se) && (se.Status == http.StatusUnauthorized || se.Status == http.StatusForbidden) {
-		return deniedf("%s（令牌无效/无权限：请重新 adminctl login）", se.Error())
+	if errors.As(err, &se) {
+		switch se.Status {
+		case http.StatusUnauthorized, http.StatusForbidden:
+			return deniedf("%s（令牌无效/无权限：请重新 adminctl login）", se.Error())
+		case http.StatusNotFound:
+			return notFoundf("%s", se.Error())
+		}
 	}
 	return err
 }

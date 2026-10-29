@@ -17,11 +17,13 @@
  */
 import { createEnvelope, type Envelope } from '../proto/codec';
 import {
+  decodeConvCreate,
   decodeMessageSend,
   decodePing,
   decodeResumeRequest,
   decodeSyncRequest,
   encodeConvPayload,
+  encodeDataResult,
   encodeFeatureFlags,
   encodeMsgAck,
   encodeMsgNew,
@@ -37,7 +39,8 @@ import {
   type MsgNewPayload,
 } from '../proto/payload';
 import { KINDS } from '../protocol/kinds';
-import { AuthError, type AuthApi, type AuthSession } from '../auth/provider';
+import { AuthError, type AuthApi } from '../auth/provider';
+import { mtypeToMediaType, registerMockMediaUrl, type UploadResult } from '../media';
 import type { ConnState, ConnStateMeta, NetClient, ResumeTicket, StateListener } from '../transport/types';
 
 export const MOCK_SELF_ID = 1001;
@@ -67,6 +70,8 @@ export class MockBridge implements NetClient {
   private started = false;
   private frameSeq = 0;
   private convs: MockConv[] = [];
+  /** mock 媒体仓库：media_id → blob（`media/{id}` 语义的内存版） */
+  private mediaBlobs = new Map<string, Blob>();
   private timers = new Set<ReturnType<typeof setTimeout>>();
 
   private frameListeners = new Set<(env: Envelope) => void>();
@@ -124,6 +129,9 @@ export class MockBridge implements NetClient {
       case KINDS.MSG_SEND:
         this.handleSend(env);
         return true;
+      case KINDS.CONV_CREATE:
+        this.handleConvCreate(env);
+        return true;
       case KINDS.MSG_READ:
         return true;
       default:
@@ -162,6 +170,51 @@ export class MockBridge implements NetClient {
       this.bootstrap();
       this.later(() => this.deliverResume(), 60);
     }, 400);
+  }
+
+  /** mock 媒体读取（`media/{id}` 语义的内存版）。 */
+  mediaBlob(mediaId: string): Blob | null {
+    return this.mediaBlobs.get(mediaId) ?? null;
+  }
+
+  /**
+   * mock 媒体上传：内存存 blob → media_id（`m_up_` 前缀），并注册 blob URL
+   * 供 renderers 回显（net/media.resolveMediaUrl 在 mock 模式下查询）。
+   * 规则与服务端 mediasvc 同源：blocked 扩展名拒绝、大小上限一致。
+   */
+  async uploadMedia(file: File, onProgress?: (ratio: number) => void): Promise<UploadResult> {
+    const { classifyUpload, mtypeToMediaType } = await import('../media');
+    const classified = await classifyUpload(file);
+    // 模拟分片上传进度
+    for (let ratio = 0.25; ratio < 1; ratio += 0.25) {
+      await delay(90);
+      onProgress?.(ratio);
+    }
+    await delay(90);
+    onProgress?.(1);
+    const mediaId = `m_up_${Date.now()}_${Math.abs(hash(file.name + file.size))}`;
+    this.mediaBlobs.set(mediaId, file.slice(0));
+    registerMockMediaUrl(mediaId, URL.createObjectURL(file));
+    return {
+      mediaId,
+      size: file.size,
+      mime: classified.mime,
+      mtype: classified.mtype,
+    };
+  }
+
+  /** mock 上传结果 → 消息 Media 字段（图片宽高由调用方从 Image 补齐）。 */
+  toMedia(result: UploadResult, extra: Partial<Media> = {}): Media {
+    return {
+      mediaId: result.mediaId,
+      type: mtypeToMediaType(result.mtype),
+      name: extra.name,
+      size: result.size,
+      mime: result.mime,
+      width: extra.width,
+      height: extra.height,
+      status: 'ready',
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -221,6 +274,73 @@ export class MockBridge implements NetClient {
     missing.forEach((message, index) => {
       this.later(() => this.emitMsgNew(message), 10 + index * 4);
     });
+  }
+
+  /**
+   * CONV_CREATE(200)：与真实服务端同语义 —— 单聊去重、群聊必须带群名。
+   * 成功后回 931（body 为完整 ConvPayload，含新 cid），由 931 handler
+   * upsert conv-store 并打开会话。
+   */
+  private handleConvCreate(env: Envelope): void {
+    let input: { title?: string; convType: number; memberIds: number[] };
+    try {
+      input = decodeConvCreate(env.payload);
+    } catch {
+      return;
+    }
+    const target = input.memberIds[0] ?? 0;
+    if (!target) {
+      this.emit(KINDS.CONV_DATA_RESULT, {
+        requestId: env.requestId,
+        payload: encodeDataResult({ op: 1, ok: false, error: 'target user required' }),
+      });
+      return;
+    }
+    const convType = input.convType === 2 ? 2 : 1;
+    let conv: MockConv | undefined;
+    if (convType === 1) {
+      conv = this.convs.find(
+        (candidate) =>
+          candidate.convType === 1 &&
+          candidate.members.length === 2 &&
+          candidate.members.some((m) => m.userId === MOCK_SELF_ID) &&
+          candidate.members.some((m) => m.userId === target),
+      );
+    }
+    if (!conv) {
+      const nextId = this.convs.reduce((max, candidate) => Math.max(max, candidate.convId), 1000) + 1;
+      conv = {
+        convId: nextId,
+        title: convType === 2 ? input.title?.trim() || '新群聊' : `用户 ${target}`,
+        convType,
+        createdAt: Date.now(),
+        serverSeq: 0,
+        members: [
+          { userId: MOCK_SELF_ID, role: 2, joinedAt: Date.now(), mutedUntil: 0 },
+          { userId: target, role: 0, joinedAt: Date.now(), mutedUntil: 0 },
+        ],
+        messages: [],
+      };
+      this.convs.push(conv);
+      this.persist();
+    }
+    const payload: ConvPayload = {
+      convId: conv.convId,
+      title: conv.title,
+      convType: conv.convType,
+      createdAt: conv.createdAt,
+      members: conv.members,
+      version: 1,
+      lastSeq: conv.serverSeq,
+      unread: 0,
+    };
+    this.later(() => {
+      this.emit(KINDS.CONV_DATA_RESULT, {
+        requestId: env.requestId,
+        payload: encodeDataResult({ op: 1, ok: true, body: encodeConvPayload(payload) }),
+      });
+      this.emitConv(conv!);
+    }, 40);
   }
 
   private handleSend(env: Envelope): void {
@@ -366,12 +486,13 @@ export class MockBridge implements NetClient {
 
   private emit(
     kind: number,
-    options: { convId?: number; userId?: number; payload: Uint8Array },
+    options: { convId?: number; userId?: number; payload: Uint8Array; requestId?: string },
   ): void {
     if (this._state !== 'online') return;
     const env = createEnvelope({
       id: ++this.frameSeq,
       kind,
+      requestId: options.requestId,
       convId: options.convId,
       userId: options.userId,
       sentAt: Date.now(),
@@ -445,7 +566,7 @@ function seed(): MockConv[] {
   const product: MockConv = {
     convId: 1,
     title: '产品讨论组',
-    convType: 1,
+    convType: 2,
     createdAt: now - 7 * 86400_000,
     serverSeq: 0,
     members: [
@@ -466,7 +587,7 @@ function seed(): MockConv[] {
   const direct: MockConv = {
     convId: 2,
     title: '林小雨',
-    convType: 0,
+    convType: 1,
     createdAt: now - 30 * 86400_000,
     serverSeq: 0,
     members: [
@@ -558,6 +679,25 @@ function demoFile(): Media {
   };
 }
 
+/** net/media.ts 在 mock 模式下调用的入口（避免 media.ts ↔ mockBridge 顶层循环依赖）。 */
+export async function mockUploadMedia(
+  file: File,
+  onProgress?: (ratio: number) => void,
+): Promise<UploadResult> {
+  const bridge = getActiveBridge();
+  if (!bridge) throw new Error('mock upload before bridge init');
+  return bridge.uploadMedia(file, onProgress);
+}
+
+/** 当前活跃 bridge（模块级单例，bootstrap 创建时注册）。 */
+let activeBridge: MockBridge | null = null;
+export function setActiveBridge(bridge: MockBridge | null): void {
+  activeBridge = bridge;
+}
+function getActiveBridge(): MockBridge | null {
+  return activeBridge;
+}
+
 function nextMsgId(convId: number, seq: number): number {
   return 1_700_000_000_000 + convId * 100_000 + seq;
 }
@@ -646,15 +786,43 @@ export function createMockAuthApi(): AuthApi {
   };
 }
 
-function session(displayName: string, guest: boolean): AuthSession {
+/**
+ * mock 登录会话 —— 与 authsvc sessionResponse（server/internal/authsvc/
+ * tokens.go:27）逐字段同形（snake_case），sessionId = deviceId（tokens.go:74
+ * SessionID: deviceID，真实端同语义）。返回值经 mapAuthSession 映射为前端
+ * AuthSession 领域对象，与真实端走同一条路径。
+ */
+export interface RawSessionResponse {
+  user_id: number;
+  device_id: string;
+  access_token: string;
+  /** tokens.go:31 "alias kept for older clients" —— 保留以锁死契约形状 */
+  token: string;
+  refresh_token: string;
+  expires_at: number;
+  expires_at_unix: number;
+  session_id: string;
+  guest: boolean;
+  is_new_user: boolean;
+  profile?: { display_name?: string };
+}
+
+function session(displayName: string, guest: boolean): RawSessionResponse {
+  const now = Date.now();
+  const deviceId = `mock-device-${Math.floor(now / 1000)}`;
+  const expiresAt = now + 7 * 86400_000;
   return {
-    token: `mock-token-${Date.now()}`,
-    refreshToken: `mock-refresh-${Date.now()}`,
-    userId: MOCK_SELF_ID,
-    sessionId: `mock-session-${Date.now()}`,
-    expiresAt: Date.now() + 7 * 86400_000,
+    user_id: MOCK_SELF_ID,
+    device_id: deviceId,
+    access_token: `mock-token-${now}`,
+    token: `mock-token-${now}`, // tokens.go:31 alias kept for older clients
+    refresh_token: `mock-refresh-${now}`,
+    expires_at: expiresAt, // 毫秒（与真实端一致）
+    expires_at_unix: Math.floor(expiresAt / 1000),
+    session_id: deviceId,
     guest,
-    profile: { displayName },
+    is_new_user: true, // mock 首登即新用户，真实端由 authsvc 判定
+    profile: displayName ? { display_name: displayName } : undefined,
   };
 }
 

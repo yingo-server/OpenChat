@@ -21,13 +21,18 @@ type config struct {
 	AdminRESTListen string // admin REST listen address (/api/v1/*) — loopback only
 	PublicOrigin    string // e.g. https://chat.example.com
 
-	HotDB      string // SQLite hot database
-	AdminDB    string // SQLite admin database (separate file, least privilege)
-	ColdDSN    string // PostgreSQL DSN (parsed, not connected in this build)
-	PolicyPath string // policy.json
-	JWTKeyPath string // Ed25519 PKCS#8 PEM
-	PIIKeyPath string // phone_lookup_key (hex) — identifier HMAC index key
-	MediaDir   string
+	HotDB   string // SQLite hot database
+	AdminDB string // SQLite admin database (separate file, least privilege)
+	ColdDSN string // PostgreSQL DSN (parsed, not connected in this build)
+	// RequireAuditStore makes a missing cold store a startup failure. When
+	// false (default) a coldDB==nil deployment starts but logs an ERROR: audit
+	// events will not persist. When true, startup aborts unless a cold DB with
+	// a registered driver is available.
+	RequireAuditStore bool
+	PolicyPath        string // policy.json
+	JWTKeyPath        string // Ed25519 PKCS#8 PEM
+	PIIKeyPath        string // phone_lookup_key (hex) — identifier HMAC index key
+	MediaDir          string
 
 	LogLevel string
 
@@ -100,6 +105,8 @@ func loadConfig(path string) (*config, error) {
 			cfg.AdminDB = v
 		case "cold_dsn":
 			cfg.ColdDSN = v
+		case "require_audit_store":
+			cfg.RequireAuditStore = v == "true"
 		case "policy_path":
 			cfg.PolicyPath = v
 		case "jwt_key_path":

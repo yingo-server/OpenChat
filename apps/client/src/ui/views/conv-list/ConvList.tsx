@@ -10,11 +10,15 @@ import type { ConvRecord } from '../../../core/types';
 import { Avatar } from '../../components/Avatar';
 import { NetworkBar } from '../../components/NetworkBar';
 import { ConvListSkeleton } from '../../components/Skeleton';
-import { MuteIcon, PinIcon, SearchIcon, SettingsIcon } from '../../components/icons';
+import { MuteIcon, PinIcon, PlusIcon, SearchIcon, SettingsIcon } from '../../components/icons';
 import { t, type I18nKey } from '../../i18n';
 import { formatConvTime } from '../../utils/format';
 import { navigate } from '../../router';
 import { toast } from '../../components/Toast';
+import { getAppServices } from '../../services/app-services';
+import { createEnvelope } from '../../../net/proto/codec';
+import { encodeConvCreate } from '../../../net/proto/payload';
+import { KINDS } from '../../../net/protocol/kinds';
 
 const PREVIEW_KEYS: Record<string, I18nKey> = {
   image: 'conv.preview.image',
@@ -29,6 +33,7 @@ export function ConvList({ className = '' }: { className?: string }) {
   const convs = useConvStore((state) => state.convs);
   const conn = useConnStore((state) => state.state);
   const [query, setQuery] = useState('');
+  const [createOpen, setCreateOpen] = useState(false);
 
   const filtered = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -48,6 +53,15 @@ export function ConvList({ className = '' }: { className?: string }) {
       <header className="pt-safe flex h-14 shrink-0 items-center justify-between border-b border-line px-4">
         <h1 className="text-title text-ink">{t('conv.title')}</h1>
         <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            aria-label={t('conv.create.title')}
+            title={t('conv.create.title')}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full text-ink-secondary hover:bg-surface-2"
+          >
+            <PlusIcon size={20} />
+          </button>
           <button
             type="button"
             onClick={() => toast.info(t('common.comingSoon'))}
@@ -89,11 +103,13 @@ export function ConvList({ className = '' }: { className?: string }) {
         {order.length === 0 && (conn === 'connecting' || conn === 'reconnecting') ? (
           <ConvListSkeleton loading />
         ) : filtered.length === 0 ? (
-          <EmptyConv search={query.trim().length > 0} />
+          <EmptyConv search={query.trim().length > 0} onCreate={() => setCreateOpen(true)} />
         ) : (
           filtered.map((convId) => <ConvRow key={convId} convId={convId} />)
         )}
       </div>
+
+      {createOpen ? <CreateConvDialog onClose={() => setCreateOpen(false)} /> : null}
     </section>
   );
 }
@@ -104,7 +120,7 @@ const ConvRow = memo(function ConvRow({ convId }: { convId: number }) {
   const draft = useConvStore((state) => state.drafts[convId]);
   const selfId = useConvStore((state) => state.selfUserId);
   const otherId =
-    conv && conv.convType === 0 ? (conv.members.find((member) => member.userId !== selfId)?.userId ?? 0) : 0;
+    conv && conv.convType === 1 ? (conv.members.find((member) => member.userId !== selfId)?.userId ?? 0) : 0;
   const presence = usePresenceStore((state) => (otherId ? state.byUserId[otherId]?.status : undefined));
 
   if (!conv) return null;
@@ -208,7 +224,7 @@ function previewOf(conv: ConvRecord, draft: string | undefined, selfId: number):
   return conv.lastSenderId && conv.lastSenderId === selfId ? t('conv.you', { text }) : text;
 }
 
-function EmptyConv({ search }: { search: boolean }) {
+function EmptyConv({ search, onCreate }: { search: boolean; onCreate: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center px-6 py-16 text-center">
       <div className="mb-4 flex h-32 w-32 items-center justify-center rounded-full bg-surface-2 text-ink-tertiary">
@@ -221,12 +237,153 @@ function EmptyConv({ search }: { search: boolean }) {
       {!search ? (
         <button
           type="button"
-          onClick={() => toast.info(t('common.comingSoon'))}
+          onClick={onCreate}
           className="mt-4 rounded-md bg-primary-500 px-4 py-2 text-body text-ink-inverse hover:bg-primary-600"
         >
           {t('conv.empty.action')}
         </button>
       ) : null}
+    </div>
+  );
+}
+
+function CreateConvDialog({ onClose }: { onClose: () => void }) {
+  const [mode, setMode] = useState<1 | 2>(1);
+  const [uid, setUid] = useState('');
+  const [title, setTitle] = useState('');
+  const [error, setError] = useState('');
+  const [sending, setSending] = useState(false);
+
+  const submit = () => {
+    const target = Number(uid.trim());
+    if (!Number.isSafeInteger(target) || target <= 0) {
+      setError(t('conv.create.invalidUid'));
+      return;
+    }
+    const groupTitle = title.trim();
+    if (mode === 2 && (!groupTitle || [...groupTitle].length > 30)) {
+      setError(t('conv.create.invalidTitle'));
+      return;
+    }
+    const client = getAppServices().client;
+    if (!client) {
+      setError(t('conv.create.sendFailed'));
+      return;
+    }
+    setSending(true);
+    setError('');
+    const sent = client.send(
+      createEnvelope({
+        kind: KINDS.CONV_CREATE,
+        requestId: `conv-create-${Date.now()}`,
+        payload: encodeConvCreate({
+          title: mode === 2 ? groupTitle : '',
+          convType: mode,
+          memberIds: [target],
+        }),
+      }),
+    );
+    if (!sent) {
+      setSending(false);
+      setError(t('conv.create.sendFailed'));
+      return;
+    }
+    onClose();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-modal flex items-center justify-center bg-scrim/40 p-4"
+      onClick={onClose}
+      role="presentation"
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-conv-title"
+        className="w-full max-w-[400px] rounded-xl bg-elevated p-6 shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h2 id="create-conv-title" className="text-title text-ink">
+          {t('conv.create.title')}
+        </h2>
+        <p className="mt-1 text-body-sm text-ink-tertiary">{t('conv.create.hint')}</p>
+
+        <div className="mt-4 flex rounded-md bg-surface-2 p-0.5" role="tablist">
+          {([1, 2] as const).map((value) => (
+            <button
+              key={value}
+              type="button"
+              role="tab"
+              aria-selected={mode === value}
+              onClick={() => {
+                setMode(value);
+                setError('');
+              }}
+              className={[
+                'inline-flex h-8 flex-1 items-center justify-center rounded-sm text-body-sm transition-colors duration-micro',
+                mode === value ? 'bg-surface text-ink shadow-sm' : 'text-ink-tertiary hover:text-ink',
+              ].join(' ')}
+            >
+              {t(value === 1 ? 'conv.create.direct' : 'conv.create.group')}
+            </button>
+          ))}
+        </div>
+
+        <label className="mt-4 block text-body-sm text-ink-secondary" htmlFor="create-conv-uid">
+          {t('conv.create.uid')}
+        </label>
+        <input
+          id="create-conv-uid"
+          type="text"
+          inputMode="numeric"
+          value={uid}
+          onChange={(event) => setUid(event.target.value.replace(/[^0-9]/g, ''))}
+          placeholder={t('conv.create.uidPlaceholder')}
+          className="mt-1.5 h-control-md w-full rounded-sm border border-line bg-surface px-3 text-body text-ink placeholder:text-ink-tertiary focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+        />
+
+        {mode === 2 ? (
+          <>
+            <label className="mt-3 block text-body-sm text-ink-secondary" htmlFor="create-conv-title-input">
+              {t('conv.create.groupTitle')}
+            </label>
+            <input
+              id="create-conv-title-input"
+              type="text"
+              value={title}
+              maxLength={30}
+              onChange={(event) => setTitle(event.target.value)}
+              placeholder={t('conv.create.groupTitlePlaceholder')}
+              className="mt-1.5 h-control-md w-full rounded-sm border border-line bg-surface px-3 text-body text-ink placeholder:text-ink-tertiary focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+            />
+          </>
+        ) : null}
+
+        {error ? (
+          <p role="alert" className="mt-2 text-body-sm text-danger-500">
+            {error}
+          </p>
+        ) : null}
+
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-control-md rounded-md border border-line bg-surface px-4 text-body text-ink hover:bg-surface-2"
+          >
+            {t('common.cancel')}
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={sending}
+            className="h-control-md rounded-md bg-primary-500 px-4 text-body text-ink-inverse hover:bg-primary-600 disabled:opacity-60"
+          >
+            {t('conv.create.submit')}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
 	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
 	"github.com/yingo-server/OpenChat/server/internal/proto"
+	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
 )
 
 // hotBundle adapts the fakes into HotStores (one struct, per-domain fields).
@@ -62,6 +63,9 @@ func (h hotBundle) SetMemberRole(ctx context.Context, cid, uid int64, role int) 
 }
 func (h hotBundle) GetConvMeta(ctx context.Context, cid int64) (*store.ConvMeta, error) {
 	return h.conv.GetConvMeta(ctx, cid)
+}
+func (h hotBundle) SingleChatBetween(ctx context.Context, uid1, uid2 int64) (int64, error) {
+	return h.conv.SingleChatBetween(ctx, uid1, uid2)
 }
 func (h hotBundle) NextSeq(ctx context.Context, cid int64) (int64, error) {
 	return h.conv.NextSeq(ctx, cid)
@@ -342,5 +346,75 @@ func waitEnv(t *testing.T, ch <-chan *env) *env {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for outbound env")
 		return nil
+	}
+}
+
+// media reference end-to-end: a MSG_SEND carrying one media must land the
+// media_id in the stored content AND survive into the MSG_NEW fanout payload.
+func TestMsgSendMediaPersistAndFanout(t *testing.T) {
+	p, msgs, convs, _ := newTestPipe(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go p.fl.run(ctx)
+	go p.senderOf()
+	cid, _ := convs.CreateConv(ctx, &store.ConvMeta{CType: 2, CreatedBy: 7, CreatedAt: 1}, 7)
+	// A second member so the flusher fans MSG_NEW out (sender is skipped).
+	_ = convs.AddMember(ctx, &store.Member{Cid: cid, UID: 8, Role: 1, JoinedAt: 1})
+
+	const mediaID = "mID_media1234567890ab-_"
+	payload, err := wire.Marshal(wire.MessagePayload{
+		ClientMsgID: "c-media",
+		Text:        "pic",
+		Media: []wire.Media{{
+			MediaID: mediaID, MType: 1, Name: "a.png", Size: 1234,
+			Mime: "image/png", Width: 2, Height: 2,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	p.dispatchReq(ctx, mkReq(101, cid, 7, string(payload)))
+
+	// Drain the outbound lane: ack (sender) then MSG_NEW (uid 8). The commit
+	// happens before either is emitted, so snapshot is valid afterwards.
+	var msgNew []byte
+	for i := 0; i < 3; i++ {
+		e := waitEnv(t, p.Outbound())
+		if e.Kind == uint32(kinds.KindMsgNew) {
+			msgNew = e.Payload
+			break
+		}
+	}
+
+	// 1) stored content keeps the media reference.
+	stored := msgs.Snapshot()
+	if len(stored) != 1 {
+		t.Fatalf("stored %d messages, want 1", len(stored))
+	}
+	var sc wire.MessagePayload
+	if err := wire.Unmarshal(stored[0].Content, &sc); err != nil {
+		t.Fatalf("stored content decode: %v", err)
+	}
+	if len(sc.Media) != 1 || sc.Media[0].MediaID != mediaID {
+		t.Fatalf("stored media lost: %+v (content=%s)", sc.Media, stored[0].Content)
+	}
+
+	// 2) the MSG_NEW payload fanned to uid 8 carries media[0].media_id.
+	if msgNew == nil {
+		t.Fatal("no MSG_NEW emitted")
+	}
+	var out struct {
+		Content struct {
+			Media []struct {
+				MediaID string `json:"media_id"`
+				Mime    string `json:"mime"`
+			} `json:"media"`
+		} `json:"content"`
+	}
+	if err := wire.Unmarshal(msgNew, &out); err != nil {
+		t.Fatalf("msgnew decode: %v (payload %s)", err, msgNew)
+	}
+	if len(out.Content.Media) != 1 || out.Content.Media[0].MediaID != mediaID {
+		t.Fatalf("MSG_NEW media wrong: %+v (payload %s)", out.Content.Media, msgNew)
 	}
 }

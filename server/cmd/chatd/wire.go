@@ -55,13 +55,22 @@ func newFrameSource(resolve uidResolver, lg *log.Logger) pipe.FrameSource {
 				if uid == 0 && lg != nil {
 					lg.Debug("frame without uid", "kind", kinds.KindName(env.Kind), "conn", intf.GetConnId())
 				}
+				kind := env.Kind
+				payload := payloadForPipe(kind, env.Payload)
+				// User-facing conversation kinds are translated into the data
+				// layer's 930 CONV_DATA lane (ops 1/5/2/3). The translation is
+				// deliberately here in the assembly: the pipe only understands
+				// wire.ConvPayload/MemberOp, never client chatpb messages.
+				if mappedKind, mappedPayload, ok := convKindToPipe(env); ok {
+					kind, payload = mappedKind, mappedPayload
+				}
 				return pipe.Req{
-					Kind:      env.Kind,
+					Kind:      kind,
 					RequestID: env.GetRequestId(),
 					ConvID:    env.GetConvId(),
 					UserID:    uint64(uid),
 					TraceID:   intf.GetTraceId(),
-					Payload:   payloadForPipe(env.Kind, env.Payload),
+					Payload:   payload,
 					Frame:     f,
 				}
 			}
@@ -83,19 +92,149 @@ func newFrameSource(resolve uidResolver, lg *log.Logger) pipe.FrameSource {
 func payloadForPipe(kind uint32, payload []byte) []byte {
 	switch kind {
 	case kinds.KindMsgSend:
+		// Browser clients speak the JSON wire form (snake_case); native
+		// clients speak protobuf. Accept both so MSG_SEND works end to end.
+		if isJSONPayload(payload) {
+			var raw struct {
+				ClientMsgID      string `json:"client_msg_id"`
+				ClientMsgIDCamel string `json:"clientMsgId"`
+				Text             string `json:"text"`
+				ReplyTo          uint64 `json:"reply_to"`
+				ReplyToCamel     uint64 `json:"replyTo"`
+				Media            []struct {
+					MediaID    string `json:"media_id"`
+					MediaIDCam string `json:"mediaId"`
+					MType      int32  `json:"mtype"`
+					Name       string `json:"name"`
+					Size       int64  `json:"size"`
+					Mime       string `json:"mime"`
+					Width      uint32 `json:"width"`
+					Height     uint32 `json:"height"`
+					DurationMs uint32 `json:"duration_ms"`
+					DurationMc uint32 `json:"durationMs"`
+				} `json:"media"`
+				Content *struct {
+					Media []struct {
+						MediaID    string `json:"media_id"`
+						MediaIDCam string `json:"mediaId"`
+						MType      int32  `json:"mtype"`
+						Name       string `json:"name"`
+						Size       int64  `json:"size"`
+						Mime       string `json:"mime"`
+						Width      uint32 `json:"width"`
+						Height     uint32 `json:"height"`
+						DurationMs uint32 `json:"duration_ms"`
+						DurationMc uint32 `json:"durationMs"`
+					} `json:"media"`
+				} `json:"content"`
+			}
+			if err := json.Unmarshal(payload, &raw); err == nil {
+				clientMsgID := raw.ClientMsgID
+				if clientMsgID == "" {
+					clientMsgID = raw.ClientMsgIDCamel
+				}
+				replyTo := raw.ReplyTo
+				if replyTo == 0 {
+					replyTo = raw.ReplyToCamel
+				}
+				media := make([]wire.Media, 0, len(raw.Media))
+				for _, m := range raw.Media {
+					id := m.MediaID
+					if id == "" {
+						id = m.MediaIDCam
+					}
+					dm := m.DurationMs
+					if dm == 0 {
+						dm = m.DurationMc
+					}
+					media = append(media, wire.Media{MediaID: id, MType: m.MType, Name: m.Name,
+						Size: m.Size, Mime: m.Mime, Width: m.Width, Height: m.Height, DurationMs: dm})
+				}
+				if len(media) == 0 && raw.Content != nil {
+					for _, m := range raw.Content.Media {
+						id := m.MediaID
+						if id == "" {
+							id = m.MediaIDCam
+						}
+						dm := m.DurationMs
+						if dm == 0 {
+							dm = m.DurationMc
+						}
+						media = append(media, wire.Media{MediaID: id, MType: m.MType, Name: m.Name,
+							Size: m.Size, Mime: m.Mime, Width: m.Width, Height: m.Height, DurationMs: dm})
+					}
+				}
+				if out, err := json.Marshal(wire.MessagePayload{
+					ClientMsgID: clientMsgID,
+					Text:        raw.Text,
+					Media:       media,
+					ReplyTo:     replyTo,
+				}); err == nil {
+					return out
+				}
+			}
+			return payload
+		}
 		var m chatpb.MessagePayload
 		if err := m.Unmarshal(payload); err != nil {
 			return payload
 		}
+		pbMedia := m.GetMedia()
+		if len(pbMedia) == 0 && m.GetContent() != nil {
+			pbMedia = m.GetContent().GetMedia()
+		}
+		media := make([]wire.Media, 0, len(pbMedia))
+		for _, mm := range pbMedia {
+			media = append(media, wire.Media{
+				MediaID: mm.GetMediaId(), MType: mm.GetMtype(), Name: mm.GetName(),
+				Size: mm.GetSize(), Mime: mm.GetMime(), Width: mm.GetWidth(),
+				Height: mm.GetHeight(), DurationMs: mm.GetDurationMs(),
+			})
+		}
 		out, err := json.Marshal(wire.MessagePayload{
 			ClientMsgID: m.GetClientMsgId(),
 			Text:        m.GetText(),
+			Media:       media,
 			ReplyTo:     m.GetReplyTo(),
 		})
 		if err != nil {
 			return payload
 		}
 		return out
+	case kinds.KindSyncRequest:
+		// SYNC_REQUEST (8): normalize either the browser JSON form
+		// ({convId,sinceSeq,limit} or snake_case) or the native protobuf
+		// chatpb.SyncRequest into the pipe's wire.ReadHistory JSON shape that
+		// onSyncRequest parses.
+		if isJSONPayload(payload) {
+			var raw struct {
+				ConvID     uint64 `json:"convId"`
+				ConvIDSnk  uint64 `json:"conv_id"`
+				SinceSeq   uint64 `json:"sinceSeq"`
+				SinceSnake uint64 `json:"since_seq"`
+				Limit      uint32 `json:"limit"`
+			}
+			if err := json.Unmarshal(payload, &raw); err == nil {
+				convID := raw.ConvID
+				if convID == 0 {
+					convID = raw.ConvIDSnk
+				}
+				since := raw.SinceSeq
+				if since == 0 {
+					since = raw.SinceSnake
+				}
+				if out, err := json.Marshal(wire.ReadHistory{ConvID: convID, SinceSeq: since, Limit: raw.Limit}); err == nil {
+					return out
+				}
+			}
+		}
+		var sr chatpb.SyncRequest
+		if err := sr.Unmarshal(payload); err == nil {
+			if out, err := json.Marshal(wire.ReadHistory{ConvID: sr.GetConvId(), SinceSeq: sr.GetSinceSeq(), Limit: sr.GetLimit()}); err == nil {
+				return out
+			}
+		}
+		return payload
 	case kinds.KindReadHistory:
 		var r chatpb.ReadHistory
 		if err := r.Unmarshal(payload); err != nil {
@@ -113,6 +252,159 @@ func payloadForPipe(kind uint32, payload []byte) []byte {
 		return out
 	}
 	return payload
+}
+
+// convKindToPipe maps the user-facing conversation kinds onto the data
+// layer's 930 CONV_DATA request lane:
+//
+//	200 CONV_CREATE   → op 1 create
+//	201 CONV_UPDATE   → op 5 getMeta
+//	210 MEMBER_ADD    → op 2 addMember
+//	211 MEMBER_REMOVE → op 3 removeMember
+//
+// Both protobuf (native) and JSON (browser) payloads are accepted; the
+// resulting body is always the pipe's wire.ConvPayload / wire.MemberOp JSON.
+func convKindToPipe(env *chatpb.Envelope) (uint32, []byte, bool) {
+	if env == nil {
+		return 0, nil, false
+	}
+	switch env.Kind {
+	case kinds.KindConvCreate:
+		var title string
+		var convType uint32
+		var memberIDs []uint64
+		if isJSONPayload(env.Payload) {
+			var raw struct {
+				Title          string   `json:"title"`
+				ConvType       uint32   `json:"conv_type"`
+				ConvTypeCamel  uint32   `json:"convType"`
+				MemberIDs      []uint64 `json:"member_ids"`
+				MemberIDsCamel []uint64 `json:"memberIds"`
+			}
+			if err := json.Unmarshal(env.Payload, &raw); err != nil {
+				return 0, nil, false
+			}
+			title = raw.Title
+			convType = raw.ConvType
+			if convType == 0 {
+				convType = raw.ConvTypeCamel
+			}
+			memberIDs = raw.MemberIDs
+			if len(memberIDs) == 0 {
+				memberIDs = raw.MemberIDsCamel
+			}
+		} else {
+			var p chatpb.ConvCreate
+			if err := p.Unmarshal(env.Payload); err != nil {
+				return 0, nil, false
+			}
+			title, convType, memberIDs = p.GetTitle(), p.GetConvType(), p.GetMemberIds()
+		}
+		members := make([]wire.Member, 0, len(memberIDs))
+		for _, uid := range memberIDs {
+			members = append(members, wire.Member{UserID: uid})
+		}
+		body, err := wire.Marshal(wire.ConvPayload{
+			ConvID: env.GetConvId(), Title: title, ConvType: convType, Members: members,
+		})
+		if err != nil {
+			return 0, nil, false
+		}
+		return uint32(kinds.KindConvDataRequest), wrapConvReq(
+			convOpCreate, env.GetConvId(), env.GetRequestId(), body), true
+
+	case kinds.KindConvUpdate:
+		cid := env.GetConvId()
+		if isJSONPayload(env.Payload) {
+			var raw struct {
+				ConvID      uint64 `json:"conv_id"`
+				ConvIDCamel uint64 `json:"convId"`
+			}
+			if err := json.Unmarshal(env.Payload, &raw); err == nil && cid == 0 {
+				cid = raw.ConvID
+				if cid == 0 {
+					cid = raw.ConvIDCamel
+				}
+			}
+		} else {
+			var p chatpb.ConvUpdate
+			if err := p.Unmarshal(env.Payload); err == nil && cid == 0 {
+				cid = p.GetConvId()
+			}
+		}
+		body, _ := wire.Marshal(wire.ConvPayload{ConvID: cid})
+		return uint32(kinds.KindConvDataRequest), wrapConvReq(
+			convOpGetMeta, cid, env.GetRequestId(), body), true
+
+	case kinds.KindMemberAdd, kinds.KindMemberRemove:
+		cid := env.GetConvId()
+		var userIDs []uint64
+		var role uint32
+		if isJSONPayload(env.Payload) {
+			var raw struct {
+				ConvID       uint64   `json:"conv_id"`
+				ConvIDCamel  uint64   `json:"convId"`
+				UserIDs      []uint64 `json:"user_ids"`
+				UserIDsCamel []uint64 `json:"userIds"`
+				Role         uint32   `json:"role"`
+			}
+			if err := json.Unmarshal(env.Payload, &raw); err != nil {
+				return 0, nil, false
+			}
+			if cid == 0 {
+				cid = raw.ConvID
+				if cid == 0 {
+					cid = raw.ConvIDCamel
+				}
+			}
+			userIDs, role = raw.UserIDs, raw.Role
+			if len(userIDs) == 0 {
+				userIDs = raw.UserIDsCamel
+			}
+		} else {
+			var p chatpb.MemberOp
+			if err := p.Unmarshal(env.Payload); err != nil {
+				return 0, nil, false
+			}
+			if cid == 0 {
+				cid = p.GetConvId()
+			}
+			userIDs, role = p.GetUserIds(), p.GetRole()
+		}
+		op := uint32(convOpAddMember)
+		if env.Kind == kinds.KindMemberRemove {
+			op = convOpRemoveMember
+		}
+		body, err := wire.Marshal(wire.MemberOp{ConvID: cid, UserIDs: userIDs, Role: role})
+		if err != nil {
+			return 0, nil, false
+		}
+		return uint32(kinds.KindConvDataRequest), wrapConvReq(op, cid, env.GetRequestId(), body), true
+	}
+	return 0, nil, false
+}
+
+const (
+	convOpCreate       = 1
+	convOpAddMember    = 2
+	convOpRemoveMember = 3
+	convOpGetMeta      = 5
+)
+
+type convDataReq struct {
+	Op        uint32 `json:"op,omitempty"`
+	ConvID    uint64 `json:"convId,omitempty"`
+	Body      []byte `json:"body,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+}
+
+func wrapConvReq(op uint32, cid uint64, requestID string, body []byte) []byte {
+	out, _ := json.Marshal(convDataReq{Op: op, ConvID: cid, Body: body, RequestID: requestID})
+	return out
+}
+
+func isJSONPayload(b []byte) bool {
+	return len(b) > 0 && b[0] == '{'
 }
 
 // installEmit installs the chatpb-backed outbound converter. SrcLayer is
@@ -159,6 +451,13 @@ func buildRoutes() map[uint32][]router.Target {
 
 	// Requests executed by the data layer.
 	rt[kinds.KindMsgSend] = toData("data.101")
+	// SYNC_REQUEST (8): gap recovery (断线补拉); dispatched to pipe.onSyncRequest.
+	rt[kinds.KindSyncRequest] = toData("data.8")
+	// Conversation user kinds are translated to 930 by the FrameSource.
+	rt[kinds.KindConvCreate] = toData("data.conv.create")
+	rt[kinds.KindConvUpdate] = toData("data.conv.update")
+	rt[kinds.KindMemberAdd] = toData("data.conv.member.add")
+	rt[kinds.KindMemberRemove] = toData("data.conv.member.remove")
 	rt[kinds.KindReadHistory] = toData("data.920")
 	rt[kinds.KindConvDataRequest] = toData("data.930")
 	rt[kinds.KindIdentityRequest] = toData("data.940")
@@ -172,6 +471,8 @@ func buildRoutes() map[uint32][]router.Target {
 	rt[kinds.KindError] = toUser("sys.error")
 	rt[kinds.KindReadHistoryResult] = toUser("sys.data.result")
 	rt[kinds.KindConvDataResult] = toUser("sys.data.result")
+	// Membership-change events: one frame per member, addressed by user_id.
+	rt[kinds.KindConvPayload] = toUser("sys.conv.payload")
 	rt[kinds.KindIdentityResult] = toUser("sys.data.result")
 	rt[kinds.KindFlagResult] = toUser("sys.data.result")
 	rt[kinds.KindJobStatus] = toData("data.981")
@@ -193,10 +494,26 @@ func buildRoutes() map[uint32][]router.Target {
 
 // ---------------------------------------------------------------- keys
 
+// isProduction reports whether the deployment must NOT auto-generate secrets.
+// Production is defined as APP_ENV != "dev" AND an HTTPS public origin: a
+// localhost dev run (APP_ENV=dev) or a plain http origin stays in the lenient
+// first-boot convenience mode. In production a missing key file is a startup
+// error (exit 1), never a silent auto-generation.
+func isProduction(cfg *config) bool {
+	if cfg == nil {
+		return false
+	}
+	if strings.TrimSpace(os.Getenv("APP_ENV")) == "dev" {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(cfg.PublicOrigin), "https://")
+}
+
 // loadOrCreateSigningKey reads an Ed25519 PKCS#8 PEM private key. When the file
 // is absent a fresh key is generated and written 0600 (first boot convenience;
 // production provisions it with deploy/keygen and never regenerates it).
-func loadOrCreateSigningKey(path string, lg *log.Logger) (ed25519.PrivateKey, error) {
+// When prod is set, a missing file is a hard error instead of auto-generation.
+func loadOrCreateSigningKey(path string, lg *log.Logger, prod bool) (ed25519.PrivateKey, error) {
 	body, err := os.ReadFile(path)
 	if err == nil {
 		key, perr := parsePrivateKey(body)
@@ -207,6 +524,9 @@ func loadOrCreateSigningKey(path string, lg *log.Logger) (ed25519.PrivateKey, er
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read signing key %s: %w", path, err)
+	}
+	if prod {
+		return nil, fmt.Errorf("signing key %s is missing in production: provision it with deploy/keygen (refusing to auto-generate a secret in production)", path)
 	}
 	_, priv, gerr := ed25519.GenerateKey(rand.Reader)
 	if gerr != nil {
@@ -262,7 +582,8 @@ func parsePrivateKey(body []byte) (ed25519.PrivateKey, error) {
 // loadOrCreateHMACKey reads the identifier index key (hex or raw). A missing
 // file is generated and stored 0600 next to the JWT key. This key is separate
 // from the signing key by design (security-spec §5.3: HMAC key != crypto key).
-func loadOrCreateHMACKey(path string, lg *log.Logger) ([]byte, error) {
+// When prod is set, a missing file is a hard error instead of auto-generation.
+func loadOrCreateHMACKey(path string, lg *log.Logger, prod bool) ([]byte, error) {
 	body, err := os.ReadFile(path)
 	if err == nil {
 		key, perr := decodeKeyBytes(body)
@@ -273,6 +594,9 @@ func loadOrCreateHMACKey(path string, lg *log.Logger) ([]byte, error) {
 	}
 	if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read hmac key %s: %w", path, err)
+	}
+	if prod {
+		return nil, fmt.Errorf("hmac key %s is missing in production: provision it with deploy/keygen (refusing to auto-generate a secret in production)", path)
 	}
 	key := make([]byte, 32)
 	if _, rerr := rand.Read(key); rerr != nil {

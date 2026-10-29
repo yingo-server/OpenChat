@@ -1,6 +1,8 @@
 package pipe
 
 import (
+	"github.com/yingo-server/OpenChat/server/internal/data/domain/identity"
+
 	"context"
 	"sync"
 
@@ -64,8 +66,9 @@ type Pipe struct {
 	rr    *readRouter
 	msg   *msgDomain
 	conv  *convDomain
-	ident *identityDomain
+	ident *identity.Domain
 	sys   *sysDomain
+	trunk Trunkee // kind 980 job triggers (optional; nil = jobs not wired)
 	cache *cache.Cache
 
 	senderDone chan struct{}
@@ -107,14 +110,18 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 		senderDone:  make(chan struct{}),
 	}
 	p.seq = &seqAlloc{w: hot}
-	p.fl = newFlusher(hot, p.outCh, p.writeCh, p.dedup, lg)
+	p.fl = newFlusher(hot, hot, p.outCh, p.writeCh, p.dedup, lg)
 	p.rr = &readRouter{r: hot, cold: cold.Cold}
 	p.msg = &msgDomain{conv: hot, cache: p.cache, msg: hot, dedup: p.dedup}
-	p.conv = &convDomain{conv: hot, cache: p.cache}
-	p.ident = &identityDomain{id: hot, cache: p.cache}
+	p.conv = &convDomain{conv: hot, id: hot, cache: p.cache}
+	p.ident = identity.New(hot, p.cache)
 	p.sys = &sysDomain{sys: hot}
 	return p
 }
+
+// SetTrunkee injects the job plane (kind 980 handler). Assembly calls it after
+// New; a pipe without one answers 980 with state "not_wired".
+func (p *Pipe) SetTrunkee(t Trunkee) { p.trunk = t }
 
 // Outbound exposes the outbound env lane (tests/assembly tapping).
 func (p *Pipe) Outbound() <-chan *env { return p.outCh }
@@ -188,6 +195,8 @@ func (p *Pipe) dispatch(ctx context.Context, req Req) {
 	switch req.Kind {
 	case uint32(kinds.KindMsgSend): // 101 on the internal lane
 		p.onMsgSend(ctx, req)
+	case uint32(kinds.KindSyncRequest): // 8: SYNC gap recovery (断线补拉)
+		p.onSyncRequest(ctx, req)
 	case uint32(kinds.KindReadHistory): // 920
 		p.onReadHistory(ctx, req)
 	case uint32(kinds.KindConvDataRequest): // 930
@@ -196,6 +205,8 @@ func (p *Pipe) dispatch(ctx context.Context, req Req) {
 		p.onIdentity(ctx, req)
 	case uint32(kinds.KindFlagGet), uint32(kinds.KindFlagSet): // 970/971
 		p.onFlag(ctx, req)
+	case uint32(kinds.KindJobTrigger): // 980 → jobber (optional Trunkee)
+		p.onJobTrigger(ctx, req)
 	default:
 		p.lg.Debug("pipe: unhandled kind", "kind", kinds.KindName(req.Kind))
 	}
@@ -271,6 +282,57 @@ func (p *Pipe) onReadHistory(ctx context.Context, req Req) {
 	p.reply(buildResultEnv(req, uint32(kinds.KindReadHistoryResult), readHistoryResultPayload(res)))
 }
 
+// onSyncRequest serves kind 8 (SYNC_REQUEST) — the gap-recovery path a client
+// triggers when it detects a seq gap (engine.onGap → SYNC{sinceSeq}).
+//
+// The reply is NOT a wrapped result frame: every missed message is re-sent as
+// a plain KindMsgNew(102) addressed to the requesting user, which the client's
+// ingest path already understands (it auto-fills the gap). This reuses the
+// 920 read machinery (readrouter) but reads ASCENDING after sinceSeq.
+//
+// Security: the requester MUST be a member of the conversation (403 otherwise).
+func (p *Pipe) onSyncRequest(ctx context.Context, req Req) {
+	var r wire.ReadHistory // {convId, sinceSeq, limit} — same JSON shape as 920
+	if len(req.Payload) > 0 {
+		if err := wire.Unmarshal(req.Payload, &r); err != nil {
+			p.reply(buildErrEnv(req, 400, "bad payload"))
+			return
+		}
+	}
+	cid := int64(r.ConvID)
+	if cid == 0 {
+		cid = int64(req.ConvID)
+	}
+	if cid == 0 {
+		p.reply(buildErrEnv(req, 400, "missing conv"))
+		return
+	}
+	uid := int64(req.UserID)
+	if _, err := p.msg.memberCheck(ctx, cid, uid); err != nil {
+		p.reply(buildErrEnv(req, 403, "not a member"))
+		return
+	}
+	rows, err := p.rr.catchup(ctx, cid, int64(r.SinceSeq), int(r.Limit))
+	if err != nil {
+		p.reply(buildErrEnv(req, 500, "read failed"))
+		return
+	}
+	for _, m := range rows {
+		pl := buildMsgNewPayload(hotToPending(m))
+		p.reply(&env{Kind: uint32(kinds.KindMsgNew), ConvID: uint64(cid), UserID: req.UserID, Payload: pl})
+	}
+}
+
+// hotToPending adapts a read row to the PendingMsg view buildMsgNewPayload
+// consumes (both share the same message fields; MsgNew payload is identical
+// whether produced by the live fan-out or a sync replay).
+func hotToPending(m store.HotMsg) store.PendingMsg {
+	return store.PendingMsg{
+		MsgID: m.MsgID, Cid: m.Cid, Seq: m.Seq, SenderID: m.SenderID,
+		ClientMsgID: m.ClientMsgID, Content: m.Content, SentAt: m.SentAt,
+	}
+}
+
 func (p *Pipe) onConvData(ctx context.Context, req Req) {
 	var raw struct {
 		Op        uint32 `json:"op,omitempty"`
@@ -287,8 +349,16 @@ func (p *Pipe) onConvData(ctx context.Context, req Req) {
 		cid = req.ConvID
 	}
 	r := p.conv.handle(ctx, int64(req.UserID), raw.Op, cid, raw.Body)
-	pl, _ := wire.Marshal(wire.DataResult{Op: raw.Op, Ok: r.OK, Error: r.Error, RequestID: raw.RequestID})
+	pl, _ := wire.Marshal(wire.DataResult{
+		Op: raw.Op, Ok: r.OK, Error: r.Error, Body: r.Payload, RequestID: raw.RequestID,
+	})
 	p.reply(buildResultEnv(req, uint32(kinds.KindConvDataResult), pl))
+	// Membership changes fan out one 202 per member (never a conv topic
+	// publish): each frame is addressed by user_id so every member — online
+	// or not — gets their own delivery attempt at the gateway.
+	for _, ev := range r.Events {
+		p.reply(&env{Kind: ev.Kind, ConvID: ev.ConvID, UserID: ev.UserID, Payload: ev.Payload})
+	}
 }
 
 func (p *Pipe) onIdentity(ctx context.Context, req Req) {
@@ -306,7 +376,7 @@ func (p *Pipe) onIdentity(ctx context.Context, req Req) {
 	if uid == 0 {
 		uid = req.UserID
 	}
-	r := p.ident.handle(ctx, raw.Op, uid, raw.Body)
+	r := p.ident.Handle(ctx, raw.Op, uid, raw.Body)
 	pl, _ := wire.Marshal(wire.DataResult{Op: raw.Op, Ok: r.OK, Error: r.Error, RequestID: raw.RequestID})
 	p.reply(buildResultEnv(req, uint32(kinds.KindIdentityResult), pl))
 }

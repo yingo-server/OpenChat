@@ -44,6 +44,9 @@ jobs:
       - name: Lint
         run: make lint
 
+      - name: Import lint (bridge-design §4.1 red lines)
+        run: bash scripts/importlint.sh
+
       - name: Test
         run: make test
 

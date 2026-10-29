@@ -43,6 +43,14 @@ type Config struct {
 	DrainTimeout time.Duration
 	// WriteFlushTimeout 优雅退出每连接写缓冲排空上限，默认 2s。
 	WriteFlushTimeout time.Duration
+	// Upgrade 段：/ws upgrade 的按 IP 限流 + 失败熔断（security-spec E-3/E-4）。
+	// 零值由 ws.NewUpgradeLimiter 取默认（10/min、burst 20、阈值 8、窗口 5min、
+	// 封禁 15min）。策略层提供这些字段以便热更，装配时透传给 ws.Config。
+	UpgradeRatePerMin       float64
+	UpgradeBurst            float64
+	UpgradeFailureThreshold int
+	UpgradeFailureWindow    time.Duration
+	UpgradeBanFor           time.Duration
 }
 
 // Default 返回默认策略（参数全部来自 docs/security-spec.md）。
@@ -68,6 +76,12 @@ func Default() Config {
 		ForwardQueueCap:   10000,
 		DrainTimeout:      10 * time.Second,
 		WriteFlushTimeout: 2 * time.Second,
+
+		UpgradeRatePerMin:       10,
+		UpgradeBurst:            20,
+		UpgradeFailureThreshold: 8,
+		UpgradeFailureWindow:    5 * time.Minute,
+		UpgradeBanFor:           15 * time.Minute,
 	}
 }
 

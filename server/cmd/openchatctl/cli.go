@@ -14,6 +14,7 @@
 //	0   ok
 //	1   error / doctor found a FAIL
 //	64  usage
+//	65  target not found (REST 404 / missing local path) — admin-data §7
 //	77  permission denied or admin token not configured (run `adminctl login`)
 package main
 
@@ -37,10 +38,14 @@ import (
 
 // Exit codes.
 const (
-	exitOK     = 0
-	exitError  = 1
-	exitUsage  = 64
-	exitDenied = 77
+	exitOK    = 0
+	exitError = 1
+	exitUsage = 64
+	// exitNotFound: the referenced target does not exist — e.g. a REST call
+	// answered 404, or a local path (hot db, backup script) is missing.
+	// Aligned with adminctl (docs/admin-data-design.md §7).
+	exitNotFound = 65
+	exitDenied   = 77
 )
 
 // Build metadata, overridable with -ldflags "-X main.version=…".
@@ -127,9 +132,16 @@ type deniedErr struct{ msg string }
 
 func (e *deniedErr) Error() string { return e.msg }
 
+// notFoundErr maps to exit 65 (target does not exist; admin-data §7).
+type notFoundErr struct{ msg string }
+
+func (e *notFoundErr) Error() string { return e.msg }
+
 func usagef(format string, a ...any) error { return &usageErr{msg: fmt.Sprintf(format, a...)} }
 
 func deniedf(format string, a ...any) error { return &deniedErr{msg: fmt.Sprintf(format, a...)} }
+
+func notFoundf(format string, a ...any) error { return &notFoundErr{msg: fmt.Sprintf(format, a...)} }
 
 func exitCodeFor(err error) int {
 	if err == nil {
@@ -142,6 +154,10 @@ func exitCodeFor(err error) int {
 	var de *deniedErr
 	if errors.As(err, &de) {
 		return exitDenied
+	}
+	var ne *notFoundErr
+	if errors.As(err, &ne) {
+		return exitNotFound
 	}
 	return exitError
 }

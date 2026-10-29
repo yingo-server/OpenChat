@@ -30,7 +30,7 @@ function ChatSession({ convId }: { convId: number }) {
   const conn = useConnStore((state) => state.state);
   const ids = useMessageStore((state) => state.idsByConv[convId]);
   const selfId = useSessionStore((state) => state.userId);
-  const otherId = conv && conv.convType === 0 ? (conv.members.find((member) => member.userId !== selfId)?.userId ?? 0) : 0;
+  const otherId = conv && conv.convType === 1 ? (conv.members.find((member) => member.userId !== selfId)?.userId ?? 0) : 0;
   const presence = usePresenceStore((state) => (otherId ? selectPresence(state, otherId) : 'offline'));
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [scrollSignal, setScrollSignal] = useState(0);
@@ -79,9 +79,9 @@ function ChatSession({ convId }: { convId: number }) {
   const subtitle =
     typingCount > 0
       ? t('chat.typing')
-      : conv.convType === 0 && presence === 'online'
+      : conv.convType === 1 && presence === 'online'
         ? t('network.online')
-        : conv.convType === 0
+        : conv.convType === 1
           ? ''
           : t('conv.members', { count: conv.members.length });
 
@@ -105,7 +105,7 @@ function ChatSession({ convId }: { convId: number }) {
           src={conv.avatar}
           size="sm"
           userId={otherId || conv.convId}
-          presence={conv.convType === 0 ? presence : undefined}
+          presence={conv.convType === 1 ? presence : undefined}
         />
 
         <div className="min-w-0 flex-1">

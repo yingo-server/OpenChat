@@ -164,7 +164,7 @@ func TestRunExitCodes(t *testing.T) {
 		{"flags bad sub", []string{"flags", "nuke"}, exitUsage},
 		{"flags set missing value", []string{"flags", "set", "k"}, exitUsage},
 		{"doctor missing db", []string{"doctor", "--hot-db", "/nonexistent/hot.db"}, exitError},
-		{"backup missing script", []string{"backup", "--script", "/nonexistent/backup.sh"}, exitError},
+		{"backup missing script", []string{"backup", "--script", "/nonexistent/backup.sh"}, exitNotFound},
 	}
 	for _, c := range cases {
 		e, _, _ := newTestEnv(t, &fakeSystem{})

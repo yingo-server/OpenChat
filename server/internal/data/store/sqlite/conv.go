@@ -148,6 +148,31 @@ FROM conv_conversations WHERE cid = ?`, cid).
 	return &m, nil
 }
 
+// SingleChatBetween returns the direct conversation whose member set is
+// exactly {uid1, uid2}. Parameterized query only; no string concatenation.
+func (s *convStore) SingleChatBetween(ctx context.Context, uid1, uid2 int64) (int64, error) {
+	if uid1 <= 0 || uid2 <= 0 || uid1 == uid2 {
+		return 0, fmt.Errorf("sqlite: single chat (%d, %d): %w", uid1, uid2, store.ErrNotFound)
+	}
+	var cid int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT c.cid
+FROM conv_conversations c
+JOIN conv_members m1 ON m1.cid = c.cid AND m1.uid = ?
+JOIN conv_members m2 ON m2.cid = c.cid AND m2.uid = ?
+WHERE c.ctype = 1
+  AND (SELECT COUNT(*) FROM conv_members m WHERE m.cid = c.cid) = 2
+ORDER BY c.cid ASC
+LIMIT 1`, uid1, uid2).Scan(&cid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("sqlite: single chat (%d, %d): %w", uid1, uid2, store.ErrNotFound)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: single chat (%d, %d): %w", uid1, uid2, err)
+	}
+	return cid, nil
+}
+
 // NextSeq peeks cid's next unconsumed seq WITHOUT reserving it.
 func (s *convStore) NextSeq(ctx context.Context, cid int64) (int64, error) {
 	var next int64

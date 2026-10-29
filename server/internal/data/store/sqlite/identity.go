@@ -56,17 +56,18 @@ func (s *identityStore) LookupByIdentity(ctx context.Context, idType int, idValu
 
 func (s *identityStore) GetUser(ctx context.Context, uid int64) (*store.User, error) {
 	var u store.User
-	var anon sql.NullInt64
+	var avatar, anon sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
 		`SELECT uid, display_name, avatar_media_id, status, created_at, anonymous_at
 FROM identity_users WHERE uid = ?`, uid).
-		Scan(&u.UID, &u.DisplayName, &u.AvatarMediaID, &u.Status, &u.CreatedAt, &anon)
+		Scan(&u.UID, &u.DisplayName, &avatar, &u.Status, &u.CreatedAt, &anon)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("sqlite: user %d: %w", uid, store.ErrNotFound)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: get user %d: %w", uid, err)
 	}
+	u.AvatarMediaID = avatar.Int64
 	u.AnonymousAt = anon.Int64
 	return &u, nil
 }

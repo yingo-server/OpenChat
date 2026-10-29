@@ -2,6 +2,9 @@
 #
 # 唯一对外暴露的 WS 入口：Caddy /ws → 127.0.0.1:8081（本进程）。
 # 不持有数据库，不落任何业务数据；只写 UDS 与缓存目录。
+# ⚠️⚠️ 警告：split 形态二进制尚未构建（chatd 当前 embedded-only，见
+# server/cmd/chatd/main.go）。本 unit 引用的 bin/chatd-user 不存在，启用前
+# 必须先实现 server/cmd/chatd-user。在此之前请使用 openchat.service。
 
 [Unit]
 Description=OpenChat user gateway (WebSocket)

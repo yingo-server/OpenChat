@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,7 +39,9 @@ import (
 	"github.com/yingo-server/OpenChat/server/internal/data/pipe"
 	"github.com/yingo-server/OpenChat/server/internal/data/policy"
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
+	"github.com/yingo-server/OpenChat/server/internal/data/store/pg"
 	"github.com/yingo-server/OpenChat/server/internal/data/store/sqlite"
+	"github.com/yingo-server/OpenChat/server/internal/mediasvc"
 	"github.com/yingo-server/OpenChat/server/internal/pkg/featureflags"
 	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
 	"github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
@@ -57,6 +60,7 @@ type assembly struct {
 
 	hot     *sqlite.DB
 	adminDB *adminstore.DB
+	cold    *pg.ColdDB
 	policy  *policy.Store
 	flags   *featureflags.Flags
 
@@ -68,8 +72,11 @@ type assembly struct {
 	pipe      *pipe.Pipe
 	user      *app.Server
 	auth      *authsvc.Service
+	media     *mediasvc.Service
+	verifier  *authn.Verifier
 	admin     *adminPlane
 	adminREST *admin.Server
+	jobs      *jobPlane
 	adminKey  []byte
 
 	started time.Time
@@ -136,17 +143,20 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	}
 
 	// 5. keys + crypto primitives (single owner: this assembly).
-	priv, err := loadOrCreateSigningKey(cfg.JWTKeyPath, lg)
+	// In production missing keys are fatal (exit 1): a running deployment must
+	// never silently mint new secrets. dev keeps the first-boot convenience.
+	prod := isProduction(cfg)
+	priv, err := loadOrCreateSigningKey(cfg.JWTKeyPath, lg, prod)
 	if err != nil {
 		return nil, err
 	}
-	hmacKey, err := loadOrCreateHMACKey(cfg.PIIKeyPath, lg)
+	hmacKey, err := loadOrCreateHMACKey(cfg.PIIKeyPath, lg, prod)
 	if err != nil {
 		return nil, err
 	}
 	// The admin plane's injector and the REST layer's outbound proxy share one
 	// HMAC key: without it any local process could inject management frames.
-	adminKey, err := loadOrCreateHMACKey(adminKeyPath(cfg), lg)
+	adminKey, err := loadOrCreateHMACKey(adminKeyPath(cfg), lg, prod)
 	if err != nil {
 		return nil, err
 	}
@@ -157,6 +167,7 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 		return nil, fmt.Errorf("chatd: signing key is not Ed25519")
 	}
 	verifier := authn.NewVerifier(pub)
+	a.verifier = verifier
 	hasher := authn.NewHasher(authn.DefaultArgon2Params())
 
 	// 6. feature flags: seed missing keys, then load the effective set.
@@ -185,9 +196,40 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	}
 	a.pipeline = pl
 
-	// 8. data layer: pipe + the two wire adapters.
+	// 8. data layer: cold store (optional, graceful) + pipe + wire adapters.
+	//
+	// Cold store wiring: the DRIVER is injected by the deployment layer. This
+	// binary deliberately imports NO postgres driver (architecture red line:
+	// driver 由部署层注入). If the DSN is configured but no driver named
+	// "postgres" is registered, we log a loud ERROR and continue hot-only —
+	// skeleton deployments must start, not panic (docs/deploy.md 附录 A).
+	var coldDB *pg.ColdDB
+	if cfg.ColdDSN != "" {
+		db, err := sql.Open("postgres", cfg.ColdDSN) // sql.Open never dials
+		if err != nil {
+			// Only a bad driver name / unregistered driver lands here.
+			lg.Error("cold store disabled: driver not registered — 需在部署层 import pgx/stdlib 或 lib/pq 注册 driver（本二进制按架构约定不携带 postgres driver）",
+				"err", err.Error())
+		} else {
+			coldDB = &pg.ColdDB{DB: db, DriverName: "postgres"}
+			lg.Info("cold store handle opened (lazy connect on first use)", "driver", coldDB.DriverName)
+		}
+	}
+	a.cold = coldDB
+
+	// Audit store fail-fast switch. coldDB == nil means the archive + audit
+	// journal have nowhere to persist. require_audit_store decides whether that
+	// is a startup failure (fail-fast) or a loud degradation (fail-open with an
+	// ERROR so operators see it, matching the audit red line).
+	if coldDB == nil {
+		if cfg.RequireAuditStore {
+			return nil, fmt.Errorf("chatd: audit store required (require_audit_store=true) but cold DB unavailable: configure cold_dsn and register a postgres driver in the deployment layer")
+		}
+		lg.Error("audit store degraded: cold DB unavailable, audit events will not persist")
+	}
+
 	installEmit()
-	p := pipe.New(a.dataPeer, hot, pipe.ColdDeps{}, a.policy, log.For("data"))
+	p := pipe.New(a.dataPeer, hot, pipe.ColdDeps{Cold: coldDB, Audit: coldDB}, a.policy, log.For("data"))
 	p.FrameSource = newFrameSource(func(connID uint64) int64 {
 		// Late binding: the gateway exists only after step 9.
 		if a.user == nil {
@@ -243,6 +285,16 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	}
 	a.user = srv
 
+	// P0-2 wiring: the policy.json rate_limit section is the user-level
+	// aggregate budget; converge the limiter's MSG_SEND rule onto it
+	// (never looser — see limitwire.go). Applied post-construction via the
+	// same atomic-swap path that SIGHUP reload() uses.
+	if a.policy != nil {
+		snap := a.user.Policy().Snapshot()
+		snap.Limits = limitFromPolicy(a.policy.Current().Policy, snap.Limits)
+		a.user.ReloadPolicy(snap)
+	}
+
 	// 11. management surfaces: frame injector (:admin_listen) and the RBAC REST
 	// layer (:admin_rest_listen) that reaches the bus through the injector.
 	plane, err := newAdminPlane(cfg.AdminListen, pl.AdminAPI().Handler(), log.For("admin"))
@@ -251,14 +303,17 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	}
 	a.admin = plane
 
-	rest, err := newAdminREST(cfg, hot, adb, nil, a.policy, adminKey, log.For("admin-rest"))
+	rest, err := newAdminREST(cfg, hot, adb, coldDB, a.policy, adminKey, log.For("admin-rest"))
 	if err != nil {
 		return nil, err
 	}
 	a.adminREST = rest
 
-	if cfg.ColdDSN != "" && lg != nil {
-		lg.Warn("cold_dsn configured but the cold store is not wired in this build", "effect", "hot-only reads, no audit")
+	// 12. job plane: archiver + jobber (cron from policy; 980 → jobber).
+	a.jobs = newJobPlane(hot, coldDB, a.policy, log.For("jobs"))
+	p.SetTrunkee(a.jobs)
+	if coldDB == nil {
+		lg.Info("job plane wired in degraded mode (no cold store): archive dry-run only, real runs fail with a clear error")
 	}
 	return a, nil
 }
@@ -309,6 +364,25 @@ func (a *assembly) bootstrapFlags(ctx context.Context) error {
 func (a *assembly) buildHTTP(auth http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("/api/auth/", auth)
+	// media plane: same port as the gateway (bytes never ride the 64KB WS
+	// frame — see server/internal/mediasvc doc comment).
+	mediaSvc, merr := mediasvc.New(mediasvc.Deps{
+		Dir:      a.cfg.MediaDir,
+		Verifier: a.verifier,
+		Media:    a.hot,
+		Sys:      a.hot,
+		Conv:     a.hot,
+		QueryDB:  a.hot.DB,
+		Logger:   log.For("media"),
+	})
+	if merr != nil {
+		// media_dir is a config invariant: panic loudly rather than serve
+		// an upload endpoint that writes to nowhere. buildHTTP runs during
+		// assembly, so this aborts startup deterministically.
+		panic("chatd: media service: " + merr.Error())
+	}
+	a.media = mediaSvc
+	mux.Handle("/api/media/", mediaSvc.Routes())
 	mux.HandleFunc("GET /healthz", a.healthz)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
 		writeJSONStatus(w, http.StatusNotFound, map[string]any{"error": "unknown api path", "code": "NOT_FOUND"})
@@ -356,7 +430,13 @@ func (a *assembly) run(ctx context.Context) error {
 		"admin_listen", a.admin.Addr(),
 		"admin_rest_listen", a.cfg.AdminRESTListen,
 		"hot_db", a.cfg.HotDB,
+		"cold", a.cold != nil,
 		"flags", a.flags.Version())
+
+	// job plane: scheduler starts with the rest of the process; ctx cancel
+	// (SIGTERM) stops scheduling, in-flight archives stop at the batch
+	// boundary and resume idempotently on the next start.
+	a.jobs.start(ctx)
 
 	select {
 	case <-ctx.Done():
@@ -416,6 +496,12 @@ func (a *assembly) shutdown() {
 
 // close releases the databases (last step, after every layer stopped).
 func (a *assembly) close() {
+	if a.jobs != nil {
+		a.jobs.stop() // scheduler ctx is derived from the run ctx too; idempotent
+	}
+	if a.cold != nil {
+		_ = a.cold.Close()
+	}
 	if a.hot != nil {
 		_ = a.hot.Close()
 	}
@@ -424,7 +510,7 @@ func (a *assembly) close() {
 	}
 }
 
-// reload implements SIGHUP (whitelist: policy + feature flags).
+// reload implements SIGHUP (whitelist: policy + feature flags + rate limits).
 // Anything else (listen address, keys, DB paths) requires a restart.
 func (a *assembly) reload(ctx context.Context) {
 	if a.policy != nil {
@@ -434,6 +520,17 @@ func (a *assembly) reload(ctx context.Context) {
 		} else {
 			a.lg.Info("policy reloaded", "changed", strings.Join(changed, ","), "version", a.policy.Current().Version)
 		}
+	}
+	// The freshly reloaded rate_limit section is pushed into the user
+	// gateway's limiter (see limitwire.go for the mapping semantics).
+	// The limiter stores rules in an atomic pointer: the swap is lock-free
+	// and immediately visible to every live connection's verdict path.
+	if a.policy != nil && a.user != nil {
+		snap := a.user.Policy().Snapshot()
+		snap.Limits = limitFromPolicy(a.policy.Current().Policy, snap.Limits)
+		a.user.ReloadPolicy(snap)
+		a.lg.Info("rate limits refreshed from policy",
+			"msg_per_user_per_min", a.policy.Current().Policy.RateLimit.MsgPerUserPerMin)
 	}
 	stored, err := a.hot.AllFlags(ctx)
 	if err != nil {

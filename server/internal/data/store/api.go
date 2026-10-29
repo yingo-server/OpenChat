@@ -184,6 +184,11 @@ type ConvStore interface {
 	// GetConvMeta returns conversation metadata; not-found error when absent.
 	GetConvMeta(ctx context.Context, cid int64) (*ConvMeta, error)
 
+	// SingleChatBetween returns the cid of the direct (ctype=1) conversation
+	// whose member set is exactly {uid1, uid2}, or ErrNotFound when none
+	// exists. Read-only: it never creates anything.
+	SingleChatBetween(ctx context.Context, uid1, uid2 int64) (int64, error)
+
 	// NextSeq returns cid's next unconsumed sequence number WITHOUT reserving
 	// it (peek). Range reservation belongs to MsgWriter.AllocateSeq; this
 	// exists for readers/inspect tooling.

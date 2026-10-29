@@ -70,6 +70,7 @@ func cmdDoctor(ctx context.Context, e *environment, g globals, args []string) er
 	} else {
 		checks = append(checks, checkCold(e))
 	}
+	checks = append(checks, checkAuditStore(e))
 
 	rep := doctorReport{OK: true, Checks: checks}
 	fails, warns := 0, 0
@@ -248,6 +249,33 @@ func checkCold(e *environment) check {
 	}
 	_ = conn.Close()
 	return check{Name: "cold_db", Status: checkOK, Detail: addr + " 可达"}
+}
+
+// checkAuditStore verifies the audit journal has a durable backing store. The
+// audit store lives in the cold DB (PostgreSQL); without it audit events are
+// not persisted. Empty OPENCHAT_COLD_DSN ⇒ degraded (WARN): the process runs
+// but audits are lost. A configured DSN is probed for TCP reachability.
+func checkAuditStore(e *environment) check {
+	dsn := strings.TrimSpace(e.getenv("OPENCHAT_COLD_DSN"))
+	if dsn == "" {
+		return check{
+			Name:   "audit_store",
+			Status: checkWarn,
+			Detail: "degraded: 未配置 OPENCHAT_COLD_DSN，audit 事件不会持久化",
+		}
+	}
+	addr, network, ok := parsePGAddr(dsn)
+	if !ok {
+		return check{Name: "audit_store", Status: checkWarn, Detail: "degraded: 无法从 OPENCHAT_COLD_DSN 解析 host:port"}
+	}
+	conn, err := e.dial(network, addr, 2*time.Second)
+	if err != nil {
+		return check{Name: "audit_store", Status: checkFail, Detail: addr + ": " + err.Error()}
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+	return check{Name: "audit_store", Status: checkOK, Detail: addr + " 可达"}
 }
 
 // parsePGAddr extracts a dialable address from a PostgreSQL DSN.

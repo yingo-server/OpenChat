@@ -2,6 +2,9 @@
 #
 # 只监听 127.0.0.1:7780，由 Caddy 对白名单 IP 反代 /api/admin/*。
 # 自身不执行管理动作：所有指令经 bridgeproxy 翻译成 5xx 帧注入总线。
+# ⚠️⚠️ 警告：split 形态二进制尚未构建（chatd 当前 embedded-only，见
+# server/cmd/chatd/main.go）。本 unit 引用的 bin/chatd-admin 不存在，启用前
+# 必须先实现 server/cmd/chatd-admin。在此之前请使用 openchat.service。
 
 [Unit]
 Description=OpenChat admin layer (HTTP API, RBAC, audit shim)

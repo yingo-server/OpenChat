@@ -2,6 +2,9 @@
 #
 # 唯一直接接触 SQLite 热库与媒体文件的进程。
 # 冷库 Postgres 在外部，本机不监听任何公网端口。
+# ⚠️⚠️ 警告：split 形态二进制尚未构建（chatd 当前 embedded-only，见
+# server/cmd/chatd/main.go）。本 unit 引用的 bin/chatd-data 不存在，启用前
+# 必须先实现 server/cmd/chatd-data。在此之前请使用 openchat.service。
 
 [Unit]
 Description=OpenChat data layer (SQLite hot store, archiver, backup)

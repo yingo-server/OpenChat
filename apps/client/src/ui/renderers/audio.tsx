@@ -10,6 +10,7 @@ import type { Media } from '../../net/proto/payload';
 import { t } from '../i18n';
 import { PauseIcon, PlayIcon } from '../components/icons';
 import { formatDuration } from '../utils/format';
+import { resolveMediaUrl } from '../../net/media';
 import { UnknownMessage } from './unknown';
 import type { RendererProps } from './registry';
 
@@ -21,10 +22,11 @@ export function AudioMessage({ message }: RendererProps) {
   const media = message.payload.media?.[0];
   const mine = selectIsMine(message, userId);
   if (!media) return <UnknownMessage message={message} />;
-  return <AudioBody media={media} mine={mine} key={`${media.mediaId}-${message.id}`} />;
+  const audioUrl = resolveMediaUrl(media);
+  return <AudioBody media={media} mine={mine} src={audioUrl} key={`${media.mediaId}-${message.id}`} />;
 }
 
-function AudioBody({ media, mine }: { media: Media; mine: boolean }) {
+function AudioBody({ media, mine, src }: { media: Media; mine: boolean; src?: string }) {
   const duration = Math.max(1000, media.durationMs || 1000);
   const waveform = useMemo(
     () => (media.waveform?.length === 24 ? media.waveform : pseudoWaveform(media.mediaId, duration)),
@@ -89,9 +91,9 @@ function AudioBody({ media, mine }: { media: Media; mine: boolean }) {
     const from = progressRef.current >= 0.999 ? 0 : progressRef.current;
     setProgress(from);
 
-    if (media.url) {
+    if (src) {
       try {
-        const audio = new Audio(media.url);
+        const audio = new Audio(src);
         audio.currentTime = (from * duration) / 1000;
         audioRef.current = audio;
         audio.ontimeupdate = () => {
@@ -109,7 +111,7 @@ function AudioBody({ media, mine }: { media: Media; mine: boolean }) {
       }
     }
     simulate(from);
-  }, [duration, media.url, playing, simulate, stop]);
+  }, [duration, src, playing, simulate, stop]);
 
   const width = Math.min(220, Math.max(96, 96 + (duration / 60_000) * 124));
   const activeIndex = Math.floor(progress * 24);

@@ -73,6 +73,23 @@ func (rr *readRouter) handle(ctx context.Context, req wire.ReadHistory, senderUI
 	return res, nil
 }
 
+// catchup serves SYNC (kind 8) gap recovery: it returns the conversation's
+// messages with seq strictly greater than sinceSeq, in ASCENDING seq order,
+// so a reconnecting client can replay everything it missed after its last
+// seen seq. Authorization is the caller's concern (memberCheck red line);
+// this method carries no business semantics. Cold is not consulted: catch-up
+// targets the recent tail, which always lives in the hot store.
+func (rr *readRouter) catchup(ctx context.Context, cid, sinceSeq int64, limit int) ([]store.HotMsg, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 200 // catch-up page size bound; the client pages by re-sending SYNC
+	}
+	rows, err := rr.r.ReadHot(ctx, cid, sinceSeq, limit, true)
+	if err != nil {
+		return nil, fmt.Errorf("readrouter: catchup cid=%d since=%d: %w", cid, sinceSeq, err)
+	}
+	return rows, nil
+}
+
 // hotToMsgNew maps a hot row to the wire MsgNew view.
 func hotToMsgNew(m store.HotMsg) wire.MsgNew {
 	return wire.MsgNew{

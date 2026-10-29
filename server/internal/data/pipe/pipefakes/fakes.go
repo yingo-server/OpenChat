@@ -182,6 +182,29 @@ func (f *FakeConvStore) GetConvMeta(ctx context.Context, cid int64) (*store.Conv
 	return m, nil
 }
 
+func (f *FakeConvStore) SingleChatBetween(ctx context.Context, uid1, uid2 int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if uid1 == uid2 {
+		return 0, fmt.Errorf("fake: no single chat: %w", store.ErrNotFound)
+	}
+	for cid, meta := range f.Convs {
+		if meta.CType != 1 {
+			continue
+		}
+		var members []int64
+		for key := range f.Members {
+			if key[0] == cid {
+				members = append(members, key[1])
+			}
+		}
+		if len(members) == 2 && ((members[0] == uid1 && members[1] == uid2) || (members[0] == uid2 && members[1] == uid1)) {
+			return cid, nil
+		}
+	}
+	return 0, fmt.Errorf("fake: no single chat: %w", store.ErrNotFound)
+}
+
 func (f *FakeConvStore) NextSeq(ctx context.Context, cid int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

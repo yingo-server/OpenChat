@@ -40,14 +40,26 @@ export type EnvelopeInit = Partial<Omit<Envelope, 'payload'>> & {
   payload?: Uint8Array;
 };
 
-/** 构造帧：补齐协议默认值。id 由调用方（conn 层）递增分配。 */
+/**
+ * 生成 Envelope.request_id（architecture.md「消息发送」：trace_id 前端生成，
+ * framerw 从 request_id 提取 TraceID 全程透传）。UUID v4 优先，降级为
+ * 时钟+随机组合（老环境无 crypto.randomUUID）。
+ */
+export function newRequestId(): string {
+  const cryptoObj = typeof crypto !== 'undefined' ? crypto : undefined;
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function') return cryptoObj.randomUUID();
+  return `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+/** 构造帧：补齐协议默认值。request_id 缺省自动生成（trace 透传链路入口）。
+ *  id 由调用方（conn 层）递增分配。 */
 export function createEnvelope(init: EnvelopeInit = {}): Envelope {
   return {
     id: init.id ?? 0,
     ackId: init.ackId ?? 0,
     kind: init.kind ?? 0,
     version: init.version ?? PROTOCOL_VERSION,
-    requestId: init.requestId ?? '',
+    requestId: init.requestId ?? newRequestId(),
     flags: init.flags ?? 0,
     sentAt: init.sentAt ?? Date.now(),
     convId: init.convId,

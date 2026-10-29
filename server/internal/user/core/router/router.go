@@ -229,11 +229,21 @@ func (r *Router) HandleDownstream(fr *proto.Frame) {
 	r.deliver(env, connID)
 }
 
-// deliver 定位并投递：conn_id 优先，其次 user_id 广播。
+// deliver 定位并投递：显式 user_id 优先（数据面结果/事件按用户投递，
+// 且 bridge 的 conn_id 属于来源层，不能当作 usergw 连接号使用）；
+// 无 user_id 时再按 conn_id 精确定位。
 func (r *Router) deliver(env *chatpb.Envelope, connID uint64) {
 	b, err := frame.Encode(env)
 	if err != nil {
 		return
+	}
+	if uid := int64(env.GetUserId()); uid > 0 {
+		if n := r.sess.Broadcast(uid, b); n > 0 {
+			if r.OnDeliver != nil {
+				r.OnDeliver(env.Kind, 0)
+			}
+			return
+		}
 	}
 	if connID != 0 {
 		if c := r.sess.Lookup(connID); c != nil {
@@ -244,13 +254,6 @@ func (r *Router) deliver(env *chatpb.Envelope, connID uint64) {
 			return
 		}
 		// 连接已断（客户端可能已换新连接）：降级为按 user_id 广播。
-	}
-	if uid := int64(env.GetUserId()); uid > 0 {
-		r.sess.Broadcast(uid, b)
-		if r.OnDeliver != nil {
-			r.OnDeliver(env.Kind, 0)
-		}
-		return
 	}
 	if r.logger != nil {
 		r.logger.Debug("downstream unroutable", "kind", kinds.KindName(env.Kind), "conn", connID)

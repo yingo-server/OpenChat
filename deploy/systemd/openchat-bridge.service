@@ -4,6 +4,9 @@
 # /etc/openchat/openchat.toml 的 [mode] 段切换为 "split"。
 #
 # 与 embedded 相同的加固基线，差异只在 User / ReadWritePaths / RuntimeDirectory。
+# ⚠️⚠️ 警告：split 形态二进制尚未构建（chatd 当前 embedded-only，见
+# server/cmd/chatd/main.go）。本 unit 引用的 bin/chatd-bridge 不存在，启用前
+# 必须先实现 server/cmd/chatd-bridge。在此之前请使用 openchat.service。
 
 [Unit]
 Description=OpenChat bridge layer (bus, frame router, admin API)

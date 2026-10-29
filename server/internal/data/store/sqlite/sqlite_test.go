@@ -250,6 +250,16 @@ func TestConvStore(t *testing.T) {
 	if m, _ := db.CheckMember(ctx, cid, 4); m.Role != 1 {
 		t.Fatalf("role not set: %+v", m)
 	}
+	// SingleChatBetween: exact pair only, order-independent.
+	if got, err := db.SingleChatBetween(ctx, 3, 4); err != nil || got != cid {
+		t.Fatalf("SingleChatBetween(3,4) = %d, %v; want %d", got, err, cid)
+	}
+	if got, err := db.SingleChatBetween(ctx, 4, 3); err != nil || got != cid {
+		t.Fatalf("SingleChatBetween(4,3) = %d, %v; want %d", got, err, cid)
+	}
+	if _, err := db.SingleChatBetween(ctx, 3, 99); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SingleChatBetween(3,99) = %v, want ErrNotFound", err)
+	}
 	// NextSeq peek without reservation
 	if n, err := db.NextSeq(ctx, cid); err != nil || n != 1 {
 		t.Fatalf("NextSeq: %v %d", err, n)

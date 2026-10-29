@@ -27,10 +27,25 @@ type Envelope struct {
 	Payload   []byte `json:"payload,omitempty"`
 }
 
+// Media mirrors chat.v1.Media (the subset the data layer needs to persist and
+// re-emit; bytes never ride the frame). camelCase tags match protojson so the
+// pipeline's stored content is byte-compatible with the generated codec.
+type Media struct {
+	MediaID    string `json:"mediaId,omitempty"`
+	MType      int32  `json:"mtype,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	Mime       string `json:"mime,omitempty"`
+	Width      uint32 `json:"width,omitempty"`
+	Height     uint32 `json:"height,omitempty"`
+	DurationMs uint32 `json:"durationMs,omitempty"`
+}
+
 // MessagePayload mirrors chat.v1.MessagePayload (MSG_SEND 101).
 type MessagePayload struct {
 	ClientMsgID string          `json:"clientMsgId,omitempty"`
 	Text        string          `json:"text,omitempty"`
+	Media       []Media         `json:"media,omitempty"`
 	ReplyTo     uint64          `json:"replyTo,omitempty"`
 	Raw         json.RawMessage `json:"-"`
 }
@@ -82,6 +97,7 @@ type DataResult struct {
 	Op        uint32 `json:"op,omitempty"`
 	Ok        bool   `json:"ok,omitempty"`
 	Error     string `json:"error,omitempty"`
+	Body      []byte `json:"body,omitempty"`
 	RequestID string `json:"requestId,omitempty"`
 }
 

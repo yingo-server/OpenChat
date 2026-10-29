@@ -12,6 +12,7 @@ OpenChat 采用分层 socket 架构：总线层为骨架，桥接层为枢纽，
 | [管理层与数据层设计](admin-data-design.md) | 数据操作 kind、DDL 分域、写管道、REST API、RBAC |
 | [Web UI 设计规范](web-ui-spec.md) | 设计令牌、组件规范、消息区交互、性能指标 |
 | [限流与安全规范](security-spec.md) | 分层限流、认证、上传安全、运维基线、合规 |
+| [已知问题](known-issues.md) | 1.0 已知缺陷、影响范围与计划修复版本 |
 
 ## 技术栈
 

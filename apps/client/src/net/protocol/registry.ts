@@ -62,6 +62,7 @@ export interface SessionPort {
 
 export interface ConvPort {
   upsertFromWire(payload: ConvPayload): void;
+  setActive(convId: number): void;
 }
 
 export interface PresencePort {

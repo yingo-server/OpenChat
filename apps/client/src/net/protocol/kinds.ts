@@ -75,6 +75,10 @@ export const KINDS = {
   ADMIN_BROADCAST: 500,
   ANNOUNCE: 501,
   MAINTENANCE: 502,
+
+  // 900-999 数据层（用户面代理到 930 会话数据）
+  CONV_DATA_REQUEST: 930,
+  CONV_DATA_RESULT: 931,
 } as const;
 
 export type Kind = (typeof KINDS)[keyof typeof KINDS];

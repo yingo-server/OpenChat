@@ -11,6 +11,7 @@ import type { Media } from '../../net/proto/payload';
 import { t } from '../i18n';
 import { CloseIcon, ImageIcon } from '../components/icons';
 import { formatBytes } from '../utils/format';
+import { resolveMediaUrl } from '../../net/media';
 import { UnknownMessage } from './unknown';
 import type { RendererProps } from './registry';
 
@@ -24,7 +25,7 @@ export function ImageMessage({ message }: RendererProps) {
   const width = media.width || 800;
   const height = media.height || 600;
   const bucket = width >= 1200 ? 320 : width >= 600 ? 240 : 160;
-  const src = media.url || thumbSource(media.thumb);
+  const src = resolveMediaUrl(media) || thumbSource(media.thumb);
   const hue = hueOf(media.mediaId || String(message.msgId));
   const uploading = media.status === 'uploading' || media.status === 'pending';
   const progress = Math.round(

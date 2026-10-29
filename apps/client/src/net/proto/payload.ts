@@ -9,7 +9,27 @@
  * 生产对接真实后端时，只需把本文件替换为 protobuf-ts 生成物（保持导出的
  * decode 与 encode 签名），handler 与 sync 引擎无需改动 —— 这是唯一与 payload
  * schema 耦合的位置。
+ *
+ * ---------------------------------------------------------------------------
+ * wire 字段命名（单一形态，无 pick() 双收）：
+ *  - data 层 wire JSON（server/internal/data/pipe/wire/wire.go 的 json tag）
+ *    为准，lowerCamelCase：MsgAck{msgId,seq,clientMsgId,status}、
+ *    Error{code,reason,retryAfterMs}、DataResult{op,ok,error,body,requestId}、
+ *    ConvPayload{convId,title,convType,createdAt,members{userId,role,joinedAt,
+ *    mutedUntil}}、ConvCreate{memberIds,convType}、ReadHistory{convId,sinceSeq,
+ *    limit}。
+ *  - 例外：MSG_NEW(102) 与其内嵌 content/media 保持 snake_case ——
+ *    server/internal/data/pipe/flusher.go:137 buildMsgNewPayload 有意输出
+ *    protojson 同名的 snake_case（client_msg_id/msg_id/seq/sender_id/sent_at/
+ *    conv_id/media{media_id,mtype,thumb_inline,duration_ms}/reply_to/mentions），
+ *    上行 MSG_SEND(101) 同形（服务端 payloadForPipe 对 snake/camel 均收，
+ *    但落库归一为 snake_case）。
+ *  - 服务端只有 protobuf 定义、无 JSON 生产者的 kind（TYPING/PRESENCE/PONG/
+ *    RESUME/SYNC_REQUEST/RECEIPT/MSG_EDIT 等）：JSON 形态仅用于 mockBridge，
+ *    字段名沿用 proto/chat.proto 的 snake_case（与 proto 字段同名便于对照）。
  */
+
+import { base64ToBytes, bytesToBase64 } from './codec';
 
 export class PayloadError extends Error {
   constructor(message: string) {
@@ -329,20 +349,21 @@ export function encodeMsgNew(input: MsgNewPayload): Uint8Array {
 }
 
 export function decodeMsgAck(bytes: Uint8Array): MsgAckPayload {
+  // wire.MsgAck (wire.go:39)：camelCase 单态。snake 输入不再兜底。
   const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
   return {
-    msgId: num(raw.msg_id),
+    msgId: num(raw.msgId),
     seq: num(raw.seq),
-    clientMsgId: str(raw.client_msg_id),
+    clientMsgId: str(raw.clientMsgId),
     status: num(raw.status),
   };
 }
 
 export function encodeMsgAck(payload: MsgAckPayload): Uint8Array {
   return encodeJsonPayload({
-    msg_id: payload.msgId,
+    msgId: payload.msgId,
     seq: payload.seq,
-    client_msg_id: payload.clientMsgId,
+    clientMsgId: payload.clientMsgId,
     status: payload.status,
   });
 }
@@ -435,11 +456,12 @@ export function decodeRateLimited(bytes: Uint8Array): RateLimitedPayload {
 }
 
 export function decodeError(bytes: Uint8Array): ErrorPayload {
+  // wire.Error (wire.go:47)：camelCase 单态。
   const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
   return {
     code: num(raw.code),
     reason: str(raw.reason),
-    retryAfterMs: num(raw.retry_after_ms),
+    retryAfterMs: num(raw.retryAfterMs),
   };
 }
 
@@ -447,33 +469,39 @@ export function decodeError(bytes: Uint8Array): ErrorPayload {
 // 会话 / presence
 // ---------------------------------------------------------------------------
 
+/**
+ * 数据层 wire JSON 统一 camelCase（wire.go json tag）。
+ * 旧 pick(snake, camel) 双收已删除 —— 单态契约，snake 输入一律按缺失处理。
+ */
+/** 秒级时间戳（服务端 conv.go nowSec()）自动升级为毫秒（前端展示统一用 ms）。 */
+function millis(value: unknown, fallback = 0): number {
+  const v = num(value, fallback);
+  return v > 0 && v < 1e12 ? v * 1000 : v;
+}
+
+/**
+ * wire.ConvPayload (wire.go:128) + data 层时间戳语义（conv.go nowSec()：秒）：
+ * camelCase 单态，秒级时间戳升毫秒。snake_case 输入不再兜底（P1-3 收敛，
+ * 权威清单 server/internal/data/pipe/wire/wire.go json tag）。
+ */
 export function decodeConvPayload(bytes: Uint8Array): ConvPayload {
-  const raw = decodeJsonPayload<{
-    conv_id?: unknown;
-    title?: unknown;
-    conv_type?: unknown;
-    created_at?: unknown;
-    members?: Array<Record<string, unknown>>;
-    version?: unknown;
-    last_seq?: unknown;
-    unread?: unknown;
-    avatar?: unknown;
-  }>(bytes);
+  const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
+  const memberRows = Array.isArray(raw.members) ? (raw.members as Array<Record<string, unknown>>) : [];
   return {
-    convId: num(raw.conv_id),
+    convId: num(raw.convId),
     title: str(raw.title),
-    convType: num(raw.conv_type),
-    createdAt: num(raw.created_at, Date.now()),
-    members: (raw.members ?? []).map((m) => ({
-      userId: num(m.user_id),
+    convType: num(raw.convType),
+    createdAt: millis(raw.createdAt, Date.now()),
+    members: memberRows.map((m) => ({
+      userId: num(m.userId),
       role: num(m.role),
-      joinedAt: num(m.joined_at),
-      mutedUntil: num(m.muted_until),
+      joinedAt: millis(m.joinedAt),
+      mutedUntil: millis(m.mutedUntil),
       name: typeof m.name === 'string' ? m.name : undefined,
       avatar: typeof m.avatar === 'string' ? m.avatar : undefined,
     })),
     version: num(raw.version),
-    lastSeq: raw.last_seq === undefined ? undefined : num(raw.last_seq),
+    lastSeq: raw.lastSeq === undefined ? undefined : num(raw.lastSeq),
     unread: raw.unread === undefined ? undefined : num(raw.unread),
     avatar: str(raw.avatar) || undefined,
   };
@@ -481,22 +509,88 @@ export function decodeConvPayload(bytes: Uint8Array): ConvPayload {
 
 export function encodeConvPayload(payload: ConvPayload): Uint8Array {
   return encodeJsonPayload({
-    conv_id: payload.convId,
+    convId: payload.convId,
     title: payload.title,
-    conv_type: payload.convType,
-    created_at: payload.createdAt,
+    convType: payload.convType,
+    createdAt: payload.createdAt,
     members: payload.members.map((m) => ({
-      user_id: m.userId,
+      userId: m.userId,
       role: m.role,
-      joined_at: m.joinedAt,
-      muted_until: m.mutedUntil,
+      joinedAt: m.joinedAt,
+      mutedUntil: m.mutedUntil,
       name: m.name,
       avatar: m.avatar,
     })),
     version: payload.version,
-    last_seq: payload.lastSeq,
+    lastSeq: payload.lastSeq,
     unread: payload.unread,
     avatar: payload.avatar,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 会话创建 / 930-931 数据结果
+// ---------------------------------------------------------------------------
+
+export interface ConvCreateInput {
+  title?: string;
+  /** proto 语义：1 单聊 / 2 群聊 */
+  convType: number;
+  memberIds: number[];
+}
+
+export function encodeConvCreate(input: ConvCreateInput): Uint8Array {
+  // 服务端 convKindToPipe (cmd/chatd/wire.go:176) 接收 camelCase JSON 分支。
+  return encodeJsonPayload({
+    title: input.title ?? '',
+    convType: input.convType,
+    memberIds: input.memberIds,
+  });
+}
+
+export function decodeConvCreate(bytes: Uint8Array): ConvCreateInput {
+  const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
+  const ids = raw.memberIds;
+  return {
+    title: str(raw.title),
+    convType: num(raw.convType),
+    memberIds: Array.isArray(ids) ? ids.map((v) => num(v)) : [],
+  };
+}
+
+export interface DataResultPayload {
+  op: number;
+  ok: boolean;
+  error?: string;
+  body?: Uint8Array;
+  requestId?: string;
+}
+
+export function decodeDataResult(bytes: Uint8Array): DataResultPayload {
+  // wire.DataResult (wire.go:81)：camelCase 单态。body 是 base64 的 JSON bytes。
+  const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
+  let body: Uint8Array | undefined;
+  if (typeof raw.body === 'string' && raw.body.length > 0) {
+    body = base64ToBytes(raw.body);
+  } else if (raw.body instanceof Uint8Array) {
+    body = raw.body;
+  }
+  return {
+    op: num(raw.op),
+    ok: bool(raw.ok),
+    error: str(raw.error),
+    body,
+    requestId: str(raw.requestId),
+  };
+}
+
+export function encodeDataResult(input: DataResultPayload): Uint8Array {
+  return encodeJsonPayload({
+    op: input.op,
+    ok: input.ok,
+    error: input.error ?? '',
+    body: input.body ? bytesToBase64(input.body) : '',
+    requestId: input.requestId ?? '',
   });
 }
 
@@ -550,8 +644,8 @@ export function decodeResumeRequest(bytes: Uint8Array): { sessionId: string; con
 
 export function encodeSyncRequest(input: { convId: number; sinceSeq: number; limit?: number }): Uint8Array {
   return encodeJsonPayload({
-    conv_id: input.convId,
-    since_seq: input.sinceSeq,
+    convId: input.convId,
+    sinceSeq: input.sinceSeq,
     limit: input.limit ?? 100,
   });
 }
@@ -559,8 +653,8 @@ export function encodeSyncRequest(input: { convId: number; sinceSeq: number; lim
 export function decodeSyncRequest(bytes: Uint8Array): { convId: number; sinceSeq: number; limit: number } {
   const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
   return {
-    convId: num(raw.conv_id),
-    sinceSeq: num(raw.since_seq),
+    convId: num(raw.convId, num(raw.conv_id)),
+    sinceSeq: num(raw.sinceSeq, num(raw.since_seq)),
     limit: num(raw.limit, 100),
   };
 }

@@ -23,7 +23,6 @@ import (
 	"github.com/yingo-server/OpenChat/server/internal/admin/middleware"
 	"github.com/yingo-server/OpenChat/server/internal/admin/service"
 	adminstore "github.com/yingo-server/OpenChat/server/internal/admin/store"
-	"github.com/yingo-server/OpenChat/server/internal/bridge/adminapi"
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
 	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
 	"github.com/yingo-server/OpenChat/server/internal/user/core/authn"
@@ -80,10 +79,15 @@ type Dispatcher = service.Dispatcher
 // Deps is the injected dependency set. DB is admin.db; AuditJournal is the
 // cold append-only journal; Authorizer authenticates outbound AdminAPI calls;
 // Policy is the flag/policy store.
+//
+// Authorizer is defined HERE (dependency inversion, docs/bridge-design.md
+// §4.1 rule: admin must not import bridge/*): bridge/adminapi.HMACAuthorizer
+// satisfies it structurally — the bridge package never knows about this
+// interface, and this package never imports the bridge.
 type Deps struct {
 	DB           *sql.DB
 	AuditJournal store.AuditJournal
-	Authorizer   adminapi.Authorizer
+	Authorizer   bridgeproxy.Authorizer
 	Bridge       *bridgeproxy.Proxy
 	Policy       service.PolicyStore
 

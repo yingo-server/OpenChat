@@ -38,6 +38,14 @@ type Config struct {
 	MaxConnsPerUser   int
 	DrainTimeout      time.Duration
 
+	// Upgrade 限流覆盖（/ws upgrade 按 IP 令牌桶 + 失败熔断，E-3/E-4）。
+	// 零值取 policy 默认（10/min、burst 20、阈值 8、窗口 5min、封禁 15min）。
+	UpgradeRatePerMin       float64
+	UpgradeBurst            float64
+	UpgradeFailureThreshold int
+	UpgradeFailureWindow    time.Duration
+	UpgradeBanFor           time.Duration
+
 	// RateLimits 覆盖默认限流规则（key=kind）。nil 表示使用 security-spec 默认表。
 	RateLimits map[uint32]RateLimit
 
@@ -99,6 +107,21 @@ func (c Config) Policy() policy.Config {
 	}
 	if c.DrainTimeout > 0 {
 		p.DrainTimeout = c.DrainTimeout
+	}
+	if c.UpgradeRatePerMin > 0 {
+		p.UpgradeRatePerMin = c.UpgradeRatePerMin
+	}
+	if c.UpgradeBurst > 0 {
+		p.UpgradeBurst = c.UpgradeBurst
+	}
+	if c.UpgradeFailureThreshold > 0 {
+		p.UpgradeFailureThreshold = c.UpgradeFailureThreshold
+	}
+	if c.UpgradeFailureWindow > 0 {
+		p.UpgradeFailureWindow = c.UpgradeFailureWindow
+	}
+	if c.UpgradeBanFor > 0 {
+		p.UpgradeBanFor = c.UpgradeBanFor
 	}
 	for kind, r := range c.RateLimits {
 		p.Limits.Rules[kind] = limitRule(r.Rate, r.Burst, r.Capacity, r.MaxPayload, r.Silent)

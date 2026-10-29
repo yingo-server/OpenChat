@@ -79,3 +79,34 @@ func (r *msgReader) FirstSeqAfter(ctx context.Context, cid int64, since int64) (
 	}
 	return seq.Int64, nil
 }
+
+// scanOlderSQL is the archive-scan whitelist: cutoff and limit are the only
+// parameters (both fixed position), ORDER BY sent_at ASC rides idx_msg_sent.
+const scanOlderSQL = `SELECT msg_id, cid, seq, sender_id, client_msg_id, content, sent_at, edited, recalled
+FROM msg_messages_hot WHERE sent_at < ? ORDER BY sent_at ASC LIMIT ?`
+
+// ScanOlder is the archiver's dedicated scan (mechanism, not policy): ALL hot
+// rows older than the cutoff, oldest first, up to limit. MsgReader is per-cid
+// (api.go frozen), so a store-wide scan is this separate method instead of a
+// ReadHot(cid=0) convention sqlite never implemented. The cutoff VALUE is
+// policy (assembly passes policy.hot_retention_days-derived); this query only
+// defines WHAT a scan is.
+func (r *msgReader) ScanOlder(ctx context.Context, cutoff int64, limit int) ([]store.HotMsg, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("sqlite: ScanOlder: limit must be >= 1 (cutoff=%d limit=%d)", cutoff, limit)
+	}
+	rows, err := r.db.QueryContext(ctx, scanOlderSQL, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: scan older cutoff=%d: %w", cutoff, err)
+	}
+	defer rows.Close()
+	var out []store.HotMsg
+	for rows.Next() {
+		var m store.HotMsg
+		if err := rows.Scan(&m.MsgID, &m.Cid, &m.Seq, &m.SenderID, &m.ClientMsgID, &m.Content, &m.SentAt, &m.Edited, &m.Recalled); err != nil {
+			return nil, fmt.Errorf("sqlite: scan older row: %w", err)
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}

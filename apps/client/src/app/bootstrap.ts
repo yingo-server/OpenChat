@@ -15,7 +15,7 @@ import { WsClient } from '../net/transport/ws-client';
 import type { NetClient } from '../net/transport/types';
 import { TokenStore } from '../net/auth/token-store';
 import { createHttpAuthApi, type AuthSession } from '../net/auth/provider';
-import { MockBridge, createMockAuthApi } from '../net/mock/mockBridge';
+import { MockBridge, createMockAuthApi, setActiveBridge } from '../net/mock/mockBridge';
 import { useConnStore } from '../core/stores/conn-store';
 import { useSessionStore } from '../core/stores/session-store';
 import { useConvStore } from '../core/stores/conv-store';
@@ -115,6 +115,7 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
   const mock = IS_MOCK ? new MockBridge() : null;
   if (mock) {
     client = mock;
+    setActiveBridge(mock);
   } else {
     client = new WsClient({
       url: resolveWsUrl(),
@@ -152,6 +153,7 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
 
   const convPort: ConvPort = {
     upsertFromWire: (payload) => useConvStore.getState().upsertFromWire(payload),
+    setActive: (convId) => useConvStore.getState().setActive(convId),
   };
 
   const presencePort: PresencePort = {
