@@ -108,7 +108,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { goos: linux,   goarch: amd64,   pkg: tar.gz, cc: x86_64-linux-gnu-gcc,      apt: gcc }
+          - { goos: linux,   goarch: amd64,   pkg: tar.gz, cc: x86_64-linux-gnu-gcc,      apt: gcc-x86-64-linux-gnu}
           - { goos: linux,   goarch: "386",   pkg: tar.gz, cc: i686-linux-gnu-gcc,        apt: gcc-i686-linux-gnu }
           - { goos: linux,   goarch: arm64,   pkg: tar.gz, cc: aarch64-linux-gnu-gcc,     apt: gcc-aarch64-linux-gnu }
           - { goos: linux,   goarch: arm,     pkg: tar.gz, cc: arm-linux-gnueabihf-gcc,   apt: gcc-arm-linux-gnueabihf }
