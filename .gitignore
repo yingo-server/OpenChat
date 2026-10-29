@@ -20,3 +20,8 @@ apps/client/dist/
 apps/admin/dist/
 !server/web/client/**
 !server/web/admin/**
+
+# stray build artifacts (must never be tracked: 15MB+ binaries)
+/chatd
+/openchatctl
+/server/chatd
