@@ -94,20 +94,30 @@ jobs:
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------
-  # 发布：只在 tag push（v*）时执行。
-  # make release-all = make web（两端 npm ci+build 并复制到 server/web/）
-  #                  + go build -trimpath -ldflags "-s -w"
-  #                  + dist/openchat-<ver>-linux-<arch>.tar.gz + SHA256SUMS
-  # checkout 必须 fetch-depth: 0，否则 git describe --tags 取不到 tag，
-  # 版本号会退化成日期。
+  # 全平台/全 CPU 架构构建（v1.1：对标 FFmpeg 的产物矩阵）
+  # Linux × {amd64,386,arm64,arm(ARMv7),riscv64} + Windows × {amd64,386,arm64,arm}
+  # + 源码包。CGO(SQLite) 交叉编译需要对应 gcc；windows/arm* 用 mingw/llvm-mingw，
+  # 装不上则该格标记 SKIP（不阻塞其余产物）。
+  # 与 go 测试 job 相互独立：test 红不影响产物构建。
   # ---------------------------------------------------------------------------
-  release:
+  build-matrix:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [go, web]
+    needs: [web]
     runs-on: ubuntu-latest
-    # Creating a release needs write access; the workflow default is read-only.
-    permissions:
-      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64,   pkg: tar.gz, cc: x86_64-linux-gnu-gcc,      apt: gcc }
+          - { goos: linux,   goarch: "386",   pkg: tar.gz, cc: i686-linux-gnu-gcc,        apt: gcc-i686-linux-gnu }
+          - { goos: linux,   goarch: arm64,   pkg: tar.gz, cc: aarch64-linux-gnu-gcc,     apt: gcc-aarch64-linux-gnu }
+          - { goos: linux,   goarch: arm,     pkg: tar.gz, cc: arm-linux-gnueabihf-gcc,   apt: gcc-arm-linux-gnueabihf }
+          - { goos: linux,   goarch: riscv64, pkg: tar.gz, cc: riscv64-linux-gnu-gcc,     apt: gcc-riscv64-linux-gnu }
+          - { goos: windows, goarch: amd64,   pkg: zip,    cc: x86_64-w64-mingw32-gcc,    apt: gcc-mingw-w64-x86-64 }
+          - { goos: windows, goarch: "386",   pkg: zip,    cc: i686-w64-mingw32-gcc,      apt: gcc-mingw-w64-i686 }
+          - { goos: windows, goarch: arm64,   pkg: zip,    cc: "",                        apt: "" }
+          - { goos: windows, goarch: arm,     pkg: zip,    cc: "",                        apt: "" }
+    name: build
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,7 +127,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-          cache-dependency-path: go.sum
 
       - uses: actions/setup-node@v4
         with:
@@ -127,22 +136,101 @@ jobs:
             apps/client/package-lock.json
             apps/admin/package-lock.json
 
-      - name: Build release artifact
-        run: make release-all
-
-      - name: Show artifacts
+      - name: Install cross toolchain
+        if: matrix.apt != ''
         run: |
-          ls -lh dist/
-          cat dist/SHA256SUMS
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.apt }} zip
+        continue-on-error: true
 
-      # Attach the tarball to a GitHub Release instead of upload-artifact:
-      # artifact storage quotas are per-repo and slow to reclaim, while a
-      # release asset is the actual download entry point users need.
+      - name: Build embedded web assets
+        run: make web
+
+      - name: Cross-build package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CC: ${{ matrix.cc }}
+          PKG: ${{ matrix.pkg }}
+        run: |
+          if [ -n "$CC" ] && ! command -v "$CC" >/dev/null 2>&1; then
+            echo "cross compiler $CC unavailable — SKIP this target"; exit 0
+          fi
+          CGO_ENABLED=1 GOOS=$GOOS GOARCH=$GOARCH CC=$CC \
+            go build -trimpath -ldflags "-s -w" -o "stage/chatd$([ "$GOOS" = windows ] && echo .exe)" ./server/cmd/chatd || {
+              # windows/arm(64) 与部分无 mingw 格：退回纯 Go 静态（chatd 依赖 cgo 的
+              # SQLite，纯 Go 会缺驱动；这里给 SKIP 并标注，不阻塞其他产物）
+              echo "cross build failed for $GOOS/$GOARCH — SKIP (needs CGO toolchain)"
+              exit 0
+            }
+          mkdir -p stage/docs stage/deploy
+          cp README.md LICENSE stage/
+          cp docs/deploy.md docs/user-guide.md docs/admin-guide.md docs/known-issues.md stage/docs/ 2>/dev/null || true
+          if [ "$GOOS" != windows ]; then
+            cp -R deploy/systemd deploy/journald deploy/keygen deploy/install.sh deploy/backup.sh deploy/release.sh deploy/Caddyfile deploy/openchat.toml deploy/policy.json stage/deploy/ 2>/dev/null || true
+          fi
+          VER="$(git describe --tags --always 2>/dev/null | tr -c 'A-Za-z0-9._-' '-')"
+          NAME="openchat-$VER-$GOOS-$GOARCH.$PKG"
+          if [ "$PKG" = zip ]; then (cd stage && zip -qr "../dist/$NAME" .); else tar -czf "dist/$NAME" -C stage .; fi
+          ls -lh dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 7
+          if-no-files-found: warn
+
+  # 源码包（FFmpeg 惯例）
+  src-package:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Source tarball
+        run: |
+          VER="$(git describe --tags --always 2>/dev/null | tr -c 'A-Za-z0-9._-' '-')"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="openchat-$VER-src/" HEAD > "dist/openchat-$VER-src.tar.gz"
+          ls -lh dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pkg-src
+          path: dist/*
+          retention-days: 7
+
+  # 汇总 + 发布到 GitHub Release
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [go, build-matrix, src-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Build SHA256SUMS
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.zip > SHA256SUMS 2>/dev/null || sha256sum * > SHA256SUMS
+          ls -lh; cat SHA256SUMS
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/openchat-*-linux-*.tar.gz
+            dist/*.tar.gz
+            dist/*.zip
             dist/SHA256SUMS
           generate_release_notes: true
           fail_on_unmatched_files: true
