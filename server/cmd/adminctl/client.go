@@ -27,6 +27,15 @@ const (
 	exitDenied   = 77
 )
 
+// errHelpRequested signals that a subcommand's -h/--help was handled: the flag
+// set already printed its usage, so run() maps it to exit 0 (not a syntax error).
+var errHelpRequested = errors.New("help requested")
+
+// stderrW is the writer newFlagSet attaches to subcommand flag sets so that
+// `adminctl <sub> --help` prints that subcommand's flag list. run() sets it to
+// the per-invocation stderr writer.
+var stderrW io.Writer = os.Stderr
+
 type globals struct {
 	Server  string
 	Token   string

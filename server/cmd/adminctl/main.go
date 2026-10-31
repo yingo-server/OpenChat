@@ -18,6 +18,7 @@ func main() {
 }
 
 func run(args []string, in io.Reader, out, errw io.Writer) int {
+	stderrW = errw
 	g, rest, err := parseGlobals(args)
 	if err != nil {
 		fmt.Fprintf(errw, "adminctl: %v\n\n", err)
@@ -61,6 +62,10 @@ func run(args []string, in io.Reader, out, errw io.Writer) int {
 		err = cmdBroadcast(g, rest[1:], out)
 	case "flags":
 		err = cmdFlags(g, rest[1:], out)
+	case "logout":
+		err = cmdLogout(g, rest[1:], out, errw)
+	case "metrics":
+		err = cmdMetrics(g, rest[1:], out)
 	case "audit":
 		err = cmdAudit(g, rest[1:], out)
 	case "archive":
@@ -71,6 +76,9 @@ func run(args []string, in io.Reader, out, errw io.Writer) int {
 		return exitUsage
 	}
 	if err != nil {
+		if errors.Is(err, errHelpRequested) {
+			return exitOK
+		}
 		printError(errw, err)
 		return exitCodeFor(err)
 	}
@@ -130,8 +138,8 @@ func parseGlobals(args []string) (globals, []string, error) {
 	if g.Output == "" || g.Output == "table" {
 		g.Output = "table"
 	}
-	if g.Output != "table" && g.Output != "json" {
-		return g, nil, &usageError{msg: "invalid --output (want json or table)"}
+	if g.Output != "table" && g.Output != "json" && g.Output != "text" {
+		return g, nil, &usageError{msg: "invalid --output (want json, table or text)"}
 	}
 	return g, rest, nil
 }
@@ -147,7 +155,9 @@ func resolveGlobals(g *globals) error {
 		g.Server = creds.Server
 	}
 	if g.Server == "" {
-		g.Server = "http://127.0.0.1:7781"
+		// Built-in default matches config/chatd.toml admin_listen; override with
+		// --server or OPENCHAT_ADMIN_URL.
+		g.Server = "http://127.0.0.1:7780"
 	}
 	if g.Token == "" {
 		g.Token = os.Getenv("OPENCHAT_ADMIN_TOKEN")
@@ -179,6 +189,8 @@ Commands:
   messages search|recall      Message search / forced recall
   broadcast preview|send      Broadcast preview (dry run) / send
   flags list|set              Feature flags / policy-as-flag
+  metrics                     Prometheus metrics (GET /api/v1/metrics, raw text)
+  logout                      Log out (POST /api/v1/logout) and delete credentials
   audit --since-id <id>       Sequential audit cursor stream
   archive status              Archive job ledger
   completion bash             Print bash completion

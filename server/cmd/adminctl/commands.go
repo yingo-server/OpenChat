@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -19,7 +20,9 @@ func newFlagSet(name string, errw io.Writer) *flag.FlagSet {
 func parseFlags(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(reorderFlags(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			return &usageError{msg: "see usage above"}
+			// The flag package already printed the flag list to fs' output;
+			// report a clean exit rather than a usage error.
+			return errHelpRequested
 		}
 		return &usageError{msg: err.Error()}
 	}
@@ -103,7 +106,7 @@ func putJSON(c *client, path string, body any, out io.Writer, output string) err
 }
 
 func cmdWhoami(g globals, args []string, out io.Writer) error {
-	fs := newFlagSet("whoami", io.Discard)
+	fs := newFlagSet("whoami", stderrW)
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -124,7 +127,7 @@ func cmdUsers(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "list":
-		fs := newFlagSet("users list", io.Discard)
+		fs := newFlagSet("users list", stderrW)
 		q := fs.String("q", "", "search query")
 		status := fs.Int("status", -1, "status filter (-1 all)")
 		limit := fs.Int("limit", 50, "page size")
@@ -138,7 +141,7 @@ func cmdUsers(g globals, args []string, out io.Writer) error {
 		})
 		return getJSON(c, path, out, g.Output)
 	case "show":
-		fs := newFlagSet("users show", io.Discard)
+		fs := newFlagSet("users show", stderrW)
 		if err := parseFlags(fs, args[1:]); err != nil {
 			return err
 		}
@@ -151,7 +154,7 @@ func cmdUsers(g globals, args []string, out io.Writer) error {
 		}
 		return getJSON(c, fmt.Sprintf("/api/v1/users/%d", uid), out, g.Output)
 	case "ban":
-		fs := newFlagSet("users ban", io.Discard)
+		fs := newFlagSet("users ban", stderrW)
 		level := fs.Int("level", 1, "ban level 1..3")
 		days := fs.Int("days", 0, "duration in days (0 = permanent)")
 		until := fs.Int64("until", 0, "absolute unix expiry")
@@ -170,7 +173,7 @@ func cmdUsers(g globals, args []string, out io.Writer) error {
 			"level": *level, "days": *days, "until": *until, "reason": *reason,
 		}, out, g.Output)
 	case "unban":
-		fs := newFlagSet("users unban", io.Discard)
+		fs := newFlagSet("users unban", stderrW)
 		reason := fs.String("reason", "", "reason")
 		if err := parseFlags(fs, args[1:]); err != nil {
 			return err
@@ -191,7 +194,7 @@ func cmdUsers(g globals, args []string, out io.Writer) error {
 }
 
 func cmdKick(g globals, args []string, out io.Writer) error {
-	fs := newFlagSet("kick", io.Discard)
+	fs := newFlagSet("kick", stderrW)
 	reason := fs.String("reason", "", "reason")
 	if err := parseFlags(fs, args); err != nil {
 		return err
@@ -220,7 +223,7 @@ func cmdReports(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "list":
-		fs := newFlagSet("reports list", io.Discard)
+		fs := newFlagSet("reports list", stderrW)
 		status := fs.Int("status", -1, "status filter (-1 all)")
 		limit := fs.Int("limit", 50, "page size")
 		offset := fs.Int("offset", 0, "offset")
@@ -231,7 +234,7 @@ func cmdReports(g globals, args []string, out io.Writer) error {
 			"status": strconv.Itoa(*status), "limit": strconv.Itoa(*limit), "offset": strconv.Itoa(*offset),
 		}), out, g.Output)
 	case "show":
-		fs := newFlagSet("reports show", io.Discard)
+		fs := newFlagSet("reports show", stderrW)
 		if err := parseFlags(fs, args[1:]); err != nil {
 			return err
 		}
@@ -244,7 +247,7 @@ func cmdReports(g globals, args []string, out io.Writer) error {
 		}
 		return getJSON(c, fmt.Sprintf("/api/v1/reports/%d", id), out, g.Output)
 	case "handle":
-		fs := newFlagSet("reports handle", io.Discard)
+		fs := newFlagSet("reports handle", stderrW)
 		action := fs.String("action", "", "claim|resolve|reject")
 		note := fs.String("note", "", "handling note")
 		if err := parseFlags(fs, args[1:]); err != nil {
@@ -278,7 +281,7 @@ func cmdMessages(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "search":
-		fs := newFlagSet("messages search", io.Discard)
+		fs := newFlagSet("messages search", stderrW)
 		q := fs.String("q", "", "query text")
 		conv := fs.Int64("conv", 0, "conversation id")
 		limit := fs.Int("limit", 50, "page size")
@@ -294,7 +297,7 @@ func cmdMessages(g globals, args []string, out io.Writer) error {
 			"limit": strconv.Itoa(*limit), "offset": strconv.Itoa(*offset),
 		}), out, g.Output)
 	case "recall":
-		fs := newFlagSet("messages recall", io.Discard)
+		fs := newFlagSet("messages recall", stderrW)
 		reason := fs.String("reason", "", "reason")
 		if err := parseFlags(fs, args[1:]); err != nil {
 			return err
@@ -328,7 +331,7 @@ func cmdBroadcast(g globals, args []string, out io.Writer) error {
 	if mode != "preview" && mode != "send" {
 		return &usageError{msg: "broadcast requires preview|send"}
 	}
-	fs := newFlagSet("broadcast "+mode, io.Discard)
+	fs := newFlagSet("broadcast "+mode, stderrW)
 	text := fs.String("text", "", "broadcast text")
 	var convs stringList
 	fs.Var(&convs, "conv", "conversation id (repeatable)")
@@ -370,13 +373,13 @@ func cmdFlags(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "list":
-		fs := newFlagSet("flags list", io.Discard)
+		fs := newFlagSet("flags list", stderrW)
 		if err := parseFlags(fs, args[1:]); err != nil {
 			return err
 		}
 		return getJSON(c, "/api/v1/flags", out, g.Output)
 	case "set":
-		fs := newFlagSet("flags set", io.Discard)
+		fs := newFlagSet("flags set", stderrW)
 		if err := parseFlags(fs, args[1:]); err != nil {
 			return err
 		}
@@ -395,7 +398,7 @@ func cmdFlags(g globals, args []string, out io.Writer) error {
 }
 
 func cmdAudit(g globals, args []string, out io.Writer) error {
-	fs := newFlagSet("audit", io.Discard)
+	fs := newFlagSet("audit", stderrW)
 	since := fs.Int64("since-id", 0, "cursor: last id already seen")
 	limit := fs.Int("limit", 500, "page size (max 1000)")
 	if err := parseFlags(fs, args); err != nil {
@@ -420,13 +423,13 @@ func cmdArchive(g globals, args []string, out io.Writer) error {
 	}
 	switch args[0] {
 	case "status":
-		fs := newFlagSet("archive status", io.Discard)
+		fs := newFlagSet("archive status", stderrW)
 		if err := parseFlags(fs, args[1:]); err != nil {
 			return err
 		}
 		return getJSON(c, "/api/v1/archive/status", out, g.Output)
 	case "run":
-		fs := newFlagSet("archive run", io.Discard)
+		fs := newFlagSet("archive run", stderrW)
 		dry := fs.Bool("dry-run", false, "estimate only")
 		if err := parseFlags(fs, args[1:]); err != nil {
 			return err
@@ -447,4 +450,60 @@ func parseUID(raw string) (int64, error) {
 		return 0, &usageError{msg: fmt.Sprintf("invalid id %q", raw)}
 	}
 	return id, nil
+}
+
+// cmdLogout invalidates the session on the server (POST /api/v1/logout) and
+// then removes the local credentials file. A missing file is not an error:
+// exiting 0 keeps `adminctl logout` idempotent.
+func cmdLogout(g globals, args []string, out, errw io.Writer) error {
+	fs := newFlagSet("logout", stderrW)
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	c, err := newClient(g)
+	if err != nil {
+		return err
+	}
+	raw, err := c.do("POST", "/api/v1/logout", nil, true)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(credPath()); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(errw, "adminctl: warning: could not remove credentials: %v\n", err)
+	}
+	if g.Output == "json" && len(raw) > 0 {
+		return render(out, raw, "json")
+	}
+	fmt.Fprintln(out, "logged out")
+	return nil
+}
+
+// cmdMetrics fetches Prometheus exposition text from GET /api/v1/metrics and
+// writes it verbatim (no JSON wrapper); with --output json it wraps the raw
+// text as {"raw": "..."} for callers that want a machine envelope.
+func cmdMetrics(g globals, args []string, out io.Writer) error {
+	fs := newFlagSet("metrics", stderrW)
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	c, err := newClient(g)
+	if err != nil {
+		return err
+	}
+	raw, err := c.do("GET", "/api/v1/metrics", nil, false)
+	if err != nil {
+		return err
+	}
+	if g.Output == "json" {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]string{"raw": string(raw)})
+	}
+	if _, err := out.Write(raw); err != nil {
+		return err
+	}
+	if len(raw) > 0 && raw[len(raw)-1] != '\n' {
+		_, err = fmt.Fprintln(out)
+	}
+	return err
 }

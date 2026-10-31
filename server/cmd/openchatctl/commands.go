@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"runtime"
 	"sort"
@@ -39,11 +38,10 @@ func cmdVersion(_ context.Context, e *environment, g globals, args []string) err
 
 func cmdArchive(ctx context.Context, e *environment, g globals, args []string) error {
 	fs := flag.NewFlagSet("archive", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
 	dry := fs.Bool("dry-run", false, "只估算影响，不触发")
 	run := fs.Bool("run", false, "触发一次归档")
-	if err := fs.Parse(args); err != nil {
-		return usagef("archive: %v", err)
+	if err := parseFlags(fs, e, "archive", args, false); err != nil {
+		return err
 	}
 	if fs.NArg() > 0 {
 		return usagef("archive: unexpected argument %q", fs.Arg(0))
@@ -142,13 +140,12 @@ func cmdBan(ctx context.Context, e *environment, g globals, args []string, unban
 		name = "unban"
 	}
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
 	days := fs.Int("days", 0, "封禁天数（0=永久）")
 	level := fs.Int("level", 1, "封禁等级 1..3")
 	until := fs.Int64("until", 0, "绝对到期时间（unix 秒）")
 	reason := fs.String("reason", "", "原因")
-	if err := fs.Parse(reorderFlags(fs, args)); err != nil {
-		return usagef("%s: %v", name, err)
+	if err := parseFlags(fs, e, name, args, true); err != nil {
+		return err
 	}
 	if fs.NArg() < 1 {
 		return usagef("%s: 需要 uid", name)

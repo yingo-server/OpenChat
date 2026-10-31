@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"flag"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,13 +25,12 @@ type backupReport struct {
 
 func cmdBackup(ctx context.Context, e *environment, g globals, args []string) error {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
 	dry := fs.Bool("dry-run", false, "只校验环境，不写文件")
 	dbPath := fs.String("db", "", "热库路径")
 	script := fs.String("script", "", "备份脚本路径")
 	to := fs.String("to", "", "备份目录（内置模式）")
-	if err := fs.Parse(args); err != nil {
-		return usagef("backup: %v", err)
+	if err := parseFlags(fs, e, "backup", args, false); err != nil {
+		return err
 	}
 	if fs.NArg() > 0 {
 		return usagef("backup: unexpected argument %q", fs.Arg(0))

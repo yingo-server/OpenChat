@@ -22,6 +22,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -126,6 +127,28 @@ func openSQLiteReadOnly(path string) (*sql.DB, error) {
 type usageErr struct{ msg string }
 
 func (e *usageErr) Error() string { return e.msg }
+
+// errHelpRequested signals that a subcommand's -h/--help was already handled
+// (its flag list was printed): run() maps it to exit 0, not a syntax error.
+var errHelpRequested = errors.New("help requested")
+
+// parseFlags parses a subcommand flag set. Output goes to e.stderr so that
+// `--help` prints the subcommand's flag list; ErrHelp becomes errHelpRequested
+// (exit 0) instead of a usage error.
+func parseFlags(fs *flag.FlagSet, e *environment, name string, args []string, reorder bool) error {
+	fs.SetOutput(e.stderr)
+	a := args
+	if reorder {
+		a = reorderFlags(fs, args)
+	}
+	if err := fs.Parse(a); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return errHelpRequested
+		}
+		return usagef("%s: %v", name, err)
+	}
+	return nil
+}
 
 // deniedErr maps to exit 77 (permission / not configured).
 type deniedErr struct{ msg string }
@@ -262,7 +285,9 @@ func (g *globals) resolveAdmin(e *environment) {
 		g.CSRF = creds.CSRF
 	}
 	if g.AdminURL == "" {
-		g.AdminURL = "http://127.0.0.1:7781"
+		// Built-in default matches config/chatd.toml admin_listen; override with
+		// --admin-url or OPENCHAT_ADMIN_URL.
+		g.AdminURL = "http://127.0.0.1:7780"
 	}
 }
 

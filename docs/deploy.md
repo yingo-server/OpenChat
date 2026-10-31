@@ -752,8 +752,8 @@ sudo install -m 0755 /opt/openchat/current/bin/openchatctl /usr/local/bin/opench
 
 | 命令 | 用途 | 关键参数 |
 |---|---|---|
-| `openchatctl status` | 进程状态 + `SIGUSR1` dump 摘要 + 热库统计 | `--unit openchat`、`--hot-db /var/lib/openchat/chatd.db`、`--signal usr1\|usr2\|none`、`--no-journal` |
-| `openchatctl doctor` | 体检：热库完整性、磁盘余量、近 1h error 数、冷库 TCP 连通 | `--hot-db PATH`、`--unit NAME`、`--no-logs` |
+| `openchatctl status` | 进程状态 + `SIGUSR1` dump 摘要 + 热库统计 | `--unit openchat`、`--hot-db /var/lib/openchat/chatd.db`、`--signal usr1\|usr2\|none`、`--no-journal`、`--journal-lines 50` |
+| `openchatctl doctor` | 体检：热库完整性、磁盘余量、近 1h error 数、冷库 TCP 连通 | `--hot-db PATH`、`--unit NAME`、`--since -1h`、`--no-logs`、`--no-cold` |
 | `openchatctl backup --dry-run` | 只校验备份环境，不写文件 | `--db PATH`、`--script PATH`、`--to DIR` |
 | `openchatctl backup` | 调 `deploy/backup.sh`；找不到脚本则内置 `sqlite .backup` | 同上 |
 | `openchatctl archive --dry-run` / `--run` | 经管理 API 触发/预估归档 | 需先 `adminctl login` |
@@ -766,8 +766,9 @@ sudo install -m 0755 /opt/openchat/current/bin/openchatctl /usr/local/bin/opench
 
 ### 9.2 adminctl（走管理 API）
 
-> `admin_listen` 默认 `127.0.0.1:7780`，而 `adminctl` 内置默认值是 `127.0.0.1:7781`，
-> **务必显式传 `--server` 或导出环境变量**，否则会连空端口：
+> `admin_listen` 默认 `127.0.0.1:7780`，`adminctl` / `openchatctl` 的内置默认地址也是
+> `http://127.0.0.1:7780`，开箱即用；如需连接其它端口（如经 SSH 隧道），显式传 `--server`
+> 或导出环境变量覆盖：
 >
 > ```bash
 > export OPENCHAT_ADMIN_URL=http://127.0.0.1:7780   # 与 openchat.toml 的 admin_listen 一致
@@ -777,7 +778,7 @@ sudo install -m 0755 /opt/openchat/current/bin/openchatctl /usr/local/bin/opench
 > 本机/内网使用；远程运维先开隧道：`ssh -L 7780:127.0.0.1:7780 ops@chat.example.com`。
 
 ```bash
-# 登录（交互式密码 + TOTP；凭据默认落 ~/.config/openchat/admin.json）
+# 登录（交互式密码 + TOTP；凭据默认落 ~/.config/openchat/adminctl.json）
 adminctl --server http://127.0.0.1:7780 login
 
 # 我是谁 / 当前 token 是否有效

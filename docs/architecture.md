@@ -77,7 +77,7 @@ OpenChat 由四个服务层级与一个桥接枢纽组成。所有层间通信�
 **封禁**：
 
 ```
-adminctl ban 123 / 后台按钮 ─HTTPS─► admin: authn→rbac→csrf→handler
+adminctl users ban 123 / 后台按钮 ─HTTPS─► admin: authn→rbac→csrf→handler
   →auditshim(装饰器自动产审计事件)→bridgeproxy ─HTTP─► Bridge AdminAPI
   →翻译成5xx帧注入Bus→Router分发:
    ├─→data层 960: 写ban记录(热库)+审计(冷库sys.audit_log哈希链)

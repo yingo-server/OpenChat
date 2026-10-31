@@ -54,6 +54,9 @@ func run(args []string, e *environment) int {
 		return exitUsage
 	}
 	if err != nil {
+		if errors.Is(err, errHelpRequested) {
+			return exitOK
+		}
 		e.errorf("%v", err)
 		var ue *usageErr
 		if errors.As(err, &ue) {
@@ -100,7 +103,7 @@ const usageText = `openchatctl — OpenChat 系统级运维 CLI（直连本机 s
   OPENCHAT_BACKUP_SCRIPT    自定义备份脚本
   OPENCHAT_ADMIN_CREDENTIALS adminctl 凭据文件路径（默认 ~/.config/openchat/adminctl.json）
 
-退出码: 0 成功 / 1 错误（doctor 有 FAIL）/ 64 语法 / 77 未授权或未登录
+退出码: 0 成功 / 1 错误（doctor 有 FAIL）/ 64 语法 / 65 目标不存在 / 77 未授权或未登录
 未配置管理令牌时：先运行 adminctl login。
 `
 

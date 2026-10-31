@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"flag"
-	"io"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,14 +35,13 @@ type hotStats struct {
 
 func cmdStatus(ctx context.Context, e *environment, g globals, args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
 	unit := fs.String("unit", defaultUnit, "systemd unit")
 	hotPath := fs.String("hot-db", "", "hot SQLite path")
 	sigName := fs.String("signal", "usr1", "signal to send: usr1|usr2|none")
 	noJournal := fs.Bool("no-journal", false, "skip journalctl")
 	journalLines := fs.Int("journal-lines", 50, "journal lines to scan")
-	if err := fs.Parse(args); err != nil {
-		return usagef("status: %v", err)
+	if err := parseFlags(fs, e, "status", args, false); err != nil {
+		return err
 	}
 	if fs.NArg() > 0 {
 		return usagef("status: unexpected argument %q", fs.Arg(0))

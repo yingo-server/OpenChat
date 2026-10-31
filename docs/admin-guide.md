@@ -23,7 +23,7 @@ sudo systemctl enable --now openchat
 ## 日常运维
 
 ```bash
-openchatctl status          # 在线连接数、队列水位、归档状态
+openchatctl status          # systemd unit 状态 + SIGUSR1 dump 摘要 + 热库统计（消息数/最新时间/文件大小）
 openchatctl backup          # 立即备份（热库 + 配置 + 密钥清单）
 journalctl -u openchat -f   # 跟随日志；-g trace_id=xxx 排查单条消息
 ```
@@ -56,9 +56,17 @@ journalctl -u openchat -f   # 跟随日志；-g trace_id=xxx 排查单条消息
 
 ## 升级与回滚
 
+> ⚠️ 未实现：`openchatctl upgrade` / `upgrade --rollback` 尚不存在（CLI 无该子命令）。升级/回滚请手工执行：
+
 ```bash
-openchatctl upgrade            # 下载→校验→滚动重启（连接优雅排空，用户无感）
-openchatctl upgrade --rollback # 回滚到上一版本
+# 升级：替换二进制 + 滚动重启（连接优雅排空，用户无感）
+sudo install -m 0755 /opt/openchat/current/bin/openchatctl /usr/local/bin/openchatctl
+sudo install -m 0755 /opt/openchat/current/bin/chatd        /usr/local/bin/chatd
+sudo systemctl restart openchat
+
+# 回滚：切回上一版本二进制后重启
+sudo install -m 0755 /opt/openchat/previous/bin/chatd /usr/local/bin/chatd
+sudo systemctl restart openchat
 ```
 
 详细架构与开发信息见 [开发文档](README.md)。

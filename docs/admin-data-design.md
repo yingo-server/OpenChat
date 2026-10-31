@@ -212,13 +212,13 @@ openchatctl —— 系统级运维 CLI(systemd unit 状态/信号/热库文件/�
               少数变更命令 archive/flags/ban/unban 走同回环 REST API，不另开端口)
   status / doctor    # 体检: systemd 状态/热库/磁盘/冷库连通
   backup             # 调 deploy/backup.sh（见 §5）
-  archive --dry-run|--run / flags get|set|list / ban|unban <uid>
+  archive --dry-run|--run / flags list|set / ban|unban <uid>
   # ⚠️ v1.0 未实现: `migrate status`(P3-7)、`trim`(P3-2)、`audit verify`(P3-1)
 
 adminctl —— 说话给管理层 API
   login / whoami
-  users list|show|ban|unban / kick --uid
-  monitor online|connections
+  users list|show|ban|unban / kick <uid>
+  # ⚠️ 未实现：monitor（无 /monitor 路由）
   reports list|show|handle
   messages search|recall
   broadcast preview|send

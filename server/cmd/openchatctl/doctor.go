@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -43,14 +42,13 @@ const (
 
 func cmdDoctor(ctx context.Context, e *environment, g globals, args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
 	hotPath := fs.String("hot-db", "", "hot SQLite path")
 	unit := fs.String("unit", defaultUnit, "systemd unit for log scoping")
 	since := fs.String("since", "-1h", "journal time window")
 	noLogs := fs.Bool("no-logs", false, "skip the journald error check")
 	noCold := fs.Bool("no-cold", false, "skip the cold DB connectivity check")
-	if err := fs.Parse(args); err != nil {
-		return usagef("doctor: %v", err)
+	if err := parseFlags(fs, e, "doctor", args, false); err != nil {
+		return err
 	}
 	if fs.NArg() > 0 {
 		return usagef("doctor: unexpected argument %q", fs.Arg(0))

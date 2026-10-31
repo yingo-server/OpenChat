@@ -318,9 +318,21 @@ func TestBackupRunsScriptWhenPresent(t *testing.T) {
 }
 
 func TestBanPostsToAdminAPI(t *testing.T) {
-	fs := &fakeSystem{http: jsonResp(http.StatusAccepted, `{"uid":42,"banned":true,"until":0}`)}
+	var gotBody string
+	fs := &fakeSystem{http: func(r *http.Request) (*http.Response, error) {
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/users/42/ban" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		return &http.Response{
+			StatusCode: http.StatusAccepted,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"uid":42,"banned":true,"until":0}`)),
+		}, nil
+	}}
 	e, out, _ := newTestEnv(t, fs)
-	code := run([]string{"--json", "--token", "t0ken", "ban", "42", "--days", "3", "--reason", "spam"}, e)
+	code := run([]string{"--json", "--token", "t0ken", "ban", "42", "--level", "2", "--days", "3", "--reason", "spam"}, e)
 	if code != exitOK {
 		t.Fatalf("exit = %d stderr=%s", code, e.stderr)
 	}
@@ -333,6 +345,33 @@ func TestBanPostsToAdminAPI(t *testing.T) {
 	}
 	if env.Command != "ban" || env.Data["banned"] != true {
 		t.Fatalf("envelope = %+v", env)
+	}
+	// The request body must carry the parsed flag values (regression guard:
+	// a flag-order bug silently sent the defaults).
+	var body map[string]any
+	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
+		t.Fatalf("request body not json: %v (%s)", err, gotBody)
+	}
+	if body["reason"] != "spam" {
+		t.Fatalf("reason = %v, want spam (body=%s)", body["reason"], gotBody)
+	}
+	if lvl, _ := body["level"].(float64); lvl != 2 {
+		t.Fatalf("level = %v, want 2 (body=%s)", body["level"], gotBody)
+	}
+	if d, _ := body["days"].(float64); d != 3 {
+		t.Fatalf("days = %v, want 3 (body=%s)", body["days"], gotBody)
+	}
+}
+
+func TestHelpExitsZero(t *testing.T) {
+	for _, cmd := range []string{"status", "doctor", "backup", "archive"} {
+		e, out, errb := newTestEnv(t, &fakeSystem{})
+		if code := run([]string{cmd, "--help"}, e); code != exitOK {
+			t.Fatalf("%s --help exit = %d, want 0 (stderr=%s)", cmd, code, errb.String())
+		}
+		if out.Len()+errb.Len() == 0 {
+			t.Fatalf("%s --help printed nothing", cmd)
+		}
 	}
 }
 
