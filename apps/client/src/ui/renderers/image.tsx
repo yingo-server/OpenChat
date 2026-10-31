@@ -26,6 +26,7 @@ export function ImageMessage({ message }: RendererProps) {
   const height = media.height || 600;
   const bucket = width >= 1200 ? 320 : width >= 600 ? 240 : 160;
   const src = resolveMediaUrl(media) || thumbSource(media.thumb);
+  const thumbSrc = thumbSource(media.thumb);
   const hue = hueOf(media.mediaId || String(message.msgId));
   const uploading = media.status === 'uploading' || media.status === 'pending';
   const progress = Math.round(
@@ -48,6 +49,14 @@ export function ImageMessage({ message }: RendererProps) {
             background: `linear-gradient(135deg, hsl(${hue} 68% 62%), hsl(${(hue + 42) % 360} 62% 42%))`,
           }}
         />
+        {thumbSrc && !loaded ? (
+          <img
+            src={thumbSrc}
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 h-full w-full scale-105 object-cover blur-xl"
+          />
+        ) : null}
         {src ? (
           <img
             src={src}

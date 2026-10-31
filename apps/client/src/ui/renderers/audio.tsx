@@ -28,10 +28,14 @@ export function AudioMessage({ message }: RendererProps) {
 
 function AudioBody({ media, mine, src }: { media: Media; mine: boolean; src?: string }) {
   const duration = Math.max(1000, media.durationMs || 1000);
-  const waveform = useMemo(
-    () => (media.waveform?.length === 24 ? media.waveform : pseudoWaveform(media.mediaId, duration)),
-    [media.mediaId, media.waveform, duration],
-  );
+  const waveform = useMemo(() => {
+    if (media.waveform?.length === 24) {
+      // 兼容两种刻度：0-100 整数（服务端上传字段）或 0-1（渲染内部）
+      const max = Math.max(...media.waveform);
+      return max > 1 ? media.waveform.map((value) => Math.min(1, value / 100)) : media.waveform;
+    }
+    return pseudoWaveform(media.mediaId, duration);
+  }, [media.mediaId, media.waveform, duration]);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
   const [played, setPlayed] = useState(false);

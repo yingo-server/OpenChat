@@ -68,7 +68,8 @@ type Pipe struct {
 	conv  *convDomain
 	ident *identity.Domain
 	sys   *sysDomain
-	trunk Trunkee // kind 980 job triggers (optional; nil = jobs not wired)
+	trunk Trunkee       // kind 980 job triggers (optional; nil = jobs not wired)
+	calls *callRegistry // in-process call-signaling state (kinds 350-354)
 	cache *cache.Cache
 
 	senderDone chan struct{}
@@ -116,6 +117,7 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 	p.conv = &convDomain{conv: hot, id: hot, cache: p.cache}
 	p.ident = identity.New(hot, p.cache)
 	p.sys = &sysDomain{sys: hot}
+	p.calls = newCallRegistry()
 	return p
 }
 
@@ -174,6 +176,9 @@ func (p *Pipe) Drain(ctx context.Context) {
 	close(p.writeCh) // flusher: final flush on channel close, then exits
 	p.outMu.Unlock()
 
+	// Stop any armed ring timers so no AfterFunc fires into a closed lane.
+	p.calls.stopAll()
+
 	select {
 	case <-p.fl.done:
 	case <-ctx.Done():
@@ -207,6 +212,10 @@ func (p *Pipe) dispatch(ctx context.Context, req Req) {
 		p.onFlag(ctx, req)
 	case uint32(kinds.KindJobTrigger): // 980 → jobber (optional Trunkee)
 		p.onJobTrigger(ctx, req)
+	case uint32(kinds.KindCallOffer), uint32(kinds.KindCallAnswer), // 350/351
+		uint32(kinds.KindCallCandidate), uint32(kinds.KindCallBusy), // 352/353
+		uint32(kinds.KindCallHangup): // 354
+		p.onCall(ctx, req)
 	default:
 		p.lg.Debug("pipe: unhandled kind", "kind", kinds.KindName(req.Kind))
 	}

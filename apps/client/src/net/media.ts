@@ -138,9 +138,20 @@ export interface UploadResult {
   mtype: MediaMtype;
 }
 
+/**
+ * 可选附加字段（与服务端 mediasvc 新契约对齐）：
+ *  - thumbData：图片缩略图 base64 data URI（≤8KB）
+ *  - waveform：24 个 0-100 整数（音频）
+ */
+export interface UploadExtras {
+  thumbData?: string;
+  waveform?: number[];
+}
+
 export function uploadMedia(
   file: File,
   onProgress?: (ratio: number) => void,
+  extras?: UploadExtras,
 ): Promise<UploadResult> {
   if (isMockMode()) {
     return mockUpload(file, onProgress);
@@ -156,6 +167,10 @@ export function uploadMedia(
       }
       const form = new FormData();
       form.append('file', file, file.name);
+      if (extras?.thumbData) form.append('thumb_data', extras.thumbData);
+      if (extras?.waveform && extras.waveform.length > 0) {
+        form.append('waveform', JSON.stringify(extras.waveform));
+      }
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/media/upload');
       xhr.withCredentials = true;

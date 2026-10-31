@@ -255,3 +255,36 @@ export const SpinnerIcon = ({ size = 16, className = '', ...rest }: IconProps) =
     <path d="M20.5 12a8.5 8.5 0 0 0-8.5-8.5" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
   </svg>
 );
+export const PhoneIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M6.5 3.5h3l1.5 4-2 1.5a12 12 0 0 0 5 5l1.5-2 4 1.5v3a2 2 0 0 1-2 2A16.5 16.5 0 0 1 4.5 5.5a2 2 0 0 1 2-2Z" />
+  </Svg>
+);
+
+export const VideoIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="6.5" width="12" height="11" rx="2.5" />
+    <path d="m15 10.5 5-3v9l-5-3" />
+  </Svg>
+);
+
+export const HangupIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.5 14.5c5-3.5 12-3.5 17 0l-2 2.2-2.6-1.3-.4-2.2a11 11 0 0 0-7 0l-.4 2.2-2.6 1.3-2-2.2Z" />
+  </Svg>
+);
+
+export const SpeakerIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 9.5h3l4-3.5v12l-4-3.5H4Z" />
+    <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+  </Svg>
+);
+
+export const MicOffIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 9.2V6.5a3 3 0 0 1 5.6-1.5M15 12.5a3 3 0 0 1-4.8 2.4" />
+    <path d="M6 11.5a6 6 0 0 0 9 5.2M12 17.5V21M3 3l18 18" />
+  </Svg>
+);
+

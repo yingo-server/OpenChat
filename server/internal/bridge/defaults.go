@@ -21,6 +21,9 @@ func defaultCaps() map[string][]kinds.Kind {
 			kinds.KindMsgAck, kinds.KindMsgNew, kinds.KindError,
 			kinds.KindReadHistoryResult, kinds.KindConvDataResult, kinds.KindConvPayload,
 			kinds.KindIdentityResult, kinds.KindFlagResult, kinds.KindJobStatus,
+			// 通话信令回程（data → user）：OFFER/ANSWER/CANDIDATE/BUSY/HANGUP。
+			kinds.KindCallOffer, kinds.KindCallAnswer, kinds.KindCallCandidate,
+			kinds.KindCallBusy, kinds.KindCallHangup,
 		},
 		"admin": {
 			kinds.KindAdminBroadcast, kinds.KindAnnounce, kinds.KindMaintenance, kinds.KindTopology,
@@ -48,5 +51,8 @@ func allUserKinds() []kinds.Kind {
 		kinds.KindProfileUpdate, kinds.KindBlock, kinds.KindUnblock, kinds.KindReport,
 		kinds.KindAdminBroadcast, kinds.KindAnnounce, kinds.KindMaintenance,
 		kinds.KindShutdownNotice, kinds.KindFlagSync, kinds.KindConfigUpdate,
+		// 通话信令上行（client → data）：OFFER/ANSWER/CANDIDATE/BUSY/HANGUP。
+		kinds.KindCallOffer, kinds.KindCallAnswer, kinds.KindCallCandidate,
+		kinds.KindCallBusy, kinds.KindCallHangup,
 	}
 }

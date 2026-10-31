@@ -466,6 +466,15 @@ func buildRoutes() map[uint32][]router.Target {
 	rt[kinds.KindFlagSet] = toData("data.971")
 	rt[kinds.KindJobTrigger] = toData("data.980")
 
+	// Call signaling requests executed by the data layer (client → data).
+	// The SAME kinds flow back (data → user) and are disambiguated by source
+	// layer via buildRoutesFromData; see routeFromData below.
+	rt[kinds.KindCallOffer] = toData("data.call")
+	rt[kinds.KindCallAnswer] = toData("data.call")
+	rt[kinds.KindCallCandidate] = toData("data.call")
+	rt[kinds.KindCallBusy] = toData("data.call")
+	rt[kinds.KindCallHangup] = toData("data.call")
+
 	// Results addressed to a single user (delivery in the gateway is by uid).
 	rt[kinds.KindMsgAck] = toUser("sys.ack")
 	rt[kinds.KindError] = toUser("sys.error")
@@ -490,6 +499,22 @@ func buildRoutes() map[uint32][]router.Target {
 	// second "admin" target would just log "no such layer" on every publish.
 	rt[kinds.KindFeatureFlags] = toUser("sys.broadcast")
 	return rt
+}
+
+// buildRoutesFromData is the source-layer=data override table. Call signaling
+// reuses the same kinds on the way back, so the router must send data-origin
+// frames of 350-354 to the USER layer (by user_id), never back to data.
+func buildRoutesFromData() map[uint32][]router.Target {
+	toUser := func(topic string) []router.Target {
+		return []router.Target{{Layer: "user", Topic: topic}}
+	}
+	return map[uint32][]router.Target{
+		kinds.KindCallOffer:     toUser("sys.call"),
+		kinds.KindCallAnswer:    toUser("sys.call"),
+		kinds.KindCallCandidate: toUser("sys.call"),
+		kinds.KindCallBusy:      toUser("sys.call"),
+		kinds.KindCallHangup:    toUser("sys.call"),
+	}
 }
 
 // ---------------------------------------------------------------- keys

@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -193,6 +194,16 @@ func (s *Service) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Optional inline metadata (multipart form fields): a base64 thumbnail and
+	// a JSON waveform array. Both are validated before the row is written;
+	// an invalid value is a 400 and nothing is persisted.
+	thumbData := r.FormValue("thumb_data")
+	waveform := r.FormValue("waveform")
+	if err := validateThumbWaveform(thumbData, waveform); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "BAD_REQUEST"})
+		return
+	}
+
 	sum := sha256.Sum256(body)
 	sha := hex.EncodeToString(sum[:])
 	mtype, mime, err := classify(name, body)
@@ -235,14 +246,14 @@ func (s *Service) handleUpload(w http.ResponseWriter, r *http.Request) {
 		Status:    1,
 		SHA256:    sha,
 		CreatedAt: s.deps.Now().Unix(),
+		ThumbData: thumbData,
+		Waveform:  waveform,
 	}
 	if err := s.deps.Media.Insert(r.Context(), rec); err != nil {
 		if errors.Is(err, store.ErrDuplicate) {
 			// Same content uploaded twice from this account: fine, hand back
 			// the fresh id (path is content-addressed, bytes already there).
-			writeJSON(w, http.StatusOK, map[string]any{
-				"media_id": mediaID, "size": rec.Size, "mime": mime, "mtype": mtype,
-			})
+			writeJSON(w, http.StatusOK, uploadOKBody(mediaID, rec))
 			return
 		}
 		_ = os.Remove(s.pathFor(sha))
@@ -251,9 +262,22 @@ func (s *Service) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"media_id": mediaID, "size": rec.Size, "mime": mime, "mtype": mtype,
-	})
+	writeJSON(w, http.StatusCreated, uploadOKBody(mediaID, rec))
+}
+
+// uploadOKBody is the shared upload response shape. thumb_data/waveform are
+// echoed back only when present so clients can render without a second GET.
+func uploadOKBody(mediaID string, rec *store.Media) map[string]any {
+	body := map[string]any{
+		"media_id": mediaID, "size": rec.Size, "mime": rec.Mime, "mtype": rec.MType,
+	}
+	if rec.ThumbData != "" {
+		body["thumb_data"] = rec.ThumbData
+	}
+	if rec.Waveform != "" {
+		body["waveform"] = rec.Waveform
+	}
+	return body
 }
 
 // @authz: checked-partial — no per-conversation ACL in 1.0; the guard is the
@@ -280,6 +304,19 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	// 所在会话的成员时放行。都不中 → 404（不是 403，防枚举，spec §4.4）。
 	if rec.UID != id.UserID && !s.canReadMedia(r.Context(), mediaID, id.UserID) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found", "code": "NOT_FOUND"})
+		return
+	}
+	// Metadata view: when the client asks for JSON (Accept: application/json or
+	// ?meta=1) return the record incl. thumb_data/waveform so it need not issue
+	// a second request. The default path below still streams the raw bytes, so
+	// image/audio/download behaviour is untouched.
+	if wantsJSON(r) {
+		body := map[string]any{
+			"media_id": rec.MediaID, "size": rec.Size, "mime": rec.Mime,
+			"mtype": rec.MType, "name": rec.Name,
+			"thumb_data": rec.ThumbData, "waveform": rec.Waveform,
+		}
+		writeJSON(w, http.StatusOK, body)
 		return
 	}
 	path := s.pathFor(rec.SHA256)
@@ -509,6 +546,51 @@ func urlEscape(s string) string {
 		return "file"
 	}
 	return b.String()
+}
+
+// ------------------------------------------------------------------ inline metadata
+
+const (
+	maxThumbBytes     = 8 << 10 // 8KB cap on the inline thumbnail
+	maxWaveformPoints = 32      // 24 expected; tolerate up to 32
+)
+
+// validateThumbWaveform enforces the optional inline-metadata contract:
+//   - thumb_data ≤ 8KB (empty allowed);
+//   - waveform, when present, must be a JSON ARRAY of ≤32 integers in 0-100.
+func validateThumbWaveform(thumb, wave string) error {
+	if len(thumb) > maxThumbBytes {
+		return errors.New("thumb_data too large (max 8KB)")
+	}
+	if wave == "" {
+		return nil
+	}
+	trimmed := strings.TrimSpace(wave)
+	if len(trimmed) == 0 || trimmed[0] != '[' {
+		return errors.New("waveform must be a JSON array")
+	}
+	var arr []float64
+	if err := json.Unmarshal([]byte(trimmed), &arr); err != nil {
+		return errors.New("waveform must be a JSON array of numbers")
+	}
+	if len(arr) > maxWaveformPoints {
+		return errors.New("waveform too many points (max 32)")
+	}
+	for _, v := range arr {
+		if v != math.Trunc(v) || v < 0 || v > 100 {
+			return errors.New("waveform values must be integers 0-100")
+		}
+	}
+	return nil
+}
+
+// wantsJSON reports whether the GET caller asked for the metadata view rather
+// than the raw bytes (?meta=1 or Accept: application/json).
+func wantsJSON(r *http.Request) bool {
+	if r.URL.Query().Get("meta") == "1" {
+		return true
+	}
+	return strings.Contains(r.Header.Get("Accept"), "application/json")
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

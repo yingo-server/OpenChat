@@ -184,9 +184,10 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	a.bridge = br
 
 	pl, err := bridge.Assemble(bridge.Config{
-		RouteTable: buildRoutes(),
-		Sender:     br.SendTo,
-		Signals:    neverFires(), // chatd owns signal handling (cross-layer drain order)
+		RouteTable:    buildRoutes(),
+		RouteFromData: buildRoutesFromData(),
+		Sender:        br.SendTo,
+		Signals:       neverFires(), // chatd owns signal handling (cross-layer drain order)
 		// Loopback is not an authorization boundary: the injector verifies the
 		// same HMAC the REST layer signs (docs/security-spec.md §3.2).
 		AdminAuth: adminapi.NewHMACAuthorizer([][]byte{adminKey}),

@@ -212,6 +212,12 @@ type Media struct {
 	SHA256     string
 	CreatedAt  int64
 	RefCount   int64
+	// ThumbData is a tiny inline thumbnail: a base64 data-URI or bare base64
+	// (≤8KB accepted). Waveform is a JSON array of 0-100 ints (≤32 elements)
+	// used to render the audio scrubber without a second round-trip. Both are
+	// metadata only — the media bytes themselves still live on disk.
+	ThumbData string
+	Waveform  string
 }
 
 // MediaStore is the media domain's storage surface.

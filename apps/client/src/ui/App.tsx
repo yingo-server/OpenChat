@@ -11,6 +11,7 @@ import { Settings } from './views/settings/Settings';
 import { Banned } from './views/banned/Banned';
 import { LoginScreen } from './views/login/LoginScreen';
 import { Toaster } from './components/Toast';
+import { CallOverlay } from './views/call/CallOverlay';
 
 export function App() {
   const path = useRoute();
@@ -69,6 +70,7 @@ export function App() {
       >
         <ChatView convId={chatOpen ? convId : null} />
       </main>
+      <CallOverlay />
       <Toaster />
     </div>
   );

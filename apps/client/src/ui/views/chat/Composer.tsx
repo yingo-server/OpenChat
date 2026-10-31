@@ -16,9 +16,12 @@ import {
   MediaUploadError,
   UPLOAD_ACCEPT,
   UPLOAD_LIMITS,
+  classifyUpload,
   mtypeToMediaType,
   uploadMedia,
+  type UploadExtras,
 } from '../../../net/media';
+import { makeThumbnail, makeWaveform } from '../../../net/media-encode';
 import type { Media } from '../../../net/proto/payload';
 
 export interface ComposerProps {
@@ -92,8 +95,9 @@ export function Composer({ convId, replyTo, replySenderName, onCancelReply, onSe
     setUploading(true);
     setUploadRatio(0);
     try {
-      const result = await uploadMedia(file, (ratio) => setUploadRatio(ratio));
-      const media = await buildMediaPayload(result, file);
+      const extras = await buildThumbExtras(file);
+      const result = await uploadMedia(file, (ratio) => setUploadRatio(ratio), extras);
+      const media = await buildMediaPayload(result, file, extras);
       outbox.enqueue({ convId, text: '', media: [media], replyTo: replyTo?.msgId || undefined });
       setDraft(convId, '');
       onCancelReply?.();
@@ -213,10 +217,33 @@ function previewOfMessage(message: ChatMessage): string {
   return t('chat.unsupported');
 }
 
+/**
+ * 按文件类型生成缩略图 / 波形附加字段（失败不阻塞上传）。
+ * 图片 → thumb_data；音频 → waveform（24 段 0-100）。
+ */
+async function buildThumbExtras(file: File): Promise<UploadExtras> {
+  const extras: UploadExtras = {};
+  let mtype: number;
+  try {
+    ({ mtype } = await classifyUpload(file));
+  } catch {
+    // 分类失败交给 uploadMedia 统一报错，这里不重复处理
+    return extras;
+  }
+  if (mtype === 1) {
+    const thumb = await makeThumbnail(file);
+    if (thumb) extras.thumbData = thumb;
+  } else if (mtype === 2) {
+    extras.waveform = await makeWaveform(file);
+  }
+  return extras;
+}
+
 /** 上传结果 → wire Media（media_id/mtype/name/size/mime/width/height…）。 */
 async function buildMediaPayload(
   result: Awaited<ReturnType<typeof uploadMedia>>,
   file: File,
+  extras?: UploadExtras,
 ): Promise<Media> {
   const type = mtypeToMediaType(result.mtype);
   const media: Media = {
@@ -228,12 +255,16 @@ async function buildMediaPayload(
     status: 'ready',
   };
   if (type === 'image') {
+    if (extras?.thumbData) media.thumb = extras.thumbData;
     // 图片宽高从 Image 对象取（读不到时渲染器自行兜底 800x600）
     const dims = await imageSize(file);
     if (dims) {
       media.width = dims.width;
       media.height = dims.height;
     }
+  } else if (type === 'audio') {
+    // 波形在 wire 上传为 0-100 整数；展示层 Media.waveform 归一化到 0-1
+    if (extras?.waveform?.length) media.waveform = extras.waveform.map((value) => value / 100);
   }
   return media;
 }

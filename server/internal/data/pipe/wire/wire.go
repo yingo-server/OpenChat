@@ -130,6 +130,26 @@ type JobStatus struct {
 	Detail string `json:"detail,omitempty"`
 }
 
+// CallSignal is the unified payload for the five call-signaling kinds
+// (350 OFFER / 351 ANSWER / 352 CANDIDATE / 353 BUSY / 354 HANGUP). The wire
+// form is one flat camelCase JSON object; each kind uses the subset it needs.
+// Field names are the front/back shared contract — DO NOT rename. The server
+// always overwrites FromUserID with the authenticated sender uid on relay.
+type CallSignal struct {
+	CallID    string `json:"callId,omitempty"`
+	ConvID    uint64 `json:"convId,omitempty"`
+	ToUserID  uint64 `json:"toUserId,omitempty"`
+	SDP       string `json:"sdp,omitempty"`
+	Media     string `json:"media,omitempty"`
+	Candidate string `json:"candidate,omitempty"`
+	SDPMid    string `json:"sdpMid,omitempty"`
+	// SDPMLineIndex is a pointer so a legitimate 0 survives the round-trip
+	// (omitempty on a plain int would drop it).
+	SDPMLineIndex *uint32 `json:"sdpMLineIndex,omitempty"`
+	Reason        string  `json:"reason,omitempty"`
+	FromUserID    uint64  `json:"fromUserId,omitempty"`
+}
+
 // Member mirrors chat.v1.Member.
 type Member struct {
 	UserID     uint64 `json:"userId,omitempty"`

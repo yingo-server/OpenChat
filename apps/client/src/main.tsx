@@ -22,6 +22,11 @@ import { handleConvDataResult } from './net/protocol/handlers/conv-result';
 import { handleTyping } from './net/protocol/handlers/typing';
 import { handlePresence } from './net/protocol/handlers/presence';
 import { handlePong } from './net/protocol/handlers/pong';
+import { handleCallOffer } from './net/protocol/handlers/call-offer';
+import { handleCallAnswer } from './net/protocol/handlers/call-answer';
+import { handleCallCandidate } from './net/protocol/handlers/call-candidate';
+import { handleCallBusy } from './net/protocol/handlers/call-busy';
+import { handleCallHangup } from './net/protocol/handlers/call-hangup';
 
 import { registerRenderer } from './ui/renderers/registry';
 import { TextMessage } from './ui/renderers/text';
@@ -56,6 +61,11 @@ async function main(): Promise<void> {
   registry.register(KINDS.TYPING, handleTyping);
   registry.register(KINDS.PRESENCE_UPDATE, handlePresence);
   registry.register(KINDS.PONG, handlePong);
+  registry.register(KINDS.CALL_OFFER, handleCallOffer);
+  registry.register(KINDS.CALL_ANSWER, handleCallAnswer);
+  registry.register(KINDS.CALL_CANDIDATE, handleCallCandidate);
+  registry.register(KINDS.CALL_BUSY, handleCallBusy);
+  registry.register(KINDS.CALL_HANGUP, handleCallHangup);
 
   registerRenderer('text', TextMessage);
   registerRenderer('image', ImageMessage);

@@ -26,6 +26,7 @@ import { getThemePref, applyTheme, watchSystemTheme } from '../ui/theme';
 import { toast } from '../ui/components/Toast';
 import { t } from '../ui/i18n';
 import { setAppServices } from '../ui/services/app-services';
+import { callController } from '../net/call/controller';
 
 const IS_MOCK = import.meta.env.VITE_MOCK === '1';
 
@@ -149,6 +150,7 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
       toast.show(t('toast.rateLimited', { seconds: Math.max(1, Math.ceil(retryAfterMs / 1000)) }));
     },
     toast: (key, params) => toast.show(t(key, params)),
+    flag: (key) => useSessionStore.getState().flags[key],
   };
 
   const convPort: ConvPort = {
@@ -229,6 +231,9 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
       void doLogout();
     },
   });
+
+  // 通话控制器的提示统一走全局 toast（net 层不直连 UI，用注入回调）。
+  callController.onToast = (key) => toast.show(t(key));
 
   if (mock) {
     (window as Window & { __openchatMock?: unknown }).__openchatMock = {

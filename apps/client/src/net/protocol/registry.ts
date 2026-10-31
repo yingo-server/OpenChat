@@ -58,6 +58,8 @@ export interface SessionPort {
   kicked(reason: string, bannedUntil: number): void;
   rateLimited(scope: string, retryAfterMs: number): void;
   toast(key: string, params?: Record<string, string | number>): void;
+  /** 读取单个 feature flag（缺省返回 undefined）。 */
+  flag(key: string): string | undefined;
 }
 
 export interface ConvPort {

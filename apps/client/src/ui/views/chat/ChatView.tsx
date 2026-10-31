@@ -14,11 +14,12 @@ import { t } from '../../i18n';
 import { Avatar } from '../../components/Avatar';
 import { NetworkBar } from '../../components/NetworkBar';
 import { ChatSkeleton } from '../../components/Skeleton';
-import { BackIcon, MoreIcon, SpinnerIcon } from '../../components/icons';
+import { BackIcon, MoreIcon, PhoneIcon, SpinnerIcon, VideoIcon } from '../../components/icons';
 import { toast } from '../../components/Toast';
 import { navigate } from '../../router';
 import { MessageList } from './MessageList';
 import { Composer } from './Composer';
+import { useCall } from '../call/useCall';
 
 export function ChatView({ convId }: { convId: number | null }) {
   if (convId === null) return <ChatPlaceholder />;
@@ -32,6 +33,8 @@ function ChatSession({ convId }: { convId: number }) {
   const selfId = useSessionStore((state) => state.userId);
   const otherId = conv && conv.convType === 1 ? (conv.members.find((member) => member.userId !== selfId)?.userId ?? 0) : 0;
   const presence = usePresenceStore((state) => (otherId ? selectPresence(state, otherId) : 'offline'));
+  const callEnabled = useSessionStore((state) => state.flags['call_enabled'] !== '0');
+  const call = useCall();
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [scrollSignal, setScrollSignal] = useState(0);
   const [, tick] = useState(0);
@@ -117,6 +120,19 @@ function ChatSession({ convId }: { convId: number }) {
           ) : null}
         </div>
 
+        {callEnabled ? (
+          <CallButtons
+            direct={conv.convType === 1}
+            onStart={(media) => {
+              if (conv.convType !== 1) {
+                toast.info(t('call.groupUnsupported'));
+                return;
+              }
+              call.startCall(convId, otherId, media);
+            }}
+          />
+        ) : null}
+
         <button
           type="button"
           onClick={() => toast.info(t('common.comingSoon'))}
@@ -149,6 +165,42 @@ function ChatSession({ convId }: { convId: number }) {
         onSent={() => setScrollSignal((value) => value + 1)}
       />
     </section>
+  );
+}
+
+function CallButtons({
+  direct,
+  onStart,
+}: {
+  direct: boolean;
+  onStart: (media: 'audio' | 'video') => void;
+}) {
+  const base =
+    'inline-flex h-10 w-10 items-center justify-center rounded-full text-ink-secondary hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-40';
+  const tooltip = direct ? undefined : t('call.groupUnsupported');
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => onStart('audio')}
+        disabled={!direct}
+        title={tooltip}
+        aria-label={direct ? t('call.startAudio') : t('call.groupUnsupported')}
+        className={base}
+      >
+        <PhoneIcon size={20} />
+      </button>
+      <button
+        type="button"
+        onClick={() => onStart('video')}
+        disabled={!direct}
+        title={tooltip}
+        aria-label={direct ? t('call.startVideo') : t('call.groupUnsupported')}
+        className={base}
+      >
+        <VideoIcon size={20} />
+      </button>
+    </>
   );
 }
 
