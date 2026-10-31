@@ -584,6 +584,16 @@ func (a *assembly) reload(ctx context.Context) {
 	a.lg.Info("feature flags republished", "version", version, "conns", sent)
 }
 
+// callStats returns the in-process call table occupancy for the status dump
+// (active calls, users pinned in a call). Nil-safe for early/partial assembly.
+func callStats(p *pipe.Pipe) map[string]int {
+	if p == nil {
+		return map[string]int{"active": 0, "users": 0}
+	}
+	calls, users := p.CallStats()
+	return map[string]int{"active": calls, "users": users}
+}
+
 // dump is the SIGUSR1 status snapshot (stdout, one JSON line).
 func (a *assembly) dump(w io.Writer) {
 	snap := map[string]any{
@@ -593,6 +603,7 @@ func (a *assembly) dump(w io.Writer) {
 		"listen":      a.user.Addr(),
 		"admin_addr":  a.admin.Addr(),
 		"conns":       a.user.Session().Count(),
+		"calls":       callStats(a.pipe),
 		"flags_ver":   a.flags.Version(),
 		"forwarder":   fmt.Sprintf("%+v", a.user.Forwarder().Stats()),
 		"bridge":      a.pipeline.Snapshot(),

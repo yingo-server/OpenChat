@@ -158,6 +158,7 @@ func (p *Pipe) Run(ctx context.Context) {
 	go p.fl.run(fctx)
 	go p.fanout.start(fctx)
 	go p.sender()
+	go p.runCallSweeper(fctx)
 
 	for {
 		select {
@@ -394,6 +395,10 @@ func (p *Pipe) onConvData(ctx context.Context, req Req) {
 		cid = req.ConvID
 	}
 	r := p.conv.handle(ctx, int64(req.UserID), raw.Op, cid, raw.Body)
+	// Membership mutations land in the audit journal (best-effort, ids only).
+	if r.OK {
+		p.auditConvMember(ctx, int64(req.UserID), raw.Op, int64(cid), raw.Body)
+	}
 	pl, _ := wire.Marshal(wire.DataResult{
 		Op: raw.Op, Ok: r.OK, Error: r.Error, Body: r.Payload, RequestID: raw.RequestID,
 	})

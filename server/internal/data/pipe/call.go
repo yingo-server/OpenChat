@@ -10,13 +10,22 @@ package pipe
 // from the client).
 //
 // State is process-local (map[callId]*callState). A call is "ringing" from
-// OFFER until ANSWER (then "active") or until the ring timeout fires, at which
-// point both parties receive CALL_HANGUP{reason:"timeout"} and the entry is
-// cleared. Mechanism, not policy: no call records, no history, no quotas.
+// OFFER until ANSWER (then "active") or until a deadline fires, at which point
+// both parties receive CALL_HANGUP{reason:"timeout"} and the entry is cleared.
+//
+// Deadlines (P0 leak fix): a per-call AfterFunc would leak whenever a peer
+// crashes / drops the socket / closes the tab without a HANGUP, permanently
+// pinning userInCall[uid] and making every later call to/from that user answer
+// BUSY. To make that impossible we (a) arm a hard max-call-duration deadline on
+// ANSWER so an active call can never live forever, (b) cap the table size, and
+// (c) drive ALL expiry from ONE background ticker (sweep) instead of one
+// timer per call — 1000 concurrent calls = 1 goroutine/timer, not 1000.
+// Mechanism, not policy: no call records, no history, no quotas.
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -28,21 +37,53 @@ const (
 	callStateRinging = "ringing"
 	callStateActive  = "active"
 
-	// defaultCallRingTimeout is the ring window before a caller/callee pair
-	// is auto-hung-up. Exposed as a field (callRegistry.timeout) so tests can
+	// defaultCallRingTimeout is the ring window before a caller/callee pair is
+	// auto-hung-up. Exposed as a field (callRegistry.timeout) so tests can
 	// inject a short value.
 	defaultCallRingTimeout = 60 * time.Second
+
+	// defaultMaxCallDuration is the hard ceiling on an ACTIVE call. After
+	// ANSWER re-arms the deadline, this bounds how long a call may stay in the
+	// map even if neither side ever sends HANGUP. Exposed as a field
+	// (callRegistry.maxCallDuration) for tests.
+	defaultMaxCallDuration = 4 * time.Hour
+
+	// defaultMaxCalls caps the in-process call table so anomalous/exhaustion
+	// paths (many half-open calls) cannot grow it without bound. New calls past
+	// the cap are rejected with CALL_BUSY. Exposed as callRegistry.max.
+	defaultMaxCalls = 4096
+
+	// defaultCallSweepInterval is how often the single background ticker scans
+	// for expired calls.
+	defaultCallSweepInterval = 10 * time.Second
 )
 
-// callState is one in-progress call. convID/from/to are the routing identity;
-// timer is the ring-timeout AfterFunc (stopped on answer/hangup/clear).
+// errCallExists is returned by create when the same callId is already in the
+// table (a second OFFER must not silently overwrite a live call's state).
+var errCallExists = errors.New("call already exists")
+
+// errCallTableFull is returned by create when the table cap is reached.
+var errCallTableFull = errors.New("call table full")
+
+// callState is one in-progress call. convID/from/to are the routing identity.
+// deadline is the absolute expiry: the ring window while ringing, then the
+// max-call-duration window once active. A zero deadline never expires.
 type callState struct {
 	convID    int64
 	from      int64
 	to        int64
 	startedAt time.Time
 	state     string
-	timer     *time.Timer
+	deadline  time.Time
+}
+
+// expiredCall is one swept-out call, handed back to the pipe so it can emit the
+// timeout hangup to both parties outside the registry lock.
+type expiredCall struct {
+	callID string
+	convID int64
+	from   int64
+	to     int64
 }
 
 // callRegistry is the guarded in-process call table plus a reverse index
@@ -51,7 +92,11 @@ type callRegistry struct {
 	mu         sync.Mutex
 	calls      map[string]*callState
 	userInCall map[int64]string
-	timeout    time.Duration
+	timeout    time.Duration       // ring window
+	maxCallDur time.Duration       // active-call ceiling (maxCallDuration)
+	maxCalls   int                 // table size cap
+	sweepEvery time.Duration       // ticker interval
+	now        func() time.Time    // injectable clock (tests advance it)
 }
 
 func newCallRegistry() *callRegistry {
@@ -59,7 +104,19 @@ func newCallRegistry() *callRegistry {
 		calls:      make(map[string]*callState),
 		userInCall: make(map[int64]string),
 		timeout:    defaultCallRingTimeout,
+		maxCallDur: defaultMaxCallDuration,
+		maxCalls:   defaultMaxCalls,
+		sweepEvery: defaultCallSweepInterval,
+		now:        time.Now,
 	}
+}
+
+// clock returns the current time via the injectable clock (never nil).
+func (c *callRegistry) clock() time.Time {
+	if c.now == nil {
+		return time.Now()
+	}
+	return c.now()
 }
 
 // busy reports whether uid is currently a party of a ringing/active call.
@@ -70,39 +127,28 @@ func (c *callRegistry) busy(uid int64) bool {
 	return ok
 }
 
-// create inserts a new ringing call and arms its ring-timeout timer. The timer
-// callback runs onRingTimeout(callID, from, to, convID); it is created OUTSIDE
-// the lock's critical send path (we set c.afterFunc then arm under lock).
-func (c *callRegistry) create(callID string, convID, from, to int64, onRingTimeout func()) *callState {
+// create inserts a new ringing call. It returns errCallExists when callID is
+// already present (no silent overwrite) and errCallTableFull when the table cap
+// is reached. The ring deadline is armed from the injectable clock; expiry is
+// driven by the single sweeper, NOT a per-call timer.
+func (c *callRegistry) create(callID string, convID, from, to int64) (*callState, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st := &callState{convID: convID, from: from, to: to, startedAt: time.Now(), state: callStateRinging}
+	if _, ok := c.calls[callID]; ok {
+		return nil, errCallExists
+	}
+	if c.maxCalls > 0 && len(c.calls) >= c.maxCalls {
+		return nil, errCallTableFull
+	}
+	now := c.clock()
+	st := &callState{convID: convID, from: from, to: to, startedAt: now, state: callStateRinging}
 	if c.timeout > 0 {
-		id := callID
-		st.timer = time.AfterFunc(c.timeout, func() { c.fireTimeout(id, onRingTimeout) })
+		st.deadline = now.Add(c.timeout)
 	}
 	c.calls[callID] = st
 	c.userInCall[from] = callID
 	c.userInCall[to] = callID
-	return st
-}
-
-// fireTimeout runs on a timer goroutine: only fires if the call is still
-// ringing (an ANSWER stops the timer, but a racing fire is guarded here).
-func (c *callRegistry) fireTimeout(callID string, onRingTimeout func()) {
-	c.mu.Lock()
-	st, ok := c.calls[callID]
-	if !ok || st.state != callStateRinging {
-		c.mu.Unlock()
-		return
-	}
-	delete(c.calls, callID)
-	delete(c.userInCall, st.from)
-	delete(c.userInCall, st.to)
-	c.mu.Unlock()
-	if onRingTimeout != nil {
-		onRingTimeout()
-	}
+	return st, nil
 }
 
 // get returns the call state (nil when absent).
@@ -112,8 +158,9 @@ func (c *callRegistry) get(callID string) *callState {
 	return c.calls[callID]
 }
 
-// answer transitions ringing → active and stops the ring timer. Returns false
-// when the call is missing.
+// answer transitions ringing → active and re-arms the deadline to the hard
+// max-call-duration ceiling. Returns false when the call is missing or was not
+// ringing.
 func (c *callRegistry) answer(callID string) (*callState, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -125,9 +172,10 @@ func (c *callRegistry) answer(callID string) (*callState, bool) {
 		return st, false
 	}
 	st.state = callStateActive
-	if st.timer != nil {
-		st.timer.Stop()
-		st.timer = nil
+	if c.maxCallDur > 0 {
+		st.deadline = c.clock().Add(c.maxCallDur)
+	} else {
+		st.deadline = time.Time{}
 	}
 	return st, true
 }
@@ -144,24 +192,83 @@ func (c *callRegistry) remove(callID string) *callState {
 	delete(c.calls, callID)
 	delete(c.userInCall, st.from)
 	delete(c.userInCall, st.to)
-	if st.timer != nil {
-		st.timer.Stop()
-		st.timer = nil
-	}
 	return st
 }
 
-// stopAll stops every armed timer (Drain). State is dropped with the process.
+// sweepExpired removes every call whose deadline has passed as of now and
+// returns them for the caller to hang up. ONE pass clears all expired calls —
+// this is the single-ticker sweep body (see Pipe.runCallSweeper).
+func (c *callRegistry) sweepExpired(now time.Time) []expiredCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var out []expiredCall
+	for id, st := range c.calls {
+		if st.deadline.IsZero() || now.Before(st.deadline) {
+			continue
+		}
+		delete(c.calls, id)
+		delete(c.userInCall, st.from)
+		delete(c.userInCall, st.to)
+		out = append(out, expiredCall{callID: id, convID: st.convID, from: st.from, to: st.to})
+	}
+	return out
+}
+
+// Count returns the number of in-progress calls (observability).
+func (c *callRegistry) Count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.calls)
+}
+
+// UserInCallCount returns the number of users currently pinned in a call
+// (observability). Two per active call in the normal case.
+func (c *callRegistry) UserInCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.userInCall)
+}
+
+// stopAll drops all state (Drain). There are no per-call timers to stop; the
+// sweeper goroutine exits on ctx cancel.
 func (c *callRegistry) stopAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for _, st := range c.calls {
-		if st.timer != nil {
-			st.timer.Stop()
-		}
-	}
 	c.calls = make(map[string]*callState)
 	c.userInCall = make(map[int64]string)
+}
+
+// CallStats returns (activeCalls, usersInCall) for the status dump.
+func (p *Pipe) CallStats() (int, int) {
+	return p.calls.Count(), p.calls.UserInCallCount()
+}
+
+// runCallSweeper drives all call expiry from a single ticker. Every sweepEvery
+// it scans the table and hangs up any expired call. One goroutine per process
+// regardless of how many calls are in flight.
+func (p *Pipe) runCallSweeper(ctx context.Context) {
+	interval := p.calls.sweepEvery
+	if interval <= 0 {
+		interval = defaultCallSweepInterval
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			p.sweepCalls(p.calls.clock())
+		}
+	}
+}
+
+// sweepCalls performs one expiry scan at now and emits CALL_HANGUP(timeout) to
+// both parties of every expired call.
+func (p *Pipe) sweepCalls(now time.Time) {
+	for _, ex := range p.calls.sweepExpired(now) {
+		p.sendCallHangup(ex.callID, ex.convID, ex.from, ex.to)
+	}
 }
 
 // onCall is the dispatch entry for kinds 350-354.
@@ -193,8 +300,9 @@ func (p *Pipe) onCall(ctx context.Context, req Req) {
 	}
 }
 
-// onCallOffer: permission-gate both parties, auto-BUSY a busy callee, else
-// open a ringing call and relay the offer to the callee.
+// onCallOffer: permission-gate both parties, auto-BUSY a busy callee, reject a
+// duplicate callId (409) or a full table (BUSY), else open a ringing call and
+// relay the offer to the callee.
 func (p *Pipe) onCallOffer(ctx context.Context, req Req, sig wire.CallSignal, sender int64) {
 	convID := int64(sig.ConvID)
 	if convID == 0 {
@@ -211,18 +319,33 @@ func (p *Pipe) onCallOffer(ctx context.Context, req Req, sig wire.CallSignal, se
 	}
 	// Callee already in a call → answer the caller with CALL_BUSY(busy).
 	if p.calls.busy(to) {
-		pl, _ := wire.Marshal(wire.CallSignal{CallID: sig.CallID, Reason: "busy", FromUserID: uint64(sender)})
-		p.reply(&env{Kind: uint32(kinds.KindCallBusy), ConvID: uint64(convID), UserID: uint64(sender), Payload: pl})
+		p.replyCallBusy(sig.CallID, convID, sender)
 		return
 	}
-	p.calls.create(sig.CallID, convID, sender, to, func() {
-		p.sendCallTimeout(sig.CallID, convID, sender, to)
-	})
+	if _, err := p.calls.create(sig.CallID, convID, sender, to); err != nil {
+		switch {
+		case errors.Is(err, errCallExists):
+			// Do not overwrite the live call: conflict.
+			p.reply(buildErrEnv(req, 409, "call already exists"))
+		case errors.Is(err, errCallTableFull):
+			// Table cap reached: surface as busy so the client backs off.
+			p.replyCallBusy(sig.CallID, convID, sender)
+		default:
+			p.reply(buildErrEnv(req, 500, "call create failed"))
+		}
+		return
+	}
 	p.relayCall(req, sig, sender, to)
 }
 
-// onCallAnswer: the call must exist and still be ringing; flip to active and
-// relay the answer to the caller.
+// replyCallBusy emits CALL_BUSY{reason:"busy"} back to the calling uid.
+func (p *Pipe) replyCallBusy(callID string, convID, to int64) {
+	pl, _ := wire.Marshal(wire.CallSignal{CallID: callID, Reason: "busy", FromUserID: uint64(to)})
+	p.reply(&env{Kind: uint32(kinds.KindCallBusy), ConvID: uint64(convID), UserID: uint64(to), Payload: pl})
+}
+
+// onCallAnswer: the call must exist and still be ringing; flip to active (which
+// re-arms the hard max-duration deadline) and relay the answer to the caller.
 func (p *Pipe) onCallAnswer(ctx context.Context, req Req, sig wire.CallSignal, sender int64) {
 	st := p.calls.get(sig.CallID)
 	if st == nil {
@@ -283,9 +406,9 @@ func (p *Pipe) relayCall(req Req, sig wire.CallSignal, sender, targetUID int64) 
 	p.reply(&env{Kind: req.Kind, ConvID: sig.ConvID, UserID: uint64(targetUID), Payload: pl})
 }
 
-// sendCallTimeout fires from the ring timer: it emits CALL_HANGUP(timeout) to
-// both parties and the entry has already been cleared by fireTimeout.
-func (p *Pipe) sendCallTimeout(callID string, convID, from, to int64) {
+// sendCallHangup emits CALL_HANGUP(reason="timeout") to both parties. Called by
+// the sweeper after the entry has already been removed.
+func (p *Pipe) sendCallHangup(callID string, convID, from, to int64) {
 	pl, _ := wire.Marshal(wire.CallSignal{
 		CallID: callID, ConvID: uint64(convID), Reason: "timeout", FromUserID: uint64(from),
 	})

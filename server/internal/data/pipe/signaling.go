@@ -302,6 +302,15 @@ func (p *Pipe) onRecall(ctx context.Context, req Req) {
 		p.reply(buildErrEnv(req, 500, "recall failed"))
 		return
 	}
+	// Audit the recall (best-effort; never blocks the broadcast). Records the
+	// acting user, whether an admin acted on someone else's message, and the
+	// original sender — ids/enums only, never the recalled message body.
+	p.audit(ctx, "message.recall", actor, "msg:"+itoa(row.MsgID), map[string]any{
+		"msg_id":        row.MsgID,
+		"conv_id":       cid,
+		"by_admin":      isAdmin && !isSender,
+		"target_sender": row.SenderID,
+	})
 	// Broadcast to EVERY member (including the actor): everyone's UI must
 	// collapse the message. Downlink kind is always MSG_RECALL(108) — the
 	// kind the client's msg-mutation handler maps to a 'recall' tombstone.

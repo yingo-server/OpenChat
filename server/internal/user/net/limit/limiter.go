@@ -54,11 +54,22 @@ const PriorityFlag uint32 = 1 << 0
 
 // Rule 单个 kind 的令牌桶参数（security-spec §1.2.2 表一行）。
 type Rule struct {
-	Rate       float64 // 令牌/秒
-	Burst      float64 // 突发（初始/上限令牌数）
-	Capacity   float64 // 桶容量上限（长期空闲后的最大积累）
-	MaxPayload int     // 单帧 payload 上限（字节；0 = 无 payload）
-	Silent     bool    // true = 超限静默丢弃（L1）；false = NACK（L2）
+	Rate     float64 // 令牌/秒
+	Burst    float64 // 突发（初始/上限令牌数）
+	Capacity float64 // 桶容量上限（长期空闲后的最大积累）
+
+	// MaxPayload 是历史遗留的 TOML 驱动单帧上限（user/app 配置解析用；
+	// 0 = 不限制）。保留以兼容 user/app 的 limitRule 装配；判定见 AllowAt。
+	MaxPayload int
+
+	// PayloadCap 是显式的单帧 payload 上限（字节；0 = 不限制）。
+	// 语义明确：>0 即硬上限，超出即 Drop。security-spec §1.2.2 最后一列里
+	// 写 "0 B（无 payload）" 的四个 kind（TYPING / PRESENCE_*）在这里被设为
+	// 一个很小的值（64 字节，足够容纳 {"conv_id":N}），从而把 spec 的
+	// "无 payload" 约束真正落地——0 表示"不限制"，而不是"禁止带 payload"。
+	PayloadCap int
+
+	Silent bool // true = 超限静默丢弃（L1）；false = NACK（L2）
 }
 
 // Config 限流器参数（可由 policy 热更，原子替换）。
@@ -76,32 +87,71 @@ type Config struct {
 	KillMinFrames int64
 	// ExemptKinds 完全豁免的 kind（PING/PONG 独立计数，永不限流）。
 	ExemptKinds map[uint32]bool
+
+	// --- 用户级惩罚（security-spec §1.2.1：连续 3 窗口超限 → 预算减半 10min；
+	// 连续 10 窗口 → 断全部连接 60s）---
+	//
+	// UserHalfWindows 连续超限窗口数达到此值 → 该 uid 用户级预算减半。
+	UserHalfWindows int
+	// UserKillWindows 连续超限窗口数达到此值 → 返回 Kill（断全部连接）。
+	UserKillWindows int
+	// UserHalfDuration 预算减半的持续时间。
+	UserHalfDuration time.Duration
+	// UserKillDuration 惩罚断连的持续时间。
+	UserKillDuration time.Duration
 }
+
+// 用户级惩罚默认参数（security-spec §1.2.1）。
+const (
+	defaultUserHalfWindows  = 3
+	defaultUserKillWindows  = 10
+	defaultUserHalfDuration = 10 * time.Minute
+	defaultUserKillDuration = 60 * time.Second
+	// userHalfFactor 预算减半系数。
+	userHalfFactor = 0.5
+)
 
 // DefaultConfig 返回 security-spec §1.2.2 的默认参数表。
 func DefaultConfig() Config {
 	return Config{
 		Rules: map[uint32]Rule{
-			kinds.KindMsgSend:             {Rate: 20, Burst: 40, Capacity: 100, MaxPayload: 8 << 10},
-			KindPriority:                  {Rate: 5, Burst: 10, Capacity: 20, MaxPayload: 4 << 10},
-			kinds.KindTyping:              {Rate: 1, Burst: 3, Capacity: 5, Silent: true},
-			kinds.KindPresenceUpdate:      {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, Silent: true},
-			kinds.KindPresenceSubscribe:   {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, Silent: true},
-			kinds.KindPresenceUnsubscribe: {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, Silent: true},
-			kinds.KindMsgRead:             {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256},
-			kinds.KindMsgDelivered:        {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256},
-			// 撤回：比 MSG_SEND 更严（撤回是低频管理性操作）。
-			kinds.KindMsgDelete: {Rate: 2, Burst: 5, Capacity: 10, MaxPayload: 256},
-			kinds.KindMsgRecall: {Rate: 2, Burst: 5, Capacity: 10, MaxPayload: 256},
-			// MEMBER_UPDATE 没有客户端上行（服务端事件），默认规则兜底即可。
-			kinds.KindSyncRequest:         {Rate: 2, Burst: 4, Capacity: 8, MaxPayload: 512},
-			kinds.KindMediaPresignRequest: {Rate: 1.0 / 30.0, Burst: 2, Capacity: 4, MaxPayload: 512},
+			// MSG_SEND（普通消息） 20/s 40 100 8KB — §1.2.2 第 1 行
+			kinds.KindMsgSend: {Rate: 20, Burst: 40, Capacity: 100, MaxPayload: 8 << 10, PayloadCap: 8 << 10},
+			// MSG_PRIORITY（高优帧） 5/s 10 20 4KB — §1.2.2 第 2 行
+			KindPriority: {Rate: 5, Burst: 10, Capacity: 20, PayloadCap: 4 << 10},
+			// TYPING 1/s 3 5 0B（无 payload）— §1.2.2 第 3 行；"0B"落地为 64B 硬上限
+			kinds.KindTyping: {Rate: 1, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
+			// PRESENCE 1/10s 3 5 0B — §1.2.2 第 4 行（update/subscribe/unsubscribe）；"0B"→64B
+			kinds.KindPresenceUpdate:      {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
+			kinds.KindPresenceSubscribe:   {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
+			kinds.KindPresenceUnsubscribe: {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
+			// READ_ACK / DELIVER_ACK 10/s 30 60 256B — §1.2.2 第 5 行
+			kinds.KindMsgRead:      {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256, PayloadCap: 256},
+			kinds.KindMsgDelivered: {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256, PayloadCap: 256},
+			// 撤回：比 MSG_SEND 更严（低频管理操作），§1.2.2 表内 256B 行派生
+			kinds.KindMsgDelete: {Rate: 2, Burst: 5, Capacity: 10, MaxPayload: 256, PayloadCap: 256},
+			kinds.KindMsgRecall: {Rate: 2, Burst: 5, Capacity: 10, MaxPayload: 256, PayloadCap: 256},
+			// SYNC（历史拉取游标） 2/s 4 8 512B — §1.2.2 第 6 行
+			kinds.KindSyncRequest: {Rate: 2, Burst: 4, Capacity: 8, MaxPayload: 512, PayloadCap: 512},
+			// MEDIA_REQ（预签名申请） 1/30s 2 4 512B — §1.2.2 第 7 行
+			kinds.KindMediaPresignRequest: {Rate: 1.0 / 30.0, Burst: 2, Capacity: 4, MaxPayload: 512, PayloadCap: 512},
+			// CALL 信令 350-354：spec §1.2.2 未单列，但通话建连时 SDP+ICE 会突发；
+			// 10/s 默认会把建连打断。给 40/s、burst 60、16KB payload（SDP 数 KB）。
+			kinds.KindCallOffer:     {Rate: 40, Burst: 60, Capacity: 120, PayloadCap: 16 << 10},
+			kinds.KindCallAnswer:    {Rate: 40, Burst: 60, Capacity: 120, PayloadCap: 16 << 10},
+			kinds.KindCallCandidate: {Rate: 40, Burst: 60, Capacity: 120, PayloadCap: 16 << 10},
+			kinds.KindCallBusy:      {Rate: 40, Burst: 60, Capacity: 120, PayloadCap: 16 << 10},
+			kinds.KindCallHangup:    {Rate: 40, Burst: 60, Capacity: 120, PayloadCap: 16 << 10},
 		},
-		DefaultRule:   Rule{Rate: 10, Burst: 20, Capacity: 40},
-		UserDeviceCap: 3,
-		KillWindow:    60 * time.Second,
-		KillRatio:     0.5,
-		KillMinFrames: 20,
+		DefaultRule:    Rule{Rate: 10, Burst: 20, Capacity: 40},
+		UserDeviceCap:  3,
+		KillWindow:     60 * time.Second,
+		KillRatio:      0.5,
+		KillMinFrames:  20,
+		UserHalfWindows:  defaultUserHalfWindows,
+		UserKillWindows:  defaultUserKillWindows,
+		UserHalfDuration: defaultUserHalfDuration,
+		UserKillDuration: defaultUserKillDuration,
 		ExemptKinds: map[uint32]bool{
 			kinds.KindPing: true,
 			kinds.KindPong: true,
@@ -156,8 +206,13 @@ type connState struct {
 type userState struct {
 	buckets map[uint32]*bucket
 	conns   int
-	// 连续超限窗口计数（L3/L4 惩罚，security-spec §1.2.1）。
-	overWindows int
+
+	// --- 连续超限窗口惩罚状态（L3/L4，security-spec §1.2.1）---
+	overWindows int       // 连续超限窗口计数
+	winStart    time.Time // 当前用户级窗口起点
+	winOver     bool      // 当前窗口内是否发生过用户级超限
+	penaltyUntil time.Time // 预算减半生效截止时间
+	killUntil    time.Time // 惩罚断连生效截止时间
 }
 
 // Limiter 两级令牌桶限流器。零值不可用，用 New。
@@ -235,7 +290,7 @@ func (l *Limiter) Allow(connID uint64, uid int64, kind uint32, payloadLen int) V
 
 // AllowAt 显式时间版本（测试用）。
 //
-// 顺序：payload 上限 → 连接桶 → 用户聚合桶 → L4 窗口判决。
+// 顺序：payload 上限 → 连接桶 → 用户聚合桶 → L4 窗口判决 → 用户级 L3 惩罚。
 // 心跳等豁免 kind 独立计数后直接放行。
 func (l *Limiter) AllowAt(connID uint64, uid int64, kind uint32, payloadLen int, now time.Time) Verdict {
 	cfg := l.cfg.Load()
@@ -254,8 +309,13 @@ func (l *Limiter) AllowAt(connID uint64, uid int64, kind uint32, payloadLen int,
 		rule = cfg.DefaultRule
 	}
 
-	// 单帧 payload 上限（security-spec §1.2.2 最后一列；0 = 不限制）。
+	// 单帧 payload 上限（security-spec §1.2.2 最后一列）。
+	// MaxPayload：历史 TOML 字段（0 = 不限制）。
+	// PayloadCap：显式上限（0 = 不限制；>0 = 硬上限）。
 	if rule.MaxPayload > 0 && payloadLen > rule.MaxPayload {
+		return Drop
+	}
+	if rule.PayloadCap > 0 && payloadLen > rule.PayloadCap {
 		return Drop
 	}
 
@@ -278,9 +338,10 @@ func (l *Limiter) AllowAt(connID uint64, uid int64, kind uint32, payloadLen int,
 		cs.buckets[kind] = b
 	}
 	connOK := b.allow(now, rule)
-	mult := l.userMultiplier(cs.uid, cfg)
+	u := l.users[cs.uid]
+	mult := l.userMultiplier(cs.uid, cfg, now)
 	userOK := true
-	if u := l.users[cs.uid]; u != nil {
+	if u != nil {
 		ub := u.buckets[kind]
 		if ub == nil {
 			ub = &bucket{}
@@ -297,9 +358,14 @@ func (l *Limiter) AllowAt(connID uint64, uid int64, kind uint32, payloadLen int,
 		cs.over++
 	}
 	kill := l.judgeKill(cs, cfg, now)
+	// 用户级连续超限惩罚（L3 预算减半 / L4 断连）。
+	userKill := false
+	if u != nil {
+		userKill = l.userPenalty(u, cfg, now, !userOK)
+	}
 	l.mu.Unlock()
 
-	if kill {
+	if kill || userKill {
 		return Kill
 	}
 	if connOK && userOK {
@@ -322,6 +388,60 @@ func (l *Limiter) AllowAt(connID uint64, uid int64, kind uint32, payloadLen int,
 	return Throttle
 }
 
+// userPenalty 更新用户级「连续超限窗口」计数并实施惩罚（security-spec §1.2.1）：
+//   - 每跨过一个窗口：若该窗口内有用户级超限 → overWindows++，否则清零。
+//   - overWindows 达到 UserHalfWindows → 预算减半，持续 UserHalfDuration。
+//   - overWindows 达到 UserKillWindows → 返回 true（调用方判 Kill，断连），
+//     killUntil = now + UserKillDuration。
+//
+// over 表示本帧是否发生了用户级超限。返回 true 表示此刻应断连（Kill）。
+func (l *Limiter) userPenalty(u *userState, cfg *Config, now time.Time, over bool) bool {
+	win := cfg.KillWindow
+	if win <= 0 {
+		win = 60 * time.Second
+	}
+	halfN := cfg.UserHalfWindows
+	if halfN <= 0 {
+		halfN = defaultUserHalfWindows
+	}
+	killN := cfg.UserKillWindows
+	if killN <= 0 {
+		killN = defaultUserKillWindows
+	}
+	halfDur := cfg.UserHalfDuration
+	if halfDur <= 0 {
+		halfDur = defaultUserHalfDuration
+	}
+	killDur := cfg.UserKillDuration
+	if killDur <= 0 {
+		killDur = defaultUserKillDuration
+	}
+
+	if u.winStart.IsZero() {
+		u.winStart = now
+	}
+	// 跨过任意多个完整窗口：逐窗结算。
+	for now.Sub(u.winStart) >= win {
+		if u.winOver {
+			u.overWindows++
+		} else {
+			u.overWindows = 0
+		}
+		switch {
+		case u.overWindows >= killN:
+			u.killUntil = u.winStart.Add(win).Add(killDur)
+		case u.overWindows >= halfN:
+			u.penaltyUntil = u.winStart.Add(win).Add(halfDur)
+		}
+		u.winStart = u.winStart.Add(win)
+		u.winOver = false
+	}
+	if over {
+		u.winOver = true
+	}
+	return now.Before(u.killUntil)
+}
+
 // judgeKill 在窗口内统计超限占比，返回是否触发 L4。
 func (l *Limiter) judgeKill(cs *connState, cfg *Config, now time.Time) bool {
 	if cs.winStart.IsZero() {
@@ -340,16 +460,22 @@ func (l *Limiter) judgeKill(cs *connState, cfg *Config, now time.Time) bool {
 	return float64(cs.over)/float64(cs.frames) > cfg.KillRatio
 }
 
-// userMultiplier 返回用户级桶倍率：min(本进程 conn 数, 设备上限)，至少 1。
-func (l *Limiter) userMultiplier(uid int64, cfg *Config) float64 {
+// userMultiplier 返回用户级桶倍率：min(本进程 conn 数, 设备上限)，至少 1；
+// 处于「预算减半」惩罚期时再乘 userHalfFactor。
+func (l *Limiter) userMultiplier(uid int64, cfg *Config, now time.Time) float64 {
 	n := 1
-	if u := l.users[uid]; u != nil && u.conns > 1 {
+	u := l.users[uid]
+	if u != nil && u.conns > 1 {
 		n = u.conns
 	}
 	if cfg.UserDeviceCap > 0 && n > cfg.UserDeviceCap {
 		n = cfg.UserDeviceCap
 	}
-	return float64(n)
+	mult := float64(n)
+	if u != nil && now.Before(u.penaltyUntil) {
+		mult *= userHalfFactor
+	}
+	return mult
 }
 
 // Stats 可观测快照（指标采集用）。
