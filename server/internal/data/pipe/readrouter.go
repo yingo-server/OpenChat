@@ -91,12 +91,18 @@ func (rr *readRouter) catchup(ctx context.Context, cid, sinceSeq int64, limit in
 }
 
 // hotToMsgNew maps a hot row to the wire MsgNew view.
+//
+// Recalled rides along: the hot row's soft-delete column (0 = live, else the
+// unix-second recall timestamp). Without it a device that pulls history
+// AFTER the recall broadcast (new phone, reinstall, or a plain 920 fetch)
+// would receive the original text of a message that was already retracted.
 func hotToMsgNew(m store.HotMsg) wire.MsgNew {
 	return wire.MsgNew{
 		MsgID:    uint64(m.MsgID),
 		Seq:      uint64(m.Seq),
 		SenderID: uint64(m.SenderID),
 		SentAt:   m.SentAt,
+		Recalled: m.Recalled,
 		Content:  m.Content,
 	}
 }

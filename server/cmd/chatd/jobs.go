@@ -36,6 +36,7 @@ type jobPlane struct {
 	jobber   *job.Jobber
 	archiver *job.Archiver
 	trimmer  *job.Trimmer
+	gc       *job.MediaGC
 	cancel   context.CancelFunc
 }
 
@@ -54,10 +55,10 @@ func archiveCutoff(pol *policy.Store, now func() time.Time) func() int64 {
 	}
 }
 
-// newJobPlane builds the jobber + archiver + trimmer. cold may be nil
-// (degraded mode: the archiver prunes hot rows only, the trimmer runs as
-// usual).
-func newJobPlane(hot *sqlite.DB, cold *pg.ColdDB, pol *policy.Store, lg *log.Logger) *jobPlane {
+// newJobPlane builds the jobber + archiver + trimmer + media GC. cold may be
+// nil (degraded mode: the archiver prunes hot rows only, the trimmer runs as
+// usual). mediaDir is the media plane's root; the GC runs only when it is set.
+func newJobPlane(hot *sqlite.DB, cold *pg.ColdDB, pol *policy.Store, lg *log.Logger, mediaDir string) *jobPlane {
 	now := time.Now
 	batch := 1000
 	hotRetentionDays := 90
@@ -95,7 +96,20 @@ func newJobPlane(hot *sqlite.DB, cold *pg.ColdDB, pol *policy.Store, lg *log.Log
 	jb := job.NewJobber(lg)
 	jb.Register(arch, archiveSpec(pol, lg))
 	jb.Register(trim, trimSpec(pol, lg))
-	return &jobPlane{jobber: jb, archiver: arch, trimmer: trim}
+
+	// Media disk GC: the disk-side complement to the trimmer (trim shrinks the
+	// DB, GC shrinks the disk). Only wired when media_dir is configured — with
+	// no media plane there is nothing to reclaim.
+	var gc *job.MediaGC
+	if mediaDir != "" {
+		gc = &job.MediaGC{
+			Dir:   mediaDir,
+			Index: hot, // *sqlite.DB implements job.MediaGCChecker
+			Log:   lg,
+		}
+		jb.Register(gc, gcSpec(pol, lg))
+	}
+	return &jobPlane{jobber: jb, archiver: arch, trimmer: trim, gc: gc}
 }
 
 // archiveSpec parses policy.archive.cron. A malformed cron is a loud WARN +
@@ -130,6 +144,22 @@ func trimSpec(pol *policy.Store, lg *log.Logger) job.Spec {
 	_ = pol
 	_ = lg
 	return job.Spec{Kind: job.CronDaily, Hour: 3, Min: 30}
+}
+
+// gcSpec schedules the media disk GC. The desired cadence is "every Sunday at
+// 04:00" (weekly, right after the weekend's trim/archive passes). The current
+// jobber (job.ParseCronKind) supports only daily/interval triggers — a 5-field
+// cron with a day-of-week field is REJECTED, and policy has no media-GC cron
+// field yet. So, per the task's "policy 没有对应字段就硬编码并在注释里说明",
+// this is hardcoded to a DAILY 04:00 pass, which is a safe superset of the
+// weekly intent: the GC is idempotent, age-gated (24h) and file-capped
+// (10000/pass), so running it daily just reclaims orphaned bytes sooner. To
+// get true weekly-Sunday semantics, add a day-of-week aware cron kind to the
+// jobber (see 未做项).
+func gcSpec(pol *policy.Store, lg *log.Logger) job.Spec {
+	_ = pol
+	_ = lg
+	return job.Spec{Kind: job.CronDaily, Hour: 4, Min: 0}
 }
 
 // start launches the scheduler loop. jobber.Run returns when ctx is canceled

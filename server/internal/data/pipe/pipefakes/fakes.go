@@ -390,6 +390,16 @@ func (f *FakeArchive) DeleteHotBefore(ctx context.Context, before int64) (int64,
 	return n, nil
 }
 
+// SeedHot populates the HOT side directly, bypassing CopyBatch. Tests need this
+// to model "hot has rows the archiver has not seen yet" without polluting the
+// archive recording (CopyBatch would append to Copied and only ever set hot
+// from its first batch).
+func (f *FakeArchive) SeedHot(rows ...store.HotMsg) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hot = append([]store.HotMsg(nil), rows...)
+}
+
 // Rows returns the remaining HOT rows (the archive is inspected via Copied).
 func (f *FakeArchive) Rows() []store.HotMsg {
 	f.mu.Lock()

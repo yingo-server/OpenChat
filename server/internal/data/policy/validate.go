@@ -73,6 +73,19 @@ func Validate(p Policy) []error {
 		errs = append(errs, fieldErr("rate_limit.login_per_ip_per_min", "must be >= 1"))
 	}
 
+	// group: the member ceiling must stay inside the 64KB frame budget.
+	// The full CONV_PAYLOAD snapshot is ~60 bytes per member; above ~1090
+	// members the frame is rejected by the codec.
+	// 0 means "unset → use Default()" (the document is merged onto defaults),
+	// so only a negative or out-of-range explicit value is an error.
+	if p.Group.MaxMembers < 0 {
+		errs = append(errs, fieldErr("group.max_members", "must be >= 1 when set"))
+	}
+	if p.Group.MaxMembers > MaxGroupMembersHardLimit {
+		errs = append(errs, fieldErr("group.max_members",
+			fmt.Sprintf("must be <= %d (a larger group would overflow the 64KB WS frame limit)", MaxGroupMembersHardLimit)))
+	}
+
 	return errs
 }
 

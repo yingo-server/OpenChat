@@ -26,6 +26,10 @@ type PendingMsg struct {
 	ClientMsgID string // dedup key; UNIQUE(cid,sender_id,client_msg_id)
 	Content     []byte // Envelope payload verbatim; store never parses it
 	SentAt      int64
+	// Recalled mirrors msg_messages_hot.recalled: 0 = not recalled, else the
+	// unix-second timestamp of the recall. The live downlink carries it so a
+	// member that was offline during the recall still sees the tombstone.
+	Recalled int64
 }
 
 // HotMsg is a message row read from the hot store. Content is opaque bytes;

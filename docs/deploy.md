@@ -572,6 +572,65 @@ journalctl -u openchat -n 100 --no-pager
 
 ---
 
+### 7.4 升级到 v1.1.0：为热库启用 auto_vacuum（一次性，必做）
+
+v1.1.0 起热库用 `auto_vacuum=INCREMENTAL` + 周期 `PRAGMA incremental_vacuum`
+才能真正把已删除的页归还给文件系统。**新库自动启用；已有的库必须在升级时
+手工转换一次**，否则「删了行但文件不缩小」。
+
+> 为什么必须做：归档/trim 会删掉大量历史行，但 SQLite 默认 `auto_vacuum=0`
+> 只把页标记为空闲、文件大小不变。2C2G 机器上这意味着磁盘只涨不落。
+
+步骤（**全程停服**，转换期间不能有连接）：
+
+```bash
+# 0. 变量
+HOT=/var/lib/openchat/data/hot.db        # 按 config 里 hot_db 的实际路径改
+BK=/var/lib/openchat/backup/hot-pre-autovacuum.db
+sudo systemctl stop openchat
+
+# 1. 备份（VACUUM INTO 产出一致性快照，不需要停服前预热）
+sudo -u openchat sqlite3 "$HOT" "VACUUM INTO '$BK'"
+sudo -u openchat sqlite3 "$BK" "PRAGMA integrity_check;"   # 必须输出 ok
+
+# 2. 转换（auto_vacuum 只在 VACUUM 时写入库头；只设 pragma 不 VACUUM 等于没设）
+#    需要与库大小相当的临时磁盘空间
+sudo -u openchat sqlite3 "$HOT" "PRAGMA auto_vacuum=INCREMENTAL; VACUUM;"
+
+# 3. 校验：必须返回 2（2 = INCREMENTAL）
+sudo -u openchat sqlite3 "$HOT" "PRAGMA auto_vacuum;"
+
+# 4. 启动
+sudo systemctl start openchat
+openchatctl doctor --hot-db "$HOT"    # 应全 OK
+```
+
+转换后，trim 作业每轮结束会执行 `PRAGMA incremental_vacuum`，文件随删除收缩。
+
+**升级检查清单（v1.0.0 → v1.1.0）**
+
+| 步骤 | 命令 / 动作 | 失败会怎样 |
+|---|---|---|
+| 1 | 备份热库与配置（`deploy/backup.sh`） | 无备份可回滚 |
+| 2 | 上面 7.4 的 auto_vacuum 转换（一次性） | 磁盘只涨不落 |
+| 3 | 确认 `rate_limit_enabled` 未显式为 false | 生产环境会**拒绝启动**（这是有意的护栏） |
+| 4 | 确认 `public_origin` 已设为 https 域名 | 同源校验与安全 Cookie 走宽松分支 |
+| 5 | 若用短信/邮件登录：配置供应商（未配则仅 dev 模式可用） | 生产注册登录不可用 |
+| 6 | 若要开视频/语音通话：`feature_flags.call_enabled=true` + 配 TURN | 通话按钮不出现/建连失败 |
+| 7 | 替换二进制 → `systemctl restart openchat` | — |
+| 8 | `openchatctl doctor` + `openchatctl status` | 逐项排查 |
+
+**新增配置项（v1.1.0）**
+
+| key | 位置 | 默认 | 说明 |
+|---|---|---|---|
+| `rate_limit_enabled` | `openchat.toml` | `true` | 生产置 false 会拒绝启动；仅供压测 |
+| `require_audit_store` | `openchat.toml` | `false` | true 时冷库不可用则拒启（合规部署建议开） |
+| `admin_rest_listen` | `openchat.toml` | `127.0.0.1:7781` | 管理 REST 监听，仅环回 |
+| `feature_flags.call_enabled` | `openchat.toml` / 管理面 | `false` | WebRTC 通话总开关 |
+
+---
+
 ## 8. 备份与恢复（backup.sh）
 
 ### 8.1 先搞清楚 backup.sh 备份了什么

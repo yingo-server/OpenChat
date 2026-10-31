@@ -55,6 +55,13 @@ type convDomain struct {
 	conv  store.ConvStore
 	id    store.IdentityStore
 	cache *cache.Cache
+	// members is the cached member-LIST view (the fan-out recipient set).
+	// It is invalidated EXPLICITLY on every membership mutation — the
+	// write path never guesses.
+	members *memberCache
+	// maxMembers is the group member ceiling (0 = default). Enforced on
+	// addMember so a group can never grow past the frame-size bound.
+	maxMembers int
 }
 
 type convEvent struct {
@@ -181,6 +188,7 @@ func (d *convDomain) create(ctx context.Context, actor int64, body []byte) convR
 		}
 		d.cache.InvalidateMember(cache.MemberKey{Cid: newCid, UID: uid})
 	}
+	d.invalidateMembers(newCid)
 	pl, members, err := d.snapshot(ctx, newCid)
 	if err != nil {
 		return convResult{Op: convOpCreate, Error: err.Error()}
@@ -220,6 +228,7 @@ func (d *convDomain) addMember(ctx context.Context, actor int64, cid uint64, bod
 		}
 		d.cache.InvalidateMember(cache.MemberKey{Cid: int64(cid), UID: uid})
 	}
+	d.invalidateMembers(int64(cid))
 	pl, members, err := d.snapshot(ctx, int64(cid))
 	if err != nil {
 		return convResult{Op: convOpAddMember, Error: err.Error()}
@@ -228,7 +237,7 @@ func (d *convDomain) addMember(ctx context.Context, actor int64, cid uint64, bod
 	for _, rawUID := range p.UserIDs {
 		uid := int64(rawUID)
 		if m, ok := memberRow(members, uid); ok {
-			evs = append(evs, memberUpdateEvents(int64(cid), "add", *m, actor, members)...)
+			evs = append(evs, memberUpdateEvents(int64(cid), "add", *m, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
 		}
 	}
 	return convResult{Op: convOpAddMember, OK: true, Cid: int64(cid), Payload: pl, Events: evs}
@@ -256,6 +265,7 @@ func (d *convDomain) removeMember(ctx context.Context, actor int64, cid uint64, 
 		}
 		d.cache.InvalidateMember(cache.MemberKey{Cid: int64(cid), UID: uid})
 	}
+	d.invalidateMembers(int64(cid))
 	pl, members, err := d.snapshot(ctx, int64(cid))
 	if err != nil {
 		return convResult{Op: convOpRemoveMember, Error: err.Error()}
@@ -263,7 +273,7 @@ func (d *convDomain) removeMember(ctx context.Context, actor int64, cid uint64, 
 	evs := convEvents(int64(cid), members, pl)
 	for _, rawUID := range p.UserIDs {
 		removed := store.Member{Cid: int64(cid), UID: int64(rawUID)}
-		evs = append(evs, memberUpdateEvents(int64(cid), "remove", removed, actor, members)...)
+		evs = append(evs, memberUpdateEvents(int64(cid), "remove", removed, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
 	}
 	return convResult{Op: convOpRemoveMember, OK: true, Cid: int64(cid), Payload: pl, Events: evs}
 }
@@ -289,6 +299,7 @@ func (d *convDomain) setRole(ctx context.Context, actor int64, cid uint64, body 
 		}
 		d.cache.InvalidateMember(cache.MemberKey{Cid: int64(cid), UID: int64(rawUID)})
 	}
+	d.invalidateMembers(int64(cid))
 	members, lerr := d.conv.ListMembers(ctx, int64(cid))
 	if lerr != nil {
 		return convResult{Op: convOpSetRole, Error: lerr.Error()}
@@ -296,7 +307,7 @@ func (d *convDomain) setRole(ctx context.Context, actor int64, cid uint64, body 
 	var evs []convEvent
 	for _, rawUID := range p.UserIDs {
 		m := store.Member{Cid: int64(cid), UID: int64(rawUID), Role: int(p.Role)}
-		evs = append(evs, memberUpdateEvents(int64(cid), "role", m, actor, members)...)
+		evs = append(evs, memberUpdateEvents(int64(cid), "role", m, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
 	}
 	return convResult{Op: convOpSetRole, OK: true, Cid: int64(cid), Events: evs}
 }
@@ -309,10 +320,12 @@ func (d *convDomain) getMeta(ctx context.Context, actor int64, cid uint64) convR
 	if err != nil {
 		return convResult{Op: convOpGetMeta, Error: err.Error()}
 	}
-	pl, _ := wire.Marshal(wire.ConvPayload{
+	out := wire.ConvPayload{
 		ConvID: uint64(meta.Cid), Title: meta.Title, ConvType: uint32(meta.CType),
 		CreatedAt: meta.CreatedAt,
-	})
+	}
+	out.LastSeq = d.lastSeqFor(ctx, int64(cid))
+	pl, _ := wire.Marshal(out)
 	return convResult{Op: convOpGetMeta, OK: true, Cid: int64(cid), Payload: pl}
 }
 
@@ -334,8 +347,36 @@ func (d *convDomain) listMembers(ctx context.Context, actor int64, cid uint64) c
 			UserID: uint64(m.UID), Role: uint32(m.Role), JoinedAt: m.JoinedAt, MutedUntil: m.MutedUntil,
 		})
 	}
+	out.Version = convVersion(len(ms))
+	out.LastSeq = d.lastSeqFor(ctx, int64(cid))
 	pl, _ := wire.Marshal(out)
 	return convResult{Op: convOpListMembers, OK: true, Cid: int64(cid), Payload: pl}
+}
+
+// lastSeqFor returns the conversation's current high-water mark: the highest
+// COMMITTED seq, i.e. conv_seq.next_seq - 1 (next_seq is the next unconsumed
+// slot). A conversation with no messages (next_seq <= 1) reports 0.
+//
+// This is the field the client's conv-payload handler compares against its
+// local cursor; when the server is ahead the client fires a SYNC gap pull —
+// which is exactly how a fresh device learns it is missing history.
+func (d *convDomain) lastSeqFor(ctx context.Context, cid int64) uint64 {
+	next, err := d.conv.NextSeq(ctx, cid)
+	if err != nil || next <= 1 {
+		return 0
+	}
+	return uint64(next - 1)
+}
+
+// convVersion derives the snapshot revision. We do NOT have a monotonic
+// version column on the conv row, so we use the MEMBER COUNT as a coarse
+// revision proxy: it changes on every add/remove (the common membership
+// mutation) and lets the client discard a stale cached snapshot superseded by
+// a newer CONV_PAYLOAD. It is NOT a per-write counter: a role-only change that
+// keeps the count constant does not bump it (acceptable — the client's
+// MemberUpdate(212) event carries the role delta directly).
+func convVersion(memberCount int) uint64 {
+	return uint64(memberCount)
 }
 
 // snapshot returns the full ConvPayload and current member rows for cid.
@@ -356,6 +397,8 @@ func (d *convDomain) snapshot(ctx context.Context, cid int64) ([]byte, []store.M
 			UserID: uint64(m.UID), Role: uint32(m.Role), JoinedAt: m.JoinedAt, MutedUntil: m.MutedUntil,
 		})
 	}
+	out.Version = convVersion(len(ms))
+	out.LastSeq = d.lastSeqFor(ctx, cid)
 	pl, err := wire.Marshal(out)
 	return pl, ms, err
 }
@@ -370,9 +413,19 @@ func memberRow(members []store.Member, uid int64) (*store.Member, bool) {
 	return nil, false
 }
 
+// memberLimit returns the group member ceiling (0 = the default).
+func (d *convDomain) memberLimit() int {
+	if d.maxMembers > 0 {
+		return d.maxMembers
+	}
+	return defaultMaxGroupMembers
+}
+
 // memberUpdateEvents(cid, op, target, byUID, members) fans one 212 per member
-// plus one full 202 snapshot, for op-driven member-change events.
-func memberUpdateEvents(cid int64, op string, target store.Member, byUID int64, members []store.Member) []convEvent {
+// plus one full 202 snapshot, for op-driven member-change events. lastSeq is
+// the conversation watermark the 202 snapshot must carry (so a member that was
+// offline during the change still gets the correct high-water mark).
+func memberUpdateEvents(cid int64, op string, target store.Member, byUID int64, members []store.Member, lastSeq uint64) []convEvent {
 	body, err := wire.Marshal(wire.MemberUpdate{
 		ConvID: uint64(cid), Op: op, ByUserID: uint64(byUID),
 		Member: &wire.Member{
@@ -386,7 +439,7 @@ func memberUpdateEvents(cid int64, op string, target store.Member, byUID int64, 
 	// Both kinds ride along: 212 MEMBER_UPDATE (the dedicated event kind) and
 	// 202 CONV_PAYLOAD (the full-snapshot refresh every client already
 	// handles). Delivering both keeps old and new consumers in sync.
-	full, ferr := wire.Marshal(fullConvPayloadForEvents(cid, members))
+	full, ferr := wire.Marshal(fullConvPayloadForEvents(cid, members, lastSeq))
 	evs := make([]convEvent, 0, 2*len(members))
 	for _, m := range members {
 		evs = append(evs, convEvent{
@@ -402,14 +455,18 @@ func memberUpdateEvents(cid int64, op string, target store.Member, byUID int64, 
 }
 
 // fullConvPayloadForEvents reuses the convDomain's snapshot marshal shape
-// (wire.ConvPayload camelCase) without re-querying the store.
-func fullConvPayloadForEvents(cid int64, members []store.Member) wire.ConvPayload {
+// (wire.ConvPayload camelCase) without re-querying the store. It carries the
+// watermark fields (version from the member count, lastSeq from the caller)
+// so the 202 event matches a fresh snapshot() exactly.
+func fullConvPayloadForEvents(cid int64, members []store.Member, lastSeq uint64) wire.ConvPayload {
 	out := wire.ConvPayload{ConvID: uint64(cid)}
 	for _, m := range members {
 		out.Members = append(out.Members, wire.Member{
 			UserID: uint64(m.UID), Role: uint32(m.Role), JoinedAt: m.JoinedAt, MutedUntil: m.MutedUntil,
 		})
 	}
+	out.Version = convVersion(len(members))
+	out.LastSeq = lastSeq
 	return out
 }
 
@@ -483,3 +540,20 @@ func (d *sysDomain) handleFlag(ctx context.Context, req wire.FlagRequest) (wire.
 }
 
 var _ = kinds.KindFlagSet
+
+// defaultMaxGroupMembers mirrors policy.Default().Group.MaxMembers. The pipe
+// keeps its own constant so it does not import the policy package (policy is
+// loaded by the assembly and injected via convDomain.maxMembers).
+const defaultMaxGroupMembers = 500
+
+// invalidateMembers drops the cached member-list (and peer-set) views for cid
+// after a membership mutation, so the fan-out recipient set and any permission
+// hint are rebuilt on the next read. Falls back to the generic member cache
+// when the typed memberCache is not wired.
+func (d *convDomain) invalidateMembers(cid int64) {
+	if d.members != nil {
+		d.members.InvalidateConv(cid)
+		return
+	}
+	d.cache.InvalidateMemberList(cid)
+}

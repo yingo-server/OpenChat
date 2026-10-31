@@ -42,6 +42,8 @@ func run(args []string, e *environment) int {
 		err = cmdBackup(ctx, e, g, sub)
 	case "archive":
 		err = cmdArchive(ctx, e, g, sub)
+	case "migrate":
+		err = cmdMigrate(ctx, e, g, sub)
 	case "flags":
 		err = cmdFlags(ctx, e, g, sub)
 	case "ban":
@@ -82,6 +84,8 @@ const usageText = `openchatctl — OpenChat 系统级运维 CLI（直连本机 s
             调用 deploy/backup.sh；不存在则内置 sqlite .backup + 加密提示
   archive   --dry-run | --run
             经管理 API 触发归档（未登录时提示 adminctl archive）
+  migrate   thumbs [--dry-run] [--batch N] [--hot-db PATH] [--media-dir DIR]
+            一次性把旧 thumb_data 内联缩略图迁移到 media_dir/thumbs/ 文件并清空该列
   flags     list | set KEY=VALUE
             功能开关（经管理 API，policy-as-flag）
   ban       <uid> [--days N] [--reason TEXT] [--level 1..3]

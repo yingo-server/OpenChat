@@ -101,9 +101,9 @@ func openDriver(driverName, path string) (*DB, error) {
 		"PRAGMA journal_mode=WAL",
 		"PRAGMA busy_timeout=5000",
 		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=NORMAL", // WAL-safe default; durability knobs are deployment policy
+		"PRAGMA synchronous=NORMAL",          // WAL-safe default; durability knobs are deployment policy
 		"PRAGMA journal_size_limit=67108864", // 64MB: truncate the WAL, don't hoard it
-		"PRAGMA cache_size=-8000",             // 8MB page cache per connection
+		"PRAGMA cache_size=-8000",            // 8MB page cache per connection
 	} {
 		if _, err := db.Exec(p); err != nil {
 			db.Close()

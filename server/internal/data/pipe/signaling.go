@@ -16,6 +16,7 @@ package pipe
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
@@ -84,7 +85,9 @@ func (p *Pipe) onReceipt(ctx context.Context, req Req) {
 		p.reply(buildErrEnv(req, 500, "marshal receipts"))
 		return
 	}
-	p.fanoutConv(ctx, cid, req.Kind, uint64(cid), pl)
+	// Receipts are worth keeping: the fan-out plane merges the receipt
+	// lists of one window instead of dropping the older ones.
+	p.fanoutConv(ctx, cid, req.Kind, uint64(cid), pl, dropKeep)
 }
 
 // normalizeReceipts accepts both wire forms: {"receipts":[...]} and the
@@ -135,7 +138,7 @@ func (p *Pipe) onTyping(ctx context.Context, req Req) {
 		sig.At = nowMilli()
 	}
 	pl, _ := wire.Marshal(sig)
-	p.fanoutConv(ctx, cid, req.Kind, uint64(cid), pl)
+	p.fanoutConv(ctx, cid, req.Kind, uint64(cid), pl, dropBestEffort)
 }
 
 // onPresenceUp is the dispatch entry for kind 400 (PRESENCE_UPDATE, client
@@ -194,9 +197,9 @@ func (p *Pipe) onPresenceConnect(ctx context.Context, req Req) {
 	}
 	online := req.Kind == uint32(kinds.KindPresenceSubscribe) // 401 = connect
 	_ = p.hot.UpsertPresence(ctx, &store.Presence{UID: uid, Online: online, LastSeen: nowSec()})
-	// TODO(presence-throttle): aggregate repeated connect/disconnect per user
-	// into one broadcast per 10s window (a user flapping devices currently
-	// emits one event per transition).
+	// The per-user presence debounce (10s) lives in the fan-out plane: a
+	// user flapping between devices emits ONE broadcast per window
+	// (carrying the latest state) instead of one per transition.
 	pl, _ := wire.Marshal(wire.PresenceSignal{UserID: uint64(uid), Online: &online, At: nowMilli()})
 	p.fanoutPeers(ctx, uid, req.Kind, pl)
 }
@@ -204,31 +207,38 @@ func (p *Pipe) onPresenceConnect(ctx context.Context, req Req) {
 // fanoutConv delivers one frame to every member of cid EXCEPT excludeUID
 // (the transient-signal forwarding rule: receipts/typing/presence never
 // echo back to their originator).
-func (p *Pipe) fanoutConv(ctx context.Context, cid int64, kind uint32, excludeUID uint64, payload []byte) {
-	members, err := p.hot.ListMembers(ctx, cid)
-	if err != nil {
-		p.lg.Warn("signaling: list members failed", "cid", cid, "err", err.Error())
-		return
-	}
-	for _, m := range members {
-		if uint64(m.UID) == excludeUID {
-			continue
-		}
-		p.reply(&env{Kind: kind, ConvID: uint64(cid), UserID: uint64(m.UID), Payload: payload})
-	}
+//
+// The delivery is ASYNCHRONOUS: the dispatcher only enqueues the job on the
+// fan-out plane. The plane resolves the member set (from the CACHE, not
+// from the DB on the hot path), aggregates the event into the conversation
+// window and emits one frame per recipient.
+func (p *Pipe) fanoutConv(ctx context.Context, cid int64, kind uint32, excludeUID uint64, payload []byte, class dropClass) {
+	p.fanout.Enqueue(fanoutJob{
+		kind: kind, cid: cid, excludeUID: excludeUID, userID: excludeUID,
+		payload: payload, class: class,
+		windowKey: "c" + strconv.FormatInt(cid, 10),
+	})
+}
+
+// fanoutConvUnmerged delivers a frame that must NOT be aggregated (the
+// recall broadcast: every tombstone is a distinct event).
+func (p *Pipe) fanoutConvUnmerged(ctx context.Context, cid int64, kind uint32, excludeUID uint64, payload []byte, class dropClass) {
+	p.fanout.Enqueue(fanoutJob{
+		kind: kind, cid: cid, excludeUID: excludeUID, userID: excludeUID,
+		payload: payload, class: class, noMerge: true,
+		windowKey: "c" + strconv.FormatInt(cid, 10),
+	})
 }
 
 // fanoutPeers delivers one frame to every OTHER user sharing at least one
-// conversation with uid (the presence fan-out set).
+// conversation with uid (the presence fan-out set). Like fanoutConv it is
+// asynchronous; the per-user debounce collapses repeated transitions.
 func (p *Pipe) fanoutPeers(ctx context.Context, uid int64, kind uint32, payload []byte) {
-	peers, err := p.hot.MemberPeersOf(ctx, uid)
-	if err != nil {
-		p.lg.Warn("signaling: member peers lookup failed", "uid", uid, "err", err.Error())
-		return
-	}
-	for _, peer := range peers {
-		p.reply(&env{Kind: kind, UserID: uint64(peer), Payload: payload})
-	}
+	p.fanout.Enqueue(fanoutJob{
+		kind: kind, cid: 0, excludeUID: 0, userID: uint64(uid),
+		payload: payload, class: dropBestEffort,
+		windowKey: "p" + strconv.FormatInt(uid, 10),
+	})
 }
 
 // onRecall is the dispatch entry for kinds 107 (MSG_DELETE, treated as
@@ -296,7 +306,7 @@ func (p *Pipe) onRecall(ctx context.Context, req Req) {
 	// collapse the message. Downlink kind is always MSG_RECALL(108) — the
 	// kind the client's msg-mutation handler maps to a 'recall' tombstone.
 	pl, _ := wire.Marshal(wire.MsgMutation{MsgID: uint64(row.MsgID), ConvID: uint64(cid)})
-	p.fanoutConv(ctx, cid, uint32(kinds.KindMsgRecall), 0, pl)
+	p.fanoutConvUnmerged(ctx, cid, uint32(kinds.KindMsgRecall), 0, pl, dropKeep)
 }
 
 // findMsg scans the conversation's recent window for one msg id (the reader

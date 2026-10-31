@@ -79,6 +79,13 @@ type MsgNew struct {
 	Seq      uint64 `json:"seq,omitempty"`
 	SenderID uint64 `json:"senderId,omitempty"`
 	SentAt   int64  `json:"sentAt,omitempty"`
+	// Recalled mirrors the hot row's soft-delete column: 0 = not recalled,
+	// otherwise the unix-second timestamp of the recall. It is a TIMESTAMP
+	// (not a bool) so the client can tell "recalled at" from "never recalled"
+	// and so the value survives a re-read of an already-recalled row.
+	// Without it, a device that pulls history after the recall broadcast
+	// (new phone / reinstall) would resurrect the original text.
+	Recalled int64 `json:"recalled,omitempty"`
 	// Content is the opaque Envelope payload, base64-encoded on the wire
 	// (same as protobuf bytes -> JSON). Never embed raw bytes as JSON.
 	Content []byte `json:"content,omitempty"`
@@ -226,12 +233,31 @@ type MemberUpdate struct {
 }
 
 // ConvPayload mirrors chat.v1.ConvPayload.
+//
+// The three watermark fields below (Version / LastSeq / Unread) are NOT in
+// the proto yet, but the client contract (apps/client decodeConvPayload)
+// already reads them by these exact camelCase names. They are what makes a
+// brand-new device notice it is missing history:
+//
+//   - LastSeq: the conversation's current high-water mark (conv_seq.next_seq
+//     minus the reserved-but-unwritten tail; i.e. the highest committed seq).
+//     The client compares it with its local cursor and triggers a SYNC gap
+//     pull when the server is ahead.
+//   - Version: a monotonic revision of this snapshot, bumped on every
+//     membership/title change. The client uses it to detect that a
+//     CONV_PAYLOAD event supersedes an older cached snapshot.
+//   - Unread: the server's estimate of how many messages the recipient has
+//     not read yet (0 when the server does not track read state — it is a
+//     hint, never an authorization input).
 type ConvPayload struct {
 	ConvID    uint64   `json:"convId,omitempty"`
 	Title     string   `json:"title,omitempty"`
 	ConvType  uint32   `json:"convType,omitempty"`
 	CreatedAt int64    `json:"createdAt,omitempty"`
 	Members   []Member `json:"members,omitempty"`
+	Version   uint64   `json:"version,omitempty"`
+	LastSeq   uint64   `json:"lastSeq,omitempty"`
+	Unread    uint64   `json:"unread,omitempty"`
 }
 
 // MemberOp mirrors chat.v1.MemberOp (generic member ops inside ConvData).

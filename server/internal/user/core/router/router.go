@@ -245,6 +245,8 @@ func (r *Router) HandleDownstream(fr *proto.Frame) {
 // 且 bridge 的 conn_id 属于来源层，不能当作 usergw 连接号使用）；
 // 无 user_id 时再按 conn_id 精确定位。
 func (r *Router) deliver(env *chatpb.Envelope, connID uint64) {
+	if env.Kind == 401 || env.Kind == 402 {
+	}
 	b, err := frame.Encode(env)
 	if err != nil {
 		return

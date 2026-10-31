@@ -25,18 +25,24 @@ type ColdDeps struct {
 
 const (
 	writeChBuf    = 128    // D-1 red line: 满则 BUSY NACK，绝不阻塞
-	outChBuf      = 128    // outbound lane to the peer
+	outChBuf      = 4096   // outbound lane to the peer (与 egress 队列同量级)
 	dedupCapacity = 100000 // memory dedup LRU: 10 万
 )
 
 // HotStores is the hot-store surface the pipe needs. *sqlite.DB satisfies it;
 // tests inject fakes.
+//
+// store.MediaStore is part of the surface because the MSG_NEW downlink
+// enriches the media[] entries with the store-only fields (thumb_inline,
+// waveform, status) — without it the receiving client renders empty image
+// placeholders and pseudo-random audio waveforms.
 type HotStores interface {
 	store.MsgWriter
 	store.MsgReader
 	store.IdentityStore
 	store.ConvStore
 	store.SysStore
+	store.MediaStore
 }
 
 // Pipe is the data layer's entry assembly: consumes internal frames from a
@@ -71,6 +77,13 @@ type Pipe struct {
 	trunk Trunkee       // kind 980 job triggers (optional; nil = jobs not wired)
 	calls *callRegistry // in-process call-signaling state (kinds 350-354)
 	cache *cache.Cache
+
+	// mc is the cached member-list / peer-set view (fan-out recipient sets).
+	mc *memberCache
+	// fanout is the ASYNCHRONOUS fan-out plane: the dispatcher only enqueues
+	// transient signals; the plane resolves the recipients (from the cache),
+	// aggregates them into per-conv windows and emits the frames.
+	fanout *fanoutPlane
 
 	// recallWindow is the recall time window in seconds (injectable; 0 =
 	// default 120s).
@@ -116,9 +129,14 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 	}
 	p.seq = &seqAlloc{w: hot}
 	p.fl = newFlusher(hot, hot, p.outCh, p.writeCh, p.dedup, lg)
+	p.fl.setMediaStore(hot)
+	p.mc = newMemberCache(hot)
+	p.fl.mc = p.mc
 	p.rr = &readRouter{r: hot, cold: cold.Cold}
 	p.msg = &msgDomain{conv: hot, cache: p.cache, msg: hot, dedup: p.dedup}
-	p.conv = &convDomain{conv: hot, id: hot, cache: p.cache}
+	p.mc = newMemberCache(hot)
+	p.conv = &convDomain{conv: hot, id: hot, cache: p.cache, members: p.mc}
+	p.fanout = newFanoutPlane(p.mc, p.outCh, lg)
 	p.ident = identity.New(hot, p.cache)
 	p.sys = &sysDomain{sys: hot}
 	p.calls = newCallRegistry()
@@ -138,6 +156,7 @@ func (p *Pipe) Run(ctx context.Context) {
 	fctx, fcancel := context.WithCancel(ctx)
 	defer fcancel()
 	go p.fl.run(fctx)
+	go p.fanout.start(fctx)
 	go p.sender()
 
 	for {
@@ -341,18 +360,21 @@ func (p *Pipe) onSyncRequest(ctx context.Context, req Req) {
 		return
 	}
 	for _, m := range rows {
-		pl := buildMsgNewPayload(hotToPending(m))
+		pl := p.fl.buildMsgNewPayload(hotToPending(m))
 		p.reply(&env{Kind: uint32(kinds.KindMsgNew), ConvID: uint64(cid), UserID: req.UserID, Payload: pl})
 	}
 }
 
 // hotToPending adapts a read row to the PendingMsg view buildMsgNewPayload
 // consumes (both share the same message fields; MsgNew payload is identical
-// whether produced by the live fan-out or a sync replay).
+// whether produced by the live fan-out or a sync replay). The soft-delete
+// marker (Recalled) rides along so a gap-fill replay also carries the
+// tombstone state.
 func hotToPending(m store.HotMsg) store.PendingMsg {
 	return store.PendingMsg{
 		MsgID: m.MsgID, Cid: m.Cid, Seq: m.Seq, SenderID: m.SenderID,
 		ClientMsgID: m.ClientMsgID, Content: m.Content, SentAt: m.SentAt,
+		Recalled: m.Recalled,
 	}
 }
 

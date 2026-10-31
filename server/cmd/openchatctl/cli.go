@@ -79,6 +79,7 @@ type environment struct {
 	readFile func(string) ([]byte, error)
 	stat     func(string) (os.FileInfo, error)
 	openDB   func(path string) (*sql.DB, error)
+	openDBRW func(path string) (*sql.DB, error)
 	diskFree func(path string) (free, total uint64, err error)
 	dial     func(network, addr string, timeout time.Duration) (net.Conn, error)
 	backupDB func(src, dst string) error
@@ -101,6 +102,7 @@ func defaultEnv() *environment {
 		readFile: os.ReadFile,
 		stat:     os.Stat,
 		openDB:   openSQLiteReadOnly,
+		openDBRW: openSQLiteReadWrite,
 		diskFree: diskFreeBytes,
 		dial: func(network, addr string, timeout time.Duration) (net.Conn, error) {
 			return net.DialTimeout(network, addr, timeout)
@@ -116,6 +118,19 @@ func defaultEnv() *environment {
 // openSQLiteReadOnly opens the hot DB without ever writing it.
 func openSQLiteReadOnly(path string) (*sql.DB, error) {
 	dsn := "file:" + path + "?mode=ro&_busy_timeout=2000"
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	return db, nil
+}
+
+// openSQLiteReadWrite opens the hot DB for a mutating maintenance command
+// (media thin migration). It honours WAL and waits briefly for a lock rather
+// than failing immediately when chatd is live.
+func openSQLiteReadWrite(path string) (*sql.DB, error) {
+	dsn := "file:" + path + "?_busy_timeout=5000&_journal_mode=WAL"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err

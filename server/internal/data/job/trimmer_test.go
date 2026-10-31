@@ -47,14 +47,7 @@ func TestArchiverCopiesThenPrunesHot(t *testing.T) {
 // seedHot pre-populates the FakeArchive's HOT side (the fake only populates
 // it during CopyBatch, which the degraded/copy tests need from the start).
 func seedHot(f *pipefakes.FakeArchive, rows ...store.HotMsg) {
-	for _, r := range rows {
-		if _, err := f.CopyBatch(context.Background(), []store.HotMsg{r}); err != nil {
-			panic(err)
-		}
-	}
-	// Reset the recording of the seeding copies.
-	f.Copied = nil
-	f.CopyCalls = 0
+	f.SeedHot(rows...)
 }
 
 // TestArchiverNoColdPrunesHotOnly: without a cold store (W == nil) the
@@ -135,14 +128,17 @@ func TestArchiverCopyFailKeepsHot(t *testing.T) {
 // removes anything newer than KeepDays even if the cutoff would allow it.
 func TestArchiverDegradedKeepDaysBoundsPrune(t *testing.T) {
 	const now = int64(1_000_000)
-	weekOld := now - 6*24*3600 // 6 days old: NEWER than KeepDays=5 → kept
-	older := now - 10*24*3600  // 10 days old: pruned
+	// 3 days old: the policy cutoff (1 day) would prune it, but the degraded
+	// path is bounded by KeepDays=5, so it must survive. This is exactly the
+	// invariant under test: the degraded prune is more conservative than policy.
+	threeDaysOld := now - 3*24*3600
+	older := now - 10*24*3600 // 10 days old: older than KeepDays → pruned
 	s := &fakeScanner{rows: []store.HotMsg{
-		{MsgID: 1, Cid: 5, Seq: 1, SenderID: 1, SentAt: weekOld},
+		{MsgID: 1, Cid: 5, Seq: 1, SenderID: 1, SentAt: threeDaysOld},
 		{MsgID: 2, Cid: 5, Seq: 2, SenderID: 1, SentAt: older},
 	}}
 	pruner := &fakePruner{rows: map[int64]store.HotMsg{
-		1: {MsgID: 1, SentAt: weekOld}, 2: {MsgID: 2, SentAt: older},
+		1: {MsgID: 1, SentAt: threeDaysOld}, 2: {MsgID: 2, SentAt: older},
 	}}
 
 	arch := &Archiver{S: s, P: pruner, // W nil: degraded
@@ -158,7 +154,7 @@ func TestArchiverDegradedKeepDaysBoundsPrune(t *testing.T) {
 		t.Fatalf("pruned = %d, want 1 (only the 10-day-old row)", res.MovedRows)
 	}
 	if _, ok := pruner.rows[1]; !ok {
-		t.Fatal("the 6-day-old row must survive: degraded prune is bounded by KeepDays")
+		t.Fatal("the 3-day-old row must survive: the degraded prune is bounded by KeepDays, not by the 1-day policy cutoff")
 	}
 }
 

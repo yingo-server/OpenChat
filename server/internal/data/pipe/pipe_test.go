@@ -22,6 +22,16 @@ type hotBundle struct {
 	sys  store.SysStore
 }
 
+// The pipe under test never touches media or identity storage; these stubs
+// only satisfy HotStores so the fake assembly compiles.
+func (h hotBundle) Insert(context.Context, *store.Media) error { return nil }
+func (h hotBundle) Get(context.Context, string) (*store.Media, error) {
+	return nil, store.ErrNotFound
+}
+func (h hotBundle) UpdateStatus(context.Context, string, int) error  { return nil }
+func (h hotBundle) IncRefCount(context.Context, string, int64) error { return nil }
+func (h hotBundle) AddRef(context.Context, string) error             { return nil }
+
 func (h hotBundle) AppendMessages(ctx context.Context, b []store.PendingMsg) error {
 	return h.w.AppendMessages(ctx, b)
 }

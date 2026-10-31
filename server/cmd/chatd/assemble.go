@@ -320,7 +320,7 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	a.adminREST = rest
 
 	// 12. job plane: archiver + jobber (cron from policy; 980 → jobber).
-	a.jobs = newJobPlane(hot, coldDB, a.policy, log.For("jobs"))
+	a.jobs = newJobPlane(hot, coldDB, a.policy, log.For("jobs"), a.cfg.MediaDir)
 	p.SetTrunkee(a.jobs)
 	if coldDB == nil {
 		lg.Info("job plane wired in degraded mode (no cold store): archive dry-run only, real runs fail with a clear error")

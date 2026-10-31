@@ -2,6 +2,60 @@
 
 本文件记录 OpenChat 的版本变更。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [1.1.0] - 2026-11-05
+
+消息闭环、媒体、通话与管理界面的一轮功能补齐，并修复了 4 处安全缺陷与 8 处链路断点。升级必读见 `docs/release-notes-v1.1.0.md`。
+
+### Added
+
+**消息闭环（服务端已实现，含 e2e 测试）**
+- 已读/送达回执（kind 104/105）：客户端发回执，服务端校验成员身份后广播给会话成员。
+- 输入中提示（kind 230）：typing 状态在会话内转发，支持 `typing=false` 及时停止。
+- 在线状态（kind 400/401/402）：连接建立/断开时向会话同伴广播上线/下线。
+- 会话成员变更通知（kind 212）：加人/踢人/改角色实时通知会话全员。
+- 消息撤回（kind 107/108）：2 分钟时间窗内本人或管理员可撤回，软删落库并对全员广播。
+
+**媒体**
+- 客户端生成图片缩略图（Canvas 缩放，超过 8KB 自动降质）与语音波形（WebAudio 峰值包络）——服务端无需 ffmpeg，2C2G 机型友好。
+- 上传接口支持 `thumb_data` / `waveform` 字段，并做 base64 解码 + 图片 magic bytes 内容校验。
+
+**通话**
+- WebRTC 1v1 语音/视频：服务端只做信令转发（kind 350–354），媒体流 P2P 直连，服务器零带宽。
+- 通话状态机：忙线自动回 busy、60s 无应答自动挂断，受 feature flag `call_enabled` 门控。
+- 前端全屏通话 UI：来电/去电/计时/静音/免提/挂断，45s 超时与 ICE 失败提示。
+
+**交互与界面**
+- 双模式交互：flag 是唯一真源，TTY 下自动进入交互向导，非 TTY 走纯参数模式（缺参退出码 64 并列出必填项）。
+- 中英双语：`--lang` 覆盖，未指定时按 `LANG`/`LC_ALL` 自动检测。
+- `chatd --tui` 运行仪表盘（健康/policy/flags，热键 q/r/d）。
+- opchat 纯 TUI 管理控制台：7 个 tab（概览/用户/举报/广播/Flags/归档/审计）、数字滚动动画、终端 bell 声效、破坏性操作二次确认。
+- 管理后台 WebUI：Dashboard 首页（指标卡 + 实时事件流 + sparkline）、数值滚动动画、WebAudio 合成声效、轮询可暂停。
+- `install.sh` 新增 `--domain`/`--admin-user`/`--admin-pass-file`/`--cold-dsn`/`--turn-server`/`--lang`；`deploy/install-interactive` 提供 7 步向导。
+
+**工程**
+- 全平台构建矩阵：Linux x86_64/x86/arm64/armv7/riscv64 + Windows x86_64/x86/arm64/arm + 源码包。
+- 压测 workflow：并发阶梯自动加压直到可用性 <70%，统计全局 RPM 与延迟分布。
+- 文档：`api-reference` / `cli-reference` / `ws-protocol` + `scripts/doccheck.sh` 自动校验（文档里的端点/命令/kind 必须能在源码找到）。
+- `import-lint`（`scripts/importlint.sh`）落地为 CI 步骤（此前只是文档里的承诺）。
+
+### Security
+
+- 冒名操作：数据层曾信任客户端信封里的 `user_id`，攻击者可冒用他人身份撤回消息、伪造"已读"回执。现操作者身份只来自会话，信封里的 `user_id` 一律不采信。
+- 伪造在线状态：401/402 事件曾可由客户端上行，任何人可伪造他人上线/下线。网关现拒绝客户端发来的 presence 事件（返回 4003）。
+- 生产环境限流失效：`rate_limit_enabled` 结构零值为 false，生产配置可能因此关掉全部限流。现生产环境检测到 `rate_limit_enabled=false` 直接拒绝启动。
+- 缩略图可存任意内容：`thumb_data` 曾只校验长度，可写入 SVG/HTML data URI。现校验 base64 解码 + 图片 magic bytes。
+
+### Fixed
+
+- 裸帧丢载荷：`ShellFrameSource` 曾丢弃非内部帧的 payload，在线状态类事件被解析成 `uid=0` 后静默丢弃；现完整透传 payload。
+- 广播帧路由回环：104/105/107/108/230/400–402 缺 data→user 路由覆盖，广播帧被路由回数据层自身、对端收不到；现补齐路由。
+- 媒体下行空消息：前端 `media.mtype` 发字符串、服务端按整数解析，整条载荷解析失败致对端收到空消息；现两端对齐为整数。
+- 在线状态语义反转：presence 解码只认 `status` 字符串，上线事件被判成下线；现按事件 kind 判定上下线。
+- 撤回跨设备失效：历史拉取不返回 recalled 标记，换设备后撤回消息原文重现；现历史与实时都带 `rn` 撤回标记。
+- `install.sh --domain` 未生效：参数解析后被丢弃，`public_origin` 为空、同源校验与 Secure Cookie 判定走宽松分支；现 `--domain` 真正写入 `public_origin`。
+- CLI flag 顺序：Go flag 遇位置参数即停止解析，`users ban 42 --level 2 --days 7` 实际发出默认值（"禁 7 天 2 级"变成"永久 1 级"）；现解析前先提升 flag token（`openchatctl`/`adminctl`）。
+- 压测假通过：可用性分母为 0 时算成 100%，什么都没测到却判 PASS；现分母为 0 直接判失败。
+
 ## [1.0.0] - 2026-10-29
 
 首个正式版本：`chatd` embedded 单二进制可部署，含用户端/管理端 SPA、管理 REST、媒体上传下载与冷热分层存储。

@@ -24,6 +24,16 @@ type Policy struct {
 	// RateLimit holds per-bucket thresholds. The rate_limit table provides
 	// the counting primitive; these are the limits.
 	RateLimit RateLimitConfig `json:"rate_limit"`
+
+	// Group holds the group-conversation limits.
+	//
+	// MaxMembers is the hard ceiling on the member count of a group
+	// conversation. The bound exists because every membership change
+	// broadcasts a FULL 202 CONV_PAYLOAD snapshot to every member: at
+	// ~60 bytes per member, a group of more than ~1090 members produces a
+	// frame larger than the 64KB WS frame limit and the codec REJECTS it.
+	// The ceiling keeps the snapshot inside the frame budget.
+	Group GroupConfig `json:"group"`
 }
 
 // ArchiveConfig is the archive job policy.
@@ -63,6 +73,20 @@ type RateLimitConfig struct {
 	LoginPerIPPerMin int `json:"login_per_ip_per_min"`
 }
 
+// MaxGroupMembersHardLimit is the absolute ceiling a policy may set for
+// group.max_members. The full CONV_PAYLOAD snapshot costs ~60 bytes per member
+// and the WS frame codec caps a frame at 64KB, so anything above ~1090 members
+// cannot be delivered in one frame; 1000 keeps a safety margin.
+const MaxGroupMembersHardLimit = 1000
+
+// GroupConfig holds the group-conversation limits.
+type GroupConfig struct {
+	// MaxMembers is the hard ceiling on a group's member count (default
+	// 500). The value is bounded by the 64KB WS frame limit: the full
+	// CONV_PAYLOAD snapshot is ~60 bytes per member.
+	MaxMembers int `json:"max_members"`
+}
+
 // Snapshot pairs a Policy with its version, so callers can detect reloads.
 type Snapshot struct {
 	Policy  Policy
@@ -92,6 +116,9 @@ func Default() Policy {
 		RateLimit: RateLimitConfig{
 			MsgPerUserPerMin: 60,
 			LoginPerIPPerMin: 10,
+		},
+		Group: GroupConfig{
+			MaxMembers: 500,
 		},
 	}
 }

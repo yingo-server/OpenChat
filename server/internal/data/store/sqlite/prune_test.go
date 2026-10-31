@@ -144,8 +144,8 @@ func TestTrimTableMediaOnlyZeroRef(t *testing.T) {
 		rc int64
 		at int64
 	}{
-		{"gone", 0, old},       // old + unreferenced → deleted
-		{"kept-ref", 2, old},   // old but referenced → kept
+		{"gone", 0, old},         // old + unreferenced → deleted
+		{"kept-ref", 2, old},     // old but referenced → kept
 		{"kept-fresh", 0, fresh}, // fresh → kept
 	}
 	for _, r := range rows {
@@ -268,8 +268,8 @@ func TestMediaQuotaUsage(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	seed := []struct {
-		id string
-		uid int64
+		id   string
+		uid  int64
 		size int64
 	}{
 		{"a", 1, 100},

@@ -305,7 +305,9 @@ func (s *Service) handleUpload(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, uploadOKBody(mediaID, rec, thumbData))
 			return
 		}
-		_ = os.Remove(s.pathFor(sha))
+		if p, perr := s.pathFor(sha); perr == nil {
+			_ = os.Remove(p)
+		}
 		s.deps.Logger.Error("media insert failed", "err", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "internal error", "code": "INTERNAL"})
 		return
@@ -330,9 +332,10 @@ func uploadOKBody(mediaID string, rec *store.Media, thumbEcho string) map[string
 	return body
 }
 
-// @authz: checked-partial — no per-conversation ACL in 1.0; the guard is the
-// 24+ char unguessable media_id (base64url of 24 random-ish bytes). TODO(1.1):
-// media_id → msg → cid → membership check (security-spec §4.4 红线).
+// @authz: checked — media_id → msg → cid → membership (canReadMedia,
+// security-spec §4.4). The uploader always passes; anyone else must share a
+// conversation that references this media. Non-members get 404 (not 403) so
+// the endpoint cannot be used to probe which media ids exist.
 func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.authenticate(r)
 	if !ok {
@@ -367,8 +370,10 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 		// rendering, never break.
 		thumb := ""
 		if rec.ThumbPath != "" {
-			if b, err := os.ReadFile(s.absThumbPath(rec.ThumbPath)); err == nil {
-				thumb = string(b)
+			if p, perr := s.absThumbPath(rec.ThumbPath); perr == nil {
+				if b, err := os.ReadFile(p); err == nil {
+					thumb = string(b)
+				}
 			}
 		}
 		if thumb == "" {
@@ -382,7 +387,11 @@ func (s *Service) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, body)
 		return
 	}
-	path := s.pathFor(rec.SHA256)
+	path, err := s.pathFor(rec.SHA256)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found", "code": "NOT_FOUND"})
+		return
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found", "code": "NOT_FOUND"})
@@ -537,8 +546,11 @@ func (s *Service) checkRate(ctx context.Context, uid int64) error {
 	return nil
 }
 
-func (s *Service) pathFor(sha string) string {
-	return filepath.Join(s.deps.Dir, sha[:2], sha[2:4], sha)
+func (s *Service) pathFor(sha string) (string, error) {
+	if len(sha) < 4 {
+		return "", fmt.Errorf("mediasvc: bad sha %q", sha)
+	}
+	return safeJoin(s.deps.Dir, filepath.Join(sha[:2], sha[2:4], sha))
 }
 
 // thumbPathFor is the RELATIVE (to media_dir) path of the thumbnail file:
@@ -549,17 +561,46 @@ func (s *Service) thumbPathFor(sha string) string {
 }
 
 // absThumbPath maps the stored relative thumb path to the on-disk absolute
-// path. The stored value is trusted (written by this service); unknown
-// shapes resolve under media_dir anyway via filepath.Join cleaning.
-func (s *Service) absThumbPath(rel string) string {
-	return filepath.Join(s.deps.Dir, rel)
+// path. The stored value is normally written by this service, but it may come
+// from a legacy/edited DB row, so the join is guarded by safeJoin: a value
+// that is absolute or escapes media_dir is refused rather than resolved.
+func (s *Service) absThumbPath(rel string) (string, error) {
+	return safeJoin(s.deps.Dir, rel)
+}
+
+// safeJoin resolves rel under base and refuses anything that could escape the
+// base directory. It rejects: absolute paths, any ".." path component, and a
+// cleaned result whose prefix is not base (defense in depth — a symlinked base
+// or a platform separator quirk must never let an attacker-controlled path
+// reach a file outside media_dir).
+func safeJoin(base, rel string) (string, error) {
+	if strings.TrimSpace(rel) == "" {
+		return "", fmt.Errorf("mediasvc: empty relative path")
+	}
+	if filepath.IsAbs(rel) {
+		return "", fmt.Errorf("mediasvc: absolute path not allowed: %q", rel)
+	}
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == ".." {
+			return "", fmt.Errorf("mediasvc: path escapes base (..): %q", rel)
+		}
+	}
+	baseClean := filepath.Clean(base)
+	joined := filepath.Join(baseClean, rel)
+	if joined != baseClean && !strings.HasPrefix(joined, baseClean+string(filepath.Separator)) {
+		return "", fmt.Errorf("mediasvc: path escapes base: %q", rel)
+	}
+	return joined, nil
 }
 
 // storeThumbFile writes the thumbnail payload (the raw validated value,
 // base64 text) to path atomically: temp file + rename, same as storeFile.
 // Content-addressed by sha, so identical images dedupe.
 func (s *Service) storeThumbFile(rel string, payload []byte) error {
-	path := s.absThumbPath(rel)
+	path, err := s.absThumbPath(rel)
+	if err != nil {
+		return err
+	}
 	if _, err := os.Stat(path); err == nil {
 		return nil // content-addressed dedupe
 	}
@@ -626,7 +667,10 @@ func (s *Service) checkQuota(ctx context.Context, uid int64, incoming int64) err
 }
 
 func (s *Service) storeFile(sha string, body []byte) error {
-	path := s.pathFor(sha)
+	path, err := s.pathFor(sha)
+	if err != nil {
+		return err
+	}
 	if _, err := os.Stat(path); err == nil {
 		return nil // content-addressed dedupe
 	}
