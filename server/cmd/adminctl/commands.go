@@ -17,13 +17,55 @@ func newFlagSet(name string, errw io.Writer) *flag.FlagSet {
 }
 
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderFlags(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return &usageError{msg: "see usage above"}
 		}
 		return &usageError{msg: err.Error()}
 	}
 	return nil
+}
+
+// boolFlag is implemented by flag.Value types that take no argument
+// (flag.Bool). It mirrors the stdlib's internal interface.
+type boolFlag interface{ IsBoolFlag() bool }
+
+// reorderFlags hoists every flag token (and its value, when it takes one)
+// ahead of the positional arguments. Go's flag package stops parsing at the
+// first non-flag token, so without this `users ban 42 --level 2 --days 7`
+// would silently keep the defaults (the documented invocation form in
+// docs/deploy.md). Unknown tokens are treated as bare flags, matching Parse.
+func reorderFlags(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if len(a) > 1 && a[0] == '-' {
+			if strings.Contains(a, "=") {
+				flags = append(flags, a)
+				continue
+			}
+			name := strings.TrimLeft(a, "-")
+			f := fs.Lookup(name)
+			flags = append(flags, a)
+			takesValue := f != nil
+			if takesValue {
+				if bf, ok := f.Value.(boolFlag); ok && bf.IsBoolFlag() {
+					takesValue = false
+				}
+			}
+			if takesValue && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	return append(flags, pos...)
 }
 
 func requireArgs(fs *flag.FlagSet, n int, what string) error {

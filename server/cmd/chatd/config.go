@@ -71,7 +71,10 @@ func defaultConfig() *config {
 		AccessTTLSec:    900,
 		RefreshTTLSec:   30 * 24 * 3600,
 		DevOTP:          false,
-		Flags:           map[string]bool{},
+		// Rate limiting is ON by default: flipping it off is a capacity-test
+		// switch, never a production setting (security-spec §1 红线).
+		RateLimitEnabled: true,
+		Flags:            map[string]bool{},
 	}
 }
 

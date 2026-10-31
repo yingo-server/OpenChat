@@ -147,7 +147,7 @@ func cmdBan(ctx context.Context, e *environment, g globals, args []string, unban
 	level := fs.Int("level", 1, "封禁等级 1..3")
 	until := fs.Int64("until", 0, "绝对到期时间（unix 秒）")
 	reason := fs.String("reason", "", "原因")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderFlags(fs, args)); err != nil {
 		return usagef("%s: %v", name, err)
 	}
 	if fs.NArg() < 1 {
@@ -263,4 +263,44 @@ func formatValue(v any) string {
 		}
 		return string(b)
 	}
+}
+
+// boolFlag is implemented by flag.Value types that take no argument.
+type boolFlag interface{ IsBoolFlag() bool }
+
+// reorderFlags hoists flag tokens (and their values) ahead of positional
+// arguments. Go's flag package stops at the first non-flag token, so without
+// this `ban 42 --days 7 --level 2` would keep the defaults even though the
+// usage text advertises that order.
+func reorderFlags(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if len(a) > 1 && a[0] == '-' {
+			if strings.Contains(a, "=") {
+				flags = append(flags, a)
+				continue
+			}
+			name := strings.TrimLeft(a, "-")
+			f := fs.Lookup(name)
+			flags = append(flags, a)
+			takesValue := f != nil
+			if takesValue {
+				if bf, ok := f.Value.(boolFlag); ok && bf.IsBoolFlag() {
+					takesValue = false
+				}
+			}
+			if takesValue && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+		} else {
+			pos = append(pos, a)
+		}
+	}
+	return append(flags, pos...)
 }
