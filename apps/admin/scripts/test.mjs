@@ -7,7 +7,8 @@
  * - react/react-dom 标记 external，由 node_modules 解析
  */
 import { build } from 'esbuild';
-import { rmSync, globSync, readdirSync, statSync } from 'node:fs';
+import { rmSync, readdirSync, statSync } from 'node:fs';
+import * as nodeFs from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -18,7 +19,22 @@ const outDir = join(root, '.test-out');
 
 rmSync(outDir, { recursive: true, force: true });
 
-const entries = globSync(join(root, 'src', '**', '*.test.ts'));
+// fs.globSync only exists on Node >= 22. CI runners and developer machines
+// differ, so fall back to a plain recursive walk: a test runner that only
+// works on one Node version is a trap.
+function findTests(dir) {
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...findTests(full));
+    else if (entry.name.endsWith('.test.ts')) out.push(full);
+  }
+  return out;
+}
+const entries =
+  typeof nodeFs.globSync === 'function'
+    ? nodeFs.globSync(join(root, 'src', '**', '*.test.ts'))
+    : findTests(join(root, 'src'));
 if (entries.length === 0) {
   console.error('未找到任何 *.test.ts');
   process.exit(1);

@@ -42,6 +42,11 @@ var fadeInFrames = []float64{0.2, 0.5, 1.0}
 // renderFrame draws the full screen for a given state. Pure: no I/O.
 // tab order: 1 overview, 2 users, 3 reports, 4 broadcast, 5 flags, 6 archive, 7 audit.
 func renderFrame(s *uiState) string {
+	// The refresh goroutine mutates the same uiState while the renderer reads
+	// it; take the state lock for the whole frame so a status-bar read can
+	// never race a refresh write (CI -race caught exactly that).
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	var b strings.Builder
 	b.WriteString(renderHeader(s))
 	b.WriteString("\n")

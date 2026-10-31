@@ -222,8 +222,10 @@ func (a *app) run(refreshEvery time.Duration, stop <-chan struct{}) {
 					st.fadeStep = -1
 				}
 			}
-			frame := renderFrame(st)
 			st.mu.Unlock()
+			// renderFrame takes the lock itself; calling it while holding it
+			// would deadlock (and did, once the renderer was made safe).
+			frame := renderFrame(st)
 			if frame != lastRender {
 				fmt.Fprint(a.out, "\x1b[H\x1b[2J"+frame)
 				lastRender = frame
@@ -233,9 +235,7 @@ func (a *app) run(refreshEvery time.Duration, stop <-chan struct{}) {
 			if a.in.Buffered() > 0 {
 				line, _ := a.in.ReadString('\n')
 				a.handleKeys(strings.TrimRight(line, "\r\n"))
-				st.mu.Lock()
 				frame := renderFrame(st)
-				st.mu.Unlock()
 				fmt.Fprint(a.out, "\x1b[H\x1b[2J"+frame)
 				lastRender = frame
 				continue
