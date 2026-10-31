@@ -2,6 +2,10 @@
 # HTTP 由 acceptor 限流守护。压测工具刻意按限流档位错峰（125ms/条），
 # 以测「在合法速率下的稳定性」而非「攻击面」。
 # L4 断连语义（超限断连 + 退避）本身是被测目标之一：压力下出现断连属预期。
+#
+# 缓存策略：构建产物（chatd/stressd 二进制）与 Go 构建缓存按 HEAD commit hash
+# 精确缓存。同一次提交重复跑（或 workflow_dispatch 改参数重跑）时跳过全部
+# 构建步骤，直接进入压测——只有压测负载本身是每次执行的。
 
 name: Stress
 
@@ -17,27 +21,62 @@ on:
       assert:
         description: enforce thresholds (true/false)
         default: "false"
+      skip-cache:
+        description: force rebuild (ignore cache)
+        default: "false"
   push:
     tags: ['v*']
 
 permissions:
   contents: read
 
+env:
+  CACHE_KEY_PREFIX: stress-bin
+
 jobs:
   stress:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
 
+      # ---- 缓存的构建产物 ----
+      - name: Compute cache key
+        id: key
+        run: |
+          echo "hash=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "ver=$(git describe --tags --always 2>/dev/null)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore build cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            /tmp/chatd
+            /tmp/stressd
+          key: ${{ env.CACHE_KEY_PREFIX }}-${{ steps.key.outputs.hash }}-${{ inputs.skip-cache == 'true' && github.run_id || 'shared' }}
+          restore-keys: |
+            ${{ env.CACHE_KEY_PREFIX }}-${{ steps.key.outputs.hash }}-
+
       - name: Build chatd + stress tool
+        # cache-hit 且未强制重建 → 跳过编译（省 60-90s 的两次 go build）
+        if: steps.cache.outputs.cache-hit != 'true' || inputs.skip-cache == 'true'
         run: |
           go build -o /tmp/chatd ./server/cmd/chatd
           go build -o /tmp/stressd ./scripts/stress
 
+      - name: Verify binaries
+        run: |
+          test -x /tmp/chatd && test -x /tmp/stressd && echo "binaries ready (cached or fresh)"
+          /tmp/chatd -h 2>&1 | head -2 || true
+
+      # ---- 压测（总是执行）----
       - name: Run stress (HTTP + WS)
         env:
           CHATD_BIN: /tmp/chatd
@@ -55,7 +94,7 @@ jobs:
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: stress-result
+          name: stress-result-${{ github.run_id }}
           path: |
             result.json
             stress.log
