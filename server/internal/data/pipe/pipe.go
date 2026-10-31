@@ -62,6 +62,10 @@ type Pipe struct {
 	writeCh chan ReadyMsg
 	outCh   chan *env
 
+	// emit converts an outbound env into a transport frame. Per instance (see
+	// SetEmit): a package-level global raced between two assemblies.
+	emit EmitFunc
+
 	// FrameSource converts *proto.Frame → Req (assembly installs the
 	// chatpb-backed one; default is the shell source).
 	FrameSource FrameSource
@@ -136,6 +140,7 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 	p.msg = &msgDomain{conv: hot, cache: p.cache, msg: hot, dedup: p.dedup}
 	p.mc = newMemberCache(hot)
 	p.conv = &convDomain{conv: hot, id: hot, cache: p.cache, members: p.mc}
+	p.emit = DefaultEmit
 	p.fanout = newFanoutPlane(p.mc, p.outCh, lg)
 	p.ident = identity.New(hot, p.cache)
 	p.sys = &sysDomain{sys: hot}
@@ -178,7 +183,7 @@ func (p *Pipe) Run(ctx context.Context) {
 func (p *Pipe) sender() {
 	defer close(p.senderDone)
 	for e := range p.outCh {
-		if err := p.peer.Send(Emit(e)); err != nil {
+		if err := p.peer.Send(p.emit(e)); err != nil {
 			p.lg.Warn("pipe: peer send failed", "err", err.Error())
 		}
 	}

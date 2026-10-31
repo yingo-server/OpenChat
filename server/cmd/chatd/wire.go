@@ -495,8 +495,8 @@ func isJSONPayload(b []byte) bool {
 // "data" (the verifier's capability table is keyed by it) and ConnID is left 0
 // on purpose: the data layer does not know user connections, and a conn id from
 // this process would collide with the gateway's own numbering.
-func installEmit() {
-	pipe.SetEmit(func(kind uint32, requestID string, convID, userID uint64, payload []byte) *proto.Frame {
+func installEmit(p *pipe.Pipe) {
+	p.SetEmit(func(kind uint32, requestID string, convID, userID uint64, payload []byte) *proto.Frame {
 		env := &chatpb.Envelope{
 			Kind:      kind,
 			RequestId: requestID,

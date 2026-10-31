@@ -55,9 +55,10 @@ type EmitFunc func(*env) *proto.Frame
 // DefaultEmit is the shell converter.
 func DefaultEmit(e *env) *proto.Frame { return &proto.Frame{Kind: e.Kind} }
 
-// Emit is the installed converter (see EmitFunc). Called from the sender
-// goroutine only.
-var Emit EmitFunc = DefaultEmit
+// emitFor is the per-Pipe converter. It used to be a package-level global,
+// which meant two Pipes in one process (two chatd assemblies in tests, or a
+// future split deployment) overwrote each other's emitter — CI -race caught
+// exactly that. Kept as a method so the wiring is per instance.
 
 // TestPeer is a minimal transport.Peer for pipe tests (chan-based).
 type TestPeer struct {
@@ -114,12 +115,12 @@ var _ transport.Peer = (*TestPeer)(nil)
 // unexported env type. The adapter receives the plain fields, so cmd/ can build
 // a *proto.Frame (Envelope + FrameMeta) while the pipe keeps its wire-agnostic
 // outbound representation.
-func SetEmit(fn func(kind uint32, requestID string, convID, userID uint64, payload []byte) *proto.Frame) {
+func (p *Pipe) SetEmit(fn func(kind uint32, requestID string, convID, userID uint64, payload []byte) *proto.Frame) {
 	if fn == nil {
-		Emit = DefaultEmit
+		p.emit = DefaultEmit
 		return
 	}
-	Emit = func(e *env) *proto.Frame {
+	p.emit = func(e *env) *proto.Frame {
 		if e == nil {
 			return nil
 		}

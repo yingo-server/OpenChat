@@ -331,12 +331,11 @@ func TestRunWithPeer(t *testing.T) {
 	p.FrameSource = func(*proto.Frame) Req { return req }
 
 	var got *proto.Frame
-	Emit = func(e *env) *proto.Frame {
+	p.emit = func(e *env) *proto.Frame {
 		f := &proto.Frame{Kind: e.Kind}
 		got = f
 		return f
 	}
-	defer func() { Emit = DefaultEmit }()
 
 	go p.Run(ctx)
 	peer.Inject(&proto.Frame{Kind: 101})

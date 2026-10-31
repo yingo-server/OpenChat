@@ -237,7 +237,6 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 		lg.Error("audit store degraded: cold DB unavailable, audit events will not persist")
 	}
 
-	installEmit()
 	p := pipe.New(a.dataPeer, hot, pipe.ColdDeps{Cold: coldDB, Audit: coldDB}, a.policy, log.For("data"))
 	p.FrameSource = newFrameSource(func(connID uint64) int64 {
 		// Late binding: the gateway exists only after step 9.
@@ -250,6 +249,9 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 		return 0
 	}, log.For("chatd"))
 	a.pipe = p
+	// The emitter is per-instance now, so it must be installed on the pipe
+	// that was just built (it used to be a package-level global set earlier).
+	installEmit(p)
 
 	// 9. auth service (same HTTP port as the gateway).
 	authSvc, err := authsvc.New(authsvc.Deps{
