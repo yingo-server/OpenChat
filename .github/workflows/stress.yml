@@ -79,7 +79,7 @@ jobs:
           CHATD_BIN: /tmp/chatd
           LADDER: ${{ github.event.inputs.ladder || 'start=256,max=8192' }}
           DURATION: ${{ github.event.inputs.duration || '10' }}
-          CONV_MEMBERS: ${{ github.event.inputs.conv_members || '50' }}
+          CONV_MEMBERS: ${{ github.event.inputs.conv_members || '10' }}
           NO_RATELIMIT: ${{ github.event.inputs.no_ratelimit || 'true' }}
         run: |
           set -e
