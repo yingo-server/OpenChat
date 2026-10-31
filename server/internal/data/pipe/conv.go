@@ -224,8 +224,14 @@ func (d *convDomain) addMember(ctx context.Context, actor int64, cid uint64, bod
 	if err != nil {
 		return convResult{Op: convOpAddMember, Error: err.Error()}
 	}
-	return convResult{Op: convOpAddMember, OK: true, Cid: int64(cid), Payload: pl,
-		Events: convEvents(int64(cid), members, pl)}
+	evs := convEvents(int64(cid), members, pl)
+	for _, rawUID := range p.UserIDs {
+		uid := int64(rawUID)
+		if m, ok := memberRow(members, uid); ok {
+			evs = append(evs, memberUpdateEvents(int64(cid), "add", *m, actor, members)...)
+		}
+	}
+	return convResult{Op: convOpAddMember, OK: true, Cid: int64(cid), Payload: pl, Events: evs}
 }
 
 func (d *convDomain) removeMember(ctx context.Context, actor int64, cid uint64, body []byte) convResult {
@@ -235,9 +241,6 @@ func (d *convDomain) removeMember(ctx context.Context, actor int64, cid uint64, 
 	}
 	if cid == 0 {
 		cid = p.ConvID
-	}
-	if _, err := d.conv.GetConvMeta(ctx, int64(cid)); err != nil {
-		return convResult{Op: convOpRemoveMember, Error: err.Error()}
 	}
 	actorMember, err := d.conv.CheckMember(ctx, int64(cid), actor)
 	if err != nil || actorMember.Role < 1 {
@@ -257,8 +260,12 @@ func (d *convDomain) removeMember(ctx context.Context, actor int64, cid uint64, 
 	if err != nil {
 		return convResult{Op: convOpRemoveMember, Error: err.Error()}
 	}
-	return convResult{Op: convOpRemoveMember, OK: true, Cid: int64(cid), Payload: pl,
-		Events: convEvents(int64(cid), members, pl)}
+	evs := convEvents(int64(cid), members, pl)
+	for _, rawUID := range p.UserIDs {
+		removed := store.Member{Cid: int64(cid), UID: int64(rawUID)}
+		evs = append(evs, memberUpdateEvents(int64(cid), "remove", removed, actor, members)...)
+	}
+	return convResult{Op: convOpRemoveMember, OK: true, Cid: int64(cid), Payload: pl, Events: evs}
 }
 
 func (d *convDomain) setRole(ctx context.Context, actor int64, cid uint64, body []byte) convResult {
@@ -282,7 +289,16 @@ func (d *convDomain) setRole(ctx context.Context, actor int64, cid uint64, body 
 		}
 		d.cache.InvalidateMember(cache.MemberKey{Cid: int64(cid), UID: int64(rawUID)})
 	}
-	return convResult{Op: convOpSetRole, OK: true, Cid: int64(cid)}
+	members, lerr := d.conv.ListMembers(ctx, int64(cid))
+	if lerr != nil {
+		return convResult{Op: convOpSetRole, Error: lerr.Error()}
+	}
+	var evs []convEvent
+	for _, rawUID := range p.UserIDs {
+		m := store.Member{Cid: int64(cid), UID: int64(rawUID), Role: int(p.Role)}
+		evs = append(evs, memberUpdateEvents(int64(cid), "role", m, actor, members)...)
+	}
+	return convResult{Op: convOpSetRole, OK: true, Cid: int64(cid), Events: evs}
 }
 
 func (d *convDomain) getMeta(ctx context.Context, actor int64, cid uint64) convResult {
@@ -342,6 +358,59 @@ func (d *convDomain) snapshot(ctx context.Context, cid int64) ([]byte, []store.M
 	}
 	pl, err := wire.Marshal(out)
 	return pl, ms, err
+}
+
+// memberRow finds one member in a snapshot list.
+func memberRow(members []store.Member, uid int64) (*store.Member, bool) {
+	for i := range members {
+		if members[i].UID == uid {
+			return &members[i], true
+		}
+	}
+	return nil, false
+}
+
+// memberUpdateEvents(cid, op, target, byUID, members) fans one 212 per member
+// plus one full 202 snapshot, for op-driven member-change events.
+func memberUpdateEvents(cid int64, op string, target store.Member, byUID int64, members []store.Member) []convEvent {
+	body, err := wire.Marshal(wire.MemberUpdate{
+		ConvID: uint64(cid), Op: op, ByUserID: uint64(byUID),
+		Member: &wire.Member{
+			UserID: uint64(target.UID), Role: uint32(target.Role),
+			JoinedAt: target.JoinedAt, MutedUntil: target.MutedUntil,
+		},
+	})
+	if err != nil {
+		return nil
+	}
+	// Both kinds ride along: 212 MEMBER_UPDATE (the dedicated event kind) and
+	// 202 CONV_PAYLOAD (the full-snapshot refresh every client already
+	// handles). Delivering both keeps old and new consumers in sync.
+	full, ferr := wire.Marshal(fullConvPayloadForEvents(cid, members))
+	evs := make([]convEvent, 0, 2*len(members))
+	for _, m := range members {
+		evs = append(evs, convEvent{
+			Kind: uint32(kinds.KindMemberUpdate), UserID: uint64(m.UID), ConvID: uint64(cid), Payload: body,
+		})
+		if ferr == nil {
+			evs = append(evs, convEvent{
+				Kind: uint32(kinds.KindConvPayload), UserID: uint64(m.UID), ConvID: uint64(cid), Payload: full,
+			})
+		}
+	}
+	return evs
+}
+
+// fullConvPayloadForEvents reuses the convDomain's snapshot marshal shape
+// (wire.ConvPayload camelCase) without re-querying the store.
+func fullConvPayloadForEvents(cid int64, members []store.Member) wire.ConvPayload {
+	out := wire.ConvPayload{ConvID: uint64(cid)}
+	for _, m := range members {
+		out.Members = append(out.Members, wire.Member{
+			UserID: uint64(m.UID), Role: uint32(m.Role), JoinedAt: m.JoinedAt, MutedUntil: m.MutedUntil,
+		})
+	}
+	return out
 }
 
 func convEvents(cid int64, members []store.Member, payload []byte) []convEvent {

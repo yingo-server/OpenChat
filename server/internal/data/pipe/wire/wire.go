@@ -158,6 +158,73 @@ type Member struct {
 	MutedUntil int64  `json:"mutedUntil,omitempty"`
 }
 
+// ---------------------------------------------------------------------------
+// 瞬态信令（回执/输入中/presence）与消息撤回 —— 与前端 payload.ts 的
+// JSON 形态一一对应（snake_case 沿用 proto/chat.proto 字段名）。
+// ---------------------------------------------------------------------------
+
+// Receipt mirrors chat.v1.Receipt (MSG_READ 104 / MSG_DELIVERED 105).
+// rtype: 0 = read, 1 = delivered. The server ALWAYS overwrites user_id with
+// the authenticated sender; the client's value is never trusted.
+type Receipt struct {
+	MsgID  uint64 `json:"msg_id,omitempty"`
+	UserID uint64 `json:"user_id,omitempty"`
+	At     uint64 `json:"at,omitempty"`
+	Rtype  int32  `json:"rtype,omitempty"`
+}
+
+// ReceiptPayload mirrors MessagePayload.receipts: one frame may carry several
+// receipts, or a single flat receipt (the client's encodeReceipt form).
+type ReceiptPayload struct {
+	Receipts []Receipt `json:"receipts,omitempty"`
+	// 单条形态（前端 encodeReceipt 的 flat JSON）——归一化进 Receipts。
+	MsgID  uint64 `json:"msg_id,omitempty"`
+	UserID uint64 `json:"user_id,omitempty"`
+	At     uint64 `json:"at,omitempty"`
+	Rtype  int32  `json:"rtype,omitempty"`
+}
+
+// TypingSignal mirrors chat.v1.Typing + the client's TypingPayload extras.
+// Typing has NO omitempty: a "stopped typing" frame must survive the
+// round-trip as {"typing": false}, not an absent field.
+type TypingSignal struct {
+	ConvID uint64 `json:"conv_id,omitempty"`
+	UserID uint64 `json:"user_id,omitempty"`
+	Typing bool   `json:"typing"`
+	At     int64  `json:"at,omitempty"`
+}
+
+// PresenceSignal is the unified presence payload. Two forms share it:
+//   - client uplink 400 (PRESENCE_UPDATE): {user_id, status, at}, status is
+//     the client-side string enum "online"|"away"|"offline"
+//   - user-layer internal 401/402 (connect/disconnect): {user_id, online}
+type PresenceSignal struct {
+	UserID uint64 `json:"user_id,omitempty"`
+	Status string `json:"status,omitempty"`
+	// Online is a pointer so a legitimate false survives the round-trip.
+	Online *bool `json:"online,omitempty"`
+	At     int64 `json:"at,omitempty"`
+}
+
+// MsgMutation mirrors chat.v1.MsgDelete/MsgRecall (106/107/108). The recall
+// request and the recall broadcast share this flat snake_case shape.
+type MsgMutation struct {
+	MsgID       uint64 `json:"msg_id,omitempty"`
+	ConvID      uint64 `json:"conv_id,omitempty"`
+	Text        string `json:"text,omitempty"`
+	ForEveryone bool   `json:"for_everyone,omitempty"`
+}
+
+// MemberUpdate is the 212 MEMBER_UPDATE event body. camelCase (the conv
+// payload wire convention) so a future client handler can decode it with
+// decodeConvPayload-compatible tooling; op ∈ "add"|"remove"|"role".
+type MemberUpdate struct {
+	ConvID   uint64  `json:"convId,omitempty"`
+	Op       string  `json:"op,omitempty"`
+	Member   *Member `json:"member,omitempty"`
+	ByUserID uint64  `json:"byUserId,omitempty"`
+}
+
 // ConvPayload mirrors chat.v1.ConvPayload.
 type ConvPayload struct {
 	ConvID    uint64   `json:"convId,omitempty"`

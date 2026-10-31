@@ -3,6 +3,7 @@ import { useAuth } from './auth';
 import { Login } from './ui/views/Login';
 import { Shell } from './ui/layout/Shell';
 import { findNav, NAV_ITEMS } from './ui/layout/nav';
+import { Dashboard } from './ui/views/Dashboard';
 import { Metrics } from './ui/views/Metrics';
 import { Users } from './ui/views/Users';
 import { Reports } from './ui/views/Reports';
@@ -17,14 +18,14 @@ function useHashRoute(): [string, (path: string) => void] {
   const read = () => {
     const raw = window.location.hash.replace(/^#/, '');
     const path = raw.split('?')[0] ?? '';
-    return NAV_ITEMS.some((item) => item.path === path) ? path : '/metrics';
+    return NAV_ITEMS.some((item) => item.path === path) ? path : '/dashboard';
   };
   const [path, setPath] = useState(read);
 
   useEffect(() => {
     const onChange = () => setPath(read());
     window.addEventListener('hashchange', onChange);
-    if (!window.location.hash) window.location.replace('#/metrics');
+    if (!window.location.hash) window.location.replace('#/dashboard');
     return () => window.removeEventListener('hashchange', onChange);
   }, []);
 
@@ -49,6 +50,8 @@ function Splash() {
 
 function View({ path }: { path: string }) {
   switch (path) {
+    case '/dashboard':
+      return <Dashboard />;
     case '/users':
       return <Users />;
     case '/reports':

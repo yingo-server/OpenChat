@@ -7,6 +7,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -22,7 +23,13 @@ const (
 	// EnvAdminUser is the bootstrap super-admin username.
 	EnvAdminUser = "OPENCHAT_ADMIN_USER"
 	// EnvAdminPassword is the bootstrap password (>= PasswordMinLen chars).
+	// Legacy path: the password lives in the process environment. It is kept
+	// for compatibility but prints a warning.
 	EnvAdminPassword = "OPENCHAT_ADMIN_PASSWORD"
+	// EnvAdminPasswordFile points at a file holding the bootstrap password.
+	// Preferred: the secret never appears in the environment or in `ps` output.
+	// The file must be a regular file, owned by the running user, mode 0600.
+	EnvAdminPasswordFile = "OPENCHAT_ADMIN_PASS_FILE"
 )
 
 // bootstrapTimeout bounds the whole first-run provisioning.
@@ -118,7 +125,40 @@ func adminBootstrapVars(getenv func(string) string) (user, pass string) {
 	if getenv == nil {
 		return "", ""
 	}
-	return strings.TrimSpace(getenv(EnvAdminUser)), getenv(EnvAdminPassword)
+	user = strings.TrimSpace(getenv(EnvAdminUser))
+	// Preferred: a password file (the secret never enters the environment).
+	if path := strings.TrimSpace(getenv(EnvAdminPasswordFile)); path != "" {
+		if raw, err := readPasswordFile(path); err == nil {
+			return user, raw
+		} else {
+			return user, ""
+		}
+	}
+	return user, getenv(EnvAdminPassword)
+}
+
+// readPasswordFile reads a bootstrap password from disk. The file must be a
+// regular file (not a symlink), owned by the current user, and not readable by
+// group or others — otherwise the secret is exposed to other local users.
+func readPasswordFile(path string) (string, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("password file must not be a symlink")
+	}
+	if !fi.Mode().IsRegular() {
+		return "", errors.New("password file must be a regular file")
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("password file mode %o is too permissive (want 0600)", fi.Mode().Perm())
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimRight(string(raw), "\r\n"), nil
 }
 
 // newTOTPSecret returns a 160-bit base32 secret (RFC 4226 recommends >= 128

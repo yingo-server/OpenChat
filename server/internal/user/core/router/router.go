@@ -174,9 +174,21 @@ func (r *Router) handleLocal(ev *UpEvent) {
 		}
 		payload, _ := (&chatpb.FeatureFlags{Version: version, Flags: flags}).Marshal()
 		r.writeEnv(ev.Conn, &chatpb.Envelope{Kind: kinds.KindFeatureFlags, AckId: env.Id, Payload: payload})
+	case kinds.KindPresenceSubscribe, kinds.KindPresenceUnsubscribe:
+		// 401/402 are USER-LAYER INTERNAL events (a connection opened/closed).
+		// Accepting them from a client would let anyone forge another user's
+		// online state (P0 in the security review), so they are refused here.
+		r.writeEnv(ev.Conn, &chatpb.Envelope{Kind: kinds.KindError,
+			Payload: mustMarshal(&chatpb.Error{Code: 4003, Reason: "presence events are server-originated"})})
 	default:
 		r.forward(ev, env)
 	}
+}
+
+// mustMarshal is a tiny helper for locally built error payloads.
+func mustMarshal(m interface{ Marshal() ([]byte, error) }) []byte {
+	b, _ := m.Marshal()
+	return b
 }
 
 // forward 把业务帧 Wrap 成内部帧交给 forwarder。

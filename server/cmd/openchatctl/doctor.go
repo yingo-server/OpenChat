@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yingo-server/OpenChat/server/internal/pkg/i18n"
 )
 
 // Check statuses (doctor vocabulary).
@@ -96,9 +98,18 @@ func cmdDoctor(ctx context.Context, e *environment, g globals, args []string) er
 }
 
 func renderDoctor(e *environment, rep doctorReport, fails, warns int) {
+	// TTY → colored ✓/⚠/✗; non-TTY (pipe/CI) → plain text (existing format).
+	colored := i18n.StdinIsTTY() && e.getenv("NO_COLOR_DISABLED") == ""
+	sym := map[string]string{checkOK: "ok", checkWarn: "warn", checkFail: "fail", checkSkip: "skip"}
+	if colored {
+		sym = map[string]string{
+			checkOK: "\033[32m✓\033[0m", checkWarn: "\033[33m⚠\033[0m",
+			checkFail: "\033[31m✗\033[0m", checkSkip: "-",
+		}
+	}
 	e.printf("doctor: %d checks\n", len(rep.Checks))
 	for _, c := range rep.Checks {
-		e.printf("  [%-4s] %-18s %s\n", c.Status, c.Name, c.Detail)
+		e.printf("  [%s] %-18s %s\n", sym[c.Status], c.Name, c.Detail)
 	}
 	switch {
 	case fails > 0:

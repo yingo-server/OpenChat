@@ -139,6 +139,7 @@ export class WsClient implements NetClient {
       this.lastPongAt = this.now();
       this.setState('online');
       this.sendResumeFrames();
+      this.requestFeatureFlags();
       this.startHeartbeat();
     });
 
@@ -209,6 +210,19 @@ export class WsClient implements NetClient {
       });
       this.send(env);
     }
+  }
+
+  /**
+   * 连接建立后主动拉取 feature flags（kind 12）。
+   * 服务端 router.go 对 FEATURE_FLAGS 做本地应答：回当前进程 flag 快照。
+   * 客户端不主动问就永远拿不到 flags（UI 能力开关恒空 → 判定恒真，P0-4）。
+   */
+  private requestFeatureFlags(): void {
+    const env = createEnvelope({
+      kind: KINDS.FEATURE_FLAGS,
+      requestId: 'feature-flags',
+    });
+    this.send(env);
   }
 
   private startHeartbeat(): void {

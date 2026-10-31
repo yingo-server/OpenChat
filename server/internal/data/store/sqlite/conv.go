@@ -173,7 +173,6 @@ LIMIT 1`, uid1, uid2).Scan(&cid)
 	return cid, nil
 }
 
-// NextSeq peeks cid's next unconsumed seq WITHOUT reserving it.
 func (s *convStore) NextSeq(ctx context.Context, cid int64) (int64, error) {
 	var next int64
 	err := s.db.QueryRowContext(ctx,
@@ -185,4 +184,31 @@ func (s *convStore) NextSeq(ctx context.Context, cid int64) (int64, error) {
 		return 0, fmt.Errorf("sqlite: next seq cid=%d: %w", cid, err)
 	}
 	return next, nil
+}
+
+// MemberPeersOf implements store.ConvStore.MemberPeersOf: the deduplicated
+// set of OTHER uids sharing at least one conversation with uid. Parameterized
+// query only — no string concatenation.
+func (s *convStore) MemberPeersOf(ctx context.Context, uid int64) ([]int64, error) {
+	if uid <= 0 {
+		return nil, fmt.Errorf("sqlite: MemberPeersOf: invalid uid %d", uid)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT m2.uid
+FROM conv_members m1
+JOIN conv_members m2 ON m2.cid = m1.cid
+WHERE m1.uid = ? AND m2.uid <> ?`, uid, uid)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: member peers uid=%d: %w", uid, err)
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var other int64
+		if err := rows.Scan(&other); err != nil {
+			return nil, fmt.Errorf("sqlite: scan member peer: %w", err)
+		}
+		out = append(out, other)
+	}
+	return out, rows.Err()
 }

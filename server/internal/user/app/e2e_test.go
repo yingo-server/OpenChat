@@ -173,6 +173,15 @@ func TestEndToEnd(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("bridge did not receive MSG_SEND")
 	}
+	// The connect lifecycle now emits a 401 presence event before user
+	// traffic; skip it (and only it) so the assertion below sees MSG_SEND.
+	if upstream.Kind == kinds.KindPresenceSubscribe {
+		select {
+		case upstream = <-bridgePeer.up:
+		case <-time.After(3 * time.Second):
+			t.Fatal("bridge did not receive MSG_SEND after presence event")
+		}
+	}
 	if upstream.Kind != kinds.KindMsgSend {
 		t.Fatalf("bridge kind = %d", upstream.Kind)
 	}

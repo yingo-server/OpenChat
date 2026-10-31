@@ -90,6 +90,10 @@ func DefaultConfig() Config {
 			kinds.KindPresenceUnsubscribe: {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, Silent: true},
 			kinds.KindMsgRead:             {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256},
 			kinds.KindMsgDelivered:        {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256},
+			// 撤回：比 MSG_SEND 更严（撤回是低频管理性操作）。
+			kinds.KindMsgDelete: {Rate: 2, Burst: 5, Capacity: 10, MaxPayload: 256},
+			kinds.KindMsgRecall: {Rate: 2, Burst: 5, Capacity: 10, MaxPayload: 256},
+			// MEMBER_UPDATE 没有客户端上行（服务端事件），默认规则兜底即可。
 			kinds.KindSyncRequest:         {Rate: 2, Burst: 4, Capacity: 8, MaxPayload: 512},
 			kinds.KindMediaPresignRequest: {Rate: 1.0 / 30.0, Burst: 2, Capacity: 4, MaxPayload: 512},
 		},

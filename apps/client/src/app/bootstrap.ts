@@ -151,6 +151,7 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
     },
     toast: (key, params) => toast.show(t(key, params)),
     flag: (key) => useSessionStore.getState().flags[key],
+    flags: () => useSessionStore.getState().flags,
   };
 
   const convPort: ConvPort = {

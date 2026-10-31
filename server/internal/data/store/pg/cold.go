@@ -60,7 +60,7 @@ func OpenDriver(driverName, dsn string) (*ColdDB, error) {
 func (c *ColdDB) Close() error { return c.DB.Close() }
 
 var (
-	_ store.ArchiveTarget = (*ColdDB)(nil)
+	_ store.ArchiveSource = (*ColdDB)(nil)
 	_ store.AuditJournal  = (*ColdDB)(nil)
 )
 
@@ -73,8 +73,6 @@ VALUES ` // + "($1,$2,$3,$4,$5,$6),(...)" built by buildPlaceholders (values sta
 const copyTextSQL = `INSERT INTO msg.messages_text
 (msg_id, cid, sender_id, text, sent_at)
 VALUES ` // + placeholders — mirror rows, best-effort plain text projection
-
-const deleteHotSQL = `DELETE FROM msg_messages_hot WHERE sent_at < $1`
 
 // buildPlaceholders builds "(($n*6)+1, ...)($...),..." value groups for a
 // multi-row INSERT. This assembles PLACEHOLDER INDICES ONLY — never data.
@@ -161,18 +159,6 @@ func (c *ColdDB) copyChunk(ctx context.Context, part []store.HotMsg) (int64, err
 		// a later re-run heals the mirror because the copy is idempotent.
 		_ = err
 	}
-	return n, nil
-}
-
-// DeleteHot removes hot rows older than the cutoff timestamp. Only ever
-// called by the archiver AFTER CopyBatch committed those rows (ordering is
-// the archiver's contract — see api.go).
-func (c *ColdDB) DeleteHot(ctx context.Context, before int64) (int64, error) {
-	res, err := c.DB.ExecContext(ctx, deleteHotSQL, before)
-	if err != nil {
-		return 0, fmt.Errorf("pg: delete hot: %w", err)
-	}
-	n, _ := res.RowsAffected()
 	return n, nil
 }
 

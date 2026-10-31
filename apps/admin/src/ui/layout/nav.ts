@@ -25,6 +25,13 @@ export const NAV_GROUPS: Array<{ title: string; items: NavItem[] }> = [
     title: '概览',
     items: [
       {
+        path: '/dashboard',
+        label: '仪表盘',
+        group: '仪表盘',
+        icon: IconGauge,
+        description: '全局统计、实时事件流、健康矩阵',
+      },
+      {
         path: '/metrics',
         label: '数据面板',
         group: '数据面板',

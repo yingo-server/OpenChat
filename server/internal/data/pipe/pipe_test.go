@@ -89,6 +89,12 @@ func (h hotBundle) GetPenalty(ctx context.Context, s, p string) (*store.Penalty,
 func (h hotBundle) SetPenalty(ctx context.Context, p *store.Penalty) error {
 	return h.sys.SetPenalty(ctx, p)
 }
+func (h hotBundle) MarkRecalled(ctx context.Context, cid, msgID, senderID, at int64) (*store.HotMsg, error) {
+	return h.w.MarkRecalled(ctx, cid, msgID, senderID, at)
+}
+func (h hotBundle) MemberPeersOf(ctx context.Context, uid int64) ([]int64, error) {
+	return h.conv.MemberPeersOf(ctx, uid)
+}
 
 func newTestPipe(t *testing.T) (*Pipe, *pipefakes.FakeMsgStore, *pipefakes.FakeConvStore, *pipefakes.FakeSysStore) {
 	t.Helper()

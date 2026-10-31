@@ -60,10 +60,14 @@ export function selectFlag(state: SessionStore, key: string, fallback = ''): str
   return state.flags[key] ?? fallback;
 }
 
+/**
+ * 布尔 flag 判定：与服务端 flagString 的输出对齐（"true" 才算开）。
+ * 与 isFlagEnabled 同口径，缺失按 fallback 处理。
+ */
 export function selectBooleanFlag(state: SessionStore, key: string, fallback = false): boolean {
   const value = state.flags[key];
   if (value === undefined) return fallback;
-  return value === '1' || value === 'true';
+  return value === 'true';
 }
 
 /** 游客不能发媒体；运营也可通过 flag 全局关闭 */

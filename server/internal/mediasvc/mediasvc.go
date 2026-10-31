@@ -17,6 +17,7 @@
 package mediasvc
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -562,6 +563,9 @@ func validateThumbWaveform(thumb, wave string) error {
 	if len(thumb) > maxThumbBytes {
 		return errors.New("thumb_data too large (max 8KB)")
 	}
+	if err := validateThumbPayload(thumb); err != nil {
+		return err
+	}
 	if wave == "" {
 		return nil
 	}
@@ -580,6 +584,55 @@ func validateThumbWaveform(thumb, wave string) error {
 		if v != math.Trunc(v) || v < 0 || v > 100 {
 			return errors.New("waveform values must be integers 0-100")
 		}
+	}
+	return nil
+}
+
+// validateThumbPayload checks that thumb_data is an inline image we are willing
+// to store and later render. Accepts a bare base64 body or a data: URI, but
+// ONLY for raster formats (JPEG/PNG/WEBP/GIF). An attacker-supplied
+// data:image/svg+xml or data:text/html would be inert in <img> today, yet it
+// is a stored XSS payload the moment any consumer renders it as HTML.
+func validateThumbPayload(thumb string) error {
+	if thumb == "" {
+		return nil
+	}
+	raw := thumb
+	if strings.HasPrefix(strings.ToLower(raw), "data:") {
+		comma := strings.IndexByte(raw, ',')
+		if comma < 0 {
+			return errors.New("thumb_data data URI is malformed")
+		}
+		meta := strings.ToLower(raw[:comma])
+		switch {
+		case strings.Contains(meta, "svg"), strings.Contains(meta, "xml"),
+			strings.Contains(meta, "html"), strings.Contains(meta, "javascript"):
+			return errors.New("thumb_data may only be a raster image (jpeg/png/webp/gif)")
+		}
+		raw = raw[comma+1:]
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return errors.New("thumb_data is empty")
+	}
+	dec, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		// tolerate URL-safe / unpadded variants
+		dec, err = base64.RawStdEncoding.DecodeString(strings.TrimRight(raw, "="))
+		if err != nil {
+			return errors.New("thumb_data must be valid base64")
+		}
+	}
+	if len(dec) < 12 {
+		return errors.New("thumb_data payload too short to be an image")
+	}
+	switch {
+	case bytes.HasPrefix(dec, []byte{0xFF, 0xD8, 0xFF}):
+	case bytes.HasPrefix(dec, []byte{0x89, 'P', 'N', 'G'}):
+	case bytes.HasPrefix(dec, []byte("GIF8")):
+	case len(dec) >= 12 && string(dec[0:4]) == "RIFF" && string(dec[8:12]) == "WEBP":
+	default:
+		return errors.New("thumb_data must be a JPEG/PNG/WEBP/GIF image")
 	}
 	return nil
 }

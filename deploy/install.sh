@@ -25,7 +25,19 @@ STATE="${OPENCHAT_STATE:-/var/lib/openchat}"
 MODE="embedded"
 START=1
 SKIP_KEYS=0
+DOMAIN=""
+ADMIN_USER=""
+ADMIN_PASS_FILE=""
+TURN_SERVER=""
+LANG_FLAG=""
 
+# Color helpers: green ✓ / yellow ⚠ / red ✗ — auto-stripped when stdout is
+# not a TTY (CI/logs).
+if [ -t 1 ]; then
+  ok()   { printf '\033[32m✓\033[0m %s\n' "$*"; }
+else
+  ok()   { printf 'ok: %s\n' "$*"; }
+fi
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -34,16 +46,39 @@ usage() {
   cat <<'EOF'
 用法: install.sh [选项]
 
-  --split         安装 split 形态（bridge/user/data/admin 四个 unit）
-  --no-start      不执行 systemctl enable --now（仅落盘）
-  --skip-keys     跳过密钥生成（密钥由 KMS/配置管理下发时使用）
-  --prefix DIR    安装前缀（默认 /opt/openchat）
-  --etc DIR       配置目录（默认 /etc/openchat）
-  --state DIR     数据目录（默认 /var/lib/openchat）
-  -h, --help      显示本帮助
+  --split          安装 split 形态（bridge/user/data/admin 四个 unit）
+  --no-start       不执行 systemctl enable --now（仅落盘）
+  --skip-keys      跳过密钥生成（密钥由 KMS/配置管理下发时使用）
+  --prefix DIR     安装前缀（默认 /opt/openchat）
+  --etc DIR        配置目录（默认 /etc/openchat）
+  --state DIR      数据目录（默认 /var/lib/openchat）
+  --domain URL     公网来源，写进 openchat.toml 的 public_origin 注释头
+  --admin-user U   首启管理员用户名（写入 /etc/openchat/env，0600）
+  --admin-pass-file PATH
+                   管理员密码文件（首启引导，写入 env，0600）。
+                   绝不接受命令行明文密码——只收文件，或在 TTY 下用
+                   deploy/install-interactive 后置设置。
+  --cold-dsn DSN   冷库 Postgres DSN（写入 env 注释/值，可选）
+  --turn-server U  TURN 服务器（可选，写入配置注释）
+  --lang zh|en     输出语言（默认跟随 LANG/LC_ALL，含 zh → 中文）
+  -h, --help       显示本帮助
 
 退出码：0 成功 / 64 用法错误 / 77 权限不足 / 78 配置错误
+TODO(i18n): 存量帮助文本本轮不改造成 i18n key，仅新增部分走 i18n。
 EOF
+}
+
+# t_msg: minimal i18n for new messages (en / zh); key falls back to itself.
+t_msg() {
+  local lang="${LANG_FLAG:-${LC_ALL:-${LANG:-en}}}"
+  case "$lang" in *zh*) ;; *) lang=en ;; esac
+  case "$1:$lang" in
+    admin_env_written:zh) printf '管理员引导已写入（0600，绝不入库/日志）' ;;
+    admin_env_written:en) printf 'admin bootstrap written (0600, never in VCS/logs)' ;;
+    domain_set:zh)        printf 'public_origin 已记录' ;;
+    domain_set:en)        printf 'public_origin recorded' ;;
+    *) printf '%s' "$1" ;;
+  esac
 }
 
 while [ $# -gt 0 ]; do
@@ -51,6 +86,12 @@ while [ $# -gt 0 ]; do
     --split)     MODE="split" ;;
     --no-start)  START=0 ;;
     --skip-keys) SKIP_KEYS=1 ;;
+    --domain)    DOMAIN="${2:?--domain 需要参数}"; shift ;;
+    --admin-user) ADMIN_USER="${2:?--admin-user 需要参数}"; shift ;;
+    --admin-pass-file) ADMIN_PASS_FILE="${2:?--admin-pass-file 需要参数}"; shift ;;
+    --cold-dsn)  COLD_DSN="${2:-}"; shift ;;
+    --turn-server) TURN_SERVER="${2:-}"; shift ;;
+    --lang)      LANG_FLAG="${2:?--lang 需要参数}"; shift ;;
     --prefix)    PREFIX="${2:?--prefix 需要参数}"; shift ;;
     --etc)       ETC="${2:?--etc 需要参数}"; shift ;;
     --state)     STATE="${2:?--state 需要参数}"; shift ;;
@@ -159,14 +200,33 @@ EOF
   chmod 0600 "$_path"
 }
 
+# 首启管理员引导（--admin-user/--admin-pass-file）：绝不接受命令行明文密码，
+# 只收 0600 密码文件；写入 env（0600），由 chatd 首启消费。
+admin_env_extra=""
+if [ -n "$ADMIN_USER" ]; then
+  admin_env_extra+="OPENCHAT_ADMIN_USER=$ADMIN_USER"$'\n'
+fi
+if [ -n "$ADMIN_PASS_FILE" ]; then
+  if [ ! -f "$ADMIN_PASS_FILE" ]; then
+    die "admin pass file 不存在: $ADMIN_PASS_FILE（退出码 78）"
+  fi
+  admin_env_extra+="OPENCHAT_ADMIN_PASS_FILE=$ADMIN_PASS_FILE"$'\n'
+  ok "$(t_msg admin_env_written)"
+fi
+[ -n "$COLD_DSN" ] && admin_env_extra+="OPENCHAT_COLD_DSN=$COLD_DSN"$'\n'
+if [ -n "$TURN_SERVER" ]; then
+  # TURN 服务器写进配置注释（未配置凭据前不生效）
+  admin_env_extra+="# TURN server: $TURN_SERVER (see deploy/coturn)"$'\n'
+fi
+
 if [ "$MODE" = "split" ]; then
   install -d -m 0750 -o root -g openchat "$ETC/env.d"
-  write_env "$ETC/env.d/bridge.env" "OPENCHAT_LAYER=bridge"
-  write_env "$ETC/env.d/user.env"   "OPENCHAT_LAYER=user"
-  write_env "$ETC/env.d/data.env"   "OPENCHAT_LAYER=data"
-  write_env "$ETC/env.d/admin.env"  "OPENCHAT_LAYER=admin"
+  write_env "$ETC/env.d/bridge.env" "OPENCHAT_LAYER=bridge"$'\n'"$admin_env_extra"
+  write_env "$ETC/env.d/user.env"   "OPENCHAT_LAYER=user"$'\n'"$admin_env_extra"
+  write_env "$ETC/env.d/data.env"   "OPENCHAT_LAYER=data"$'\n'"$admin_env_extra"
+  write_env "$ETC/env.d/admin.env"  "OPENCHAT_LAYER=admin"$'\n'"$admin_env_extra"
 else
-  write_env "$ETC/env" "OPENCHAT_LAYER=embedded"
+  write_env "$ETC/env" "OPENCHAT_LAYER=embedded"$'\n'"$admin_env_extra"
 fi
 # ---------------------------------------------------------------------------
 # 4. 密钥（security-spec §6.4.1 清单）
@@ -238,6 +298,27 @@ install_cfg() {
 }
 
 install_cfg "$SCRIPT_DIR/openchat.toml" "$ETC/openchat.toml" 0640
+
+# --domain actually lands in public_origin: the previous version only printed
+# "recorded" and left the config untouched, so a public deployment silently ran
+# with an empty public_origin (same-origin checks and SecureCookie decisions
+# then take the lenient branch).
+if [ -n "$DOMAIN" ]; then
+  case "$DOMAIN" in
+    https://*) ;;
+    http://*) warn "public_origin 使用 http://，生产请用 https://" ;;
+    *) die "--domain 需要带 scheme 的 URL（例如 https://chat.example.com）" ;;
+  esac
+  if [ -f "$ETC/openchat.toml" ]; then
+    if grep -q '^[[:space:]]*public_origin[[:space:]]*=' "$ETC/openchat.toml"; then
+      sed -i "s|^[[:space:]]*public_origin[[:space:]]*=.*|public_origin = \"$DOMAIN\"|" "$ETC/openchat.toml"
+      ok "  public_origin = $DOMAIN"
+    else
+      printf '\npublic_origin = "%s"\n' "$DOMAIN" >> "$ETC/openchat.toml"
+      ok "  public_origin = $DOMAIN"
+    fi
+  fi
+fi
 install_cfg "$SCRIPT_DIR/policy.json"   "$ETC/policy.json"   0640
 install -m 0640 -o root -g openchat "$SCRIPT_DIR/Caddyfile" "$ETC/Caddyfile.reference"
 

@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/yingo-server/OpenChat/server/internal/bridge/router"
 	"github.com/yingo-server/OpenChat/server/internal/data/pipe"
@@ -48,12 +49,30 @@ func newFrameSource(resolve uidResolver, lg *log.Logger) pipe.FrameSource {
 		if f.Env != nil && len(f.Env.Payload) > 0 {
 			if intf, err := frame.UnmarshalInternal(f.Env.Payload); err == nil && intf.GetEnvelope() != nil {
 				env := intf.GetEnvelope()
-				uid := int64(env.GetUserId())
-				if uid == 0 && resolve != nil && intf.GetConnId() != 0 {
+				// Actor identity: for CLIENT frames the uid MUST come from the
+				// session (resolved by conn id). The envelope's user_id is
+				// client-controlled and used to be trusted here, which allowed
+				// impersonation (recall others' messages, forge receipts).
+				// Frames originated by the data/admin layers carry no conn id;
+				// their user_id was written by the server itself and is trusted.
+				src := ""
+				if f.Meta != nil {
+					src = f.Meta.SrcLayer
+				}
+				var uid int64
+				if src == "user" && resolve != nil && intf.GetConnId() != 0 {
+					// CLIENT frame: identity comes from the session only.
 					uid = resolve(intf.GetConnId())
+				} else if src == "user" && intf.GetConnId() == 0 {
+					// USER-LAYER INTERNAL event (e.g. presence connect/disconnect):
+					// it never travels through a client connection, so the uid
+					// written by the server itself is authoritative.
+					uid = int64(env.GetUserId())
+				} else {
+					uid = int64(env.GetUserId())
 				}
 				if uid == 0 && lg != nil {
-					lg.Debug("frame without uid", "kind", kinds.KindName(env.Kind), "conn", intf.GetConnId())
+					lg.Debug("frame without uid", "kind", kinds.KindName(env.Kind), "conn", intf.GetConnId(), "src", src)
 				}
 				kind := env.Kind
 				payload := payloadForPipe(kind, env.Payload)
@@ -201,6 +220,13 @@ func payloadForPipe(kind uint32, payload []byte) []byte {
 			return payload
 		}
 		return out
+	case kinds.KindMsgRead, kinds.KindMsgDelivered, kinds.KindMsgDelete, kinds.KindMsgRecall,
+		kinds.KindTyping, kinds.KindPresenceUpdate:
+		// Client chat kinds the pipe parses directly. Accept both wire forms:
+		// browser JSON (snake_case per the front payload.ts contract) and
+		// native protobuf. The pipe's wire structs use the same field names,
+		// so JSON passes through verbatim; protobuf is converted.
+		return convertChatPayload(kind, payload)
 	case kinds.KindSyncRequest:
 		// SYNC_REQUEST (8): normalize either the browser JSON form
 		// ({convId,sinceSeq,limit} or snake_case) or the native protobuf
@@ -250,6 +276,64 @@ func payloadForPipe(kind uint32, payload []byte) []byte {
 			return payload
 		}
 		return out
+	}
+	return payload
+}
+
+// convertChatPayload normalizes the uplink payload of 104/105/107/108/230/400
+// into the pipe's wire JSON form. JSON passes through (the wire structs share
+// the proto field names); protobuf is decoded into the chatpb message and
+// re-encoded as wire JSON.
+func convertChatPayload(kind uint32, payload []byte) []byte {
+	if isJSONPayload(payload) {
+		return payload // wire struct field names == proto names == client JSON
+	}
+	switch kind {
+	case kinds.KindMsgRead, kinds.KindMsgDelivered:
+		var m chatpb.MessagePayload
+		if err := m.Unmarshal(payload); err != nil {
+			return payload
+		}
+		out := wire.ReceiptPayload{}
+		for _, r := range m.GetReceipts() {
+			out.Receipts = append(out.Receipts, wire.Receipt{
+				MsgID: r.GetMsgId(), UserID: r.GetUserId(), At: r.GetAt(), Rtype: r.GetRtype(),
+			})
+		}
+		if b, err := json.Marshal(out); err == nil {
+			return b
+		}
+	case kinds.KindMsgDelete, kinds.KindMsgRecall:
+		var m chatpb.MsgRecall
+		if err := m.Unmarshal(payload); err != nil {
+			return payload
+		}
+		if b, err := json.Marshal(wire.MsgMutation{MsgID: m.GetMsgId(), ConvID: m.GetConvId()}); err == nil {
+			return b
+		}
+	case kinds.KindTyping:
+		var m chatpb.Typing
+		if err := m.Unmarshal(payload); err != nil {
+			return payload
+		}
+		if b, err := json.Marshal(wire.TypingSignal{ConvID: m.GetConvId(), Typing: m.GetTyping(), At: time.Now().UnixMilli()}); err == nil {
+			return b
+		}
+	case kinds.KindPresenceUpdate:
+		var m chatpb.PresenceUpdate
+		if err := m.Unmarshal(payload); err != nil {
+			return payload
+		}
+		status := "offline"
+		switch m.GetStatus() {
+		case 1:
+			status = "online"
+		case 2:
+			status = "away"
+		}
+		if b, err := json.Marshal(wire.PresenceSignal{UserID: m.GetUserId(), Status: status, At: int64(m.GetAt())}); err == nil {
+			return b
+		}
 	}
 	return payload
 }
@@ -475,6 +559,18 @@ func buildRoutes() map[uint32][]router.Target {
 	rt[kinds.KindCallBusy] = toData("data.call")
 	rt[kinds.KindCallHangup] = toData("data.call")
 
+	// Transient signaling + recall requests executed by the data layer.
+	rt[kinds.KindMsgRead] = toData("data.receipt")
+	rt[kinds.KindMsgDelivered] = toData("data.receipt")
+	rt[kinds.KindTyping] = toData("data.typing")
+	rt[kinds.KindPresenceUpdate] = toData("data.presence")
+	// 401/402: the USER LAYER emits connect/disconnect events addressed by
+	// user_id; they ride the data lane so the pipe fans them out to peers.
+	rt[kinds.KindPresenceSubscribe] = toData("data.presence")
+	rt[kinds.KindPresenceUnsubscribe] = toData("data.presence")
+	rt[kinds.KindMsgDelete] = toData("data.recall")
+	rt[kinds.KindMsgRecall] = toData("data.recall")
+
 	// Results addressed to a single user (delivery in the gateway is by uid).
 	rt[kinds.KindMsgAck] = toUser("sys.ack")
 	rt[kinds.KindError] = toUser("sys.error")
@@ -514,6 +610,19 @@ func buildRoutesFromData() map[uint32][]router.Target {
 		kinds.KindCallCandidate: toUser("sys.call"),
 		kinds.KindCallBusy:      toUser("sys.call"),
 		kinds.KindCallHangup:    toUser("sys.call"),
+		// Transient fan-outs the data layer originates after processing an
+		// uplink (receipts, typing, presence, recall broadcasts). Without
+		// these entries the main table routes them BACK to data (same kinds
+		// as the uplink) and the frame loops until dropped — the peer never
+		// sees it. Same bug class as the call signaling loop, different kinds.
+		kinds.KindMsgRead:             toUser("sys.receipt"),
+		kinds.KindMsgDelivered:        toUser("sys.receipt"),
+		kinds.KindTyping:              toUser("sys.typing"),
+		kinds.KindMsgDelete:           toUser("sys.mutation"),
+		kinds.KindMsgRecall:           toUser("sys.mutation"),
+		kinds.KindPresenceUpdate:      toUser("sys.presence"),
+		kinds.KindPresenceSubscribe:   toUser("sys.presence"),
+		kinds.KindPresenceUnsubscribe: toUser("sys.presence"),
 	}
 }
 

@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../../auth';
 import { cn } from '../../lib/format';
-import { IconLogout, IconMenu, IconMoon, IconSun } from '../components/icons';
+import { playSound, setSoundEnabled, soundEnabled, unlockAudio } from '../../lib/sound';
+import { IconBell, IconBellOff, IconLogout, IconMenu, IconMoon, IconSun } from '../components/icons';
 import { StatusTag } from '../components/StatusTag';
 import type { NavItem } from './nav';
 
@@ -38,6 +39,15 @@ export function TopBar({ item, onOpenNav }: { item: NavItem; onOpenNav: () => vo
   const { admin, logout } = useAuth();
   const { dark, toggle } = useThemeController();
   const [busy, setBusy] = useState(false);
+  const [sound, setSound] = useState(soundEnabled());
+
+  const toggleSound = () => {
+    const next = !sound;
+    setSoundEnabled(next);
+    setSound(next);
+    unlockAudio();
+    if (next) playSound('success');
+  };
 
   useEffect(() => {
     document.title = `${item.label} · OpenChat 管理后台`;
@@ -68,6 +78,17 @@ export function TopBar({ item, onOpenNav }: { item: NavItem; onOpenNav: () => vo
         title={dark ? '切换到亮色主题' : '切换到暗色主题'}
       >
         {dark ? <IconSun size={16} /> : <IconMoon size={16} />}
+      </button>
+
+      <button
+        type="button"
+        className={cn('btn btn-ghost btn-sm', sound && 'text-primary-600')}
+        onClick={toggleSound}
+        aria-label={sound ? '关闭提示音' : '开启提示音'}
+        aria-pressed={sound}
+        title={sound ? '提示音已开启（点击关闭）' : '提示音已关闭（点击开启）'}
+      >
+        {sound ? <IconBell size={16} /> : <IconBellOff size={16} />}
       </button>
 
       <div className="hidden items-center gap-2 border-l border-border-default pl-3 sm:flex">

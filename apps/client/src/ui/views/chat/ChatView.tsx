@@ -7,7 +7,7 @@ import { useConvStore } from '../../../core/stores/conv-store';
 import { useMessageStore } from '../../../core/stores/message-store';
 import { usePresenceStore } from '../../../core/stores/presence-store';
 import { useConnStore } from '../../../core/stores/conn-store';
-import { useSessionStore } from '../../../core/stores/session-store';
+import { useSessionStore, isFlagEnabled } from '../../../core/stores/session-store';
 import { selectIsMine, selectPresence, selectTypingUserIds } from '../../../core/selectors';
 import type { ChatMessage, ConvRecord } from '../../../core/types';
 import { t } from '../../i18n';
@@ -33,7 +33,7 @@ function ChatSession({ convId }: { convId: number }) {
   const selfId = useSessionStore((state) => state.userId);
   const otherId = conv && conv.convType === 1 ? (conv.members.find((member) => member.userId !== selfId)?.userId ?? 0) : 0;
   const presence = usePresenceStore((state) => (otherId ? selectPresence(state, otherId) : 'offline'));
-  const callEnabled = useSessionStore((state) => state.flags['call_enabled'] !== '0');
+  const callEnabled = useSessionStore((state) => isFlagEnabled(state.flags, 'call_enabled'));
   const call = useCall();
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null);
   const [scrollSignal, setScrollSignal] = useState(0);

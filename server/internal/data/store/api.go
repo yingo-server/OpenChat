@@ -57,6 +57,12 @@ type MsgWriter interface {
 	// returns the inclusive start (range = [start, start+n-1]). Implemented as
 	// UPDATE conv_seq ... RETURNING; must be safe under concurrent writers.
 	AllocateSeq(ctx context.Context, cid int64, n int) (start int64, err error)
+
+	// MarkRecalled soft-deletes one hot message: sets recalled = at (unix sec)
+	// when the (cid, msg_id, sender_id) row exists and is not already
+	// recalled. Returns the matched row (or ErrNotFound). Authorization and
+	// the time window are domain logic ABOVE the store — this is mechanism.
+	MarkRecalled(ctx context.Context, cid, msgID, senderID, at int64) (*HotMsg, error)
 }
 
 // MsgReader is the hot read path, used by readrouter and archiver.
@@ -193,6 +199,11 @@ type ConvStore interface {
 	// it (peek). Range reservation belongs to MsgWriter.AllocateSeq; this
 	// exists for readers/inspect tooling.
 	NextSeq(ctx context.Context, cid int64) (int64, error)
+
+	// MemberPeersOf returns the DEDUPLICATED set of other uids sharing at
+	// least one conversation with uid — the recipient set for presence
+	// fan-out (上线/下线广播给"该用户所有会话的成员去重集").
+	MemberPeersOf(ctx context.Context, uid int64) ([]int64, error)
 }
 
 // -------------------------------------------------------------- media domain
@@ -307,20 +318,42 @@ type SysStore interface {
 	SetPenalty(ctx context.Context, p *Penalty) error
 }
 
-// ------------------------------------------------------- archive (cold) target
+// ------------------------------------------------------- archive (cold) source
 
-// ArchiveTarget is what the archiver pushes hot rows into. The archiver knows
-// ONLY this interface plus MsgReader — swap the cold schema, swap one impl.
-type ArchiveTarget interface {
+// ArchiveSource is the COLD side of the archiver: hot rows are copied into
+// it. The archiver knows ONLY this interface plus the hot-side ports — swap
+// the cold schema, swap one impl.
+//
+// Red line: an archive source NEVER deletes hot rows. The hot side is
+// deleted by a HotPruner (the hot store), after the copy committed.
+type ArchiveSource interface {
 	// CopyBatch inserts rows into the cold archive idempotently
 	// (ON CONFLICT DO NOTHING semantics); returns how many rows were newly
 	// moved. Retries must be safe: re-copying a batch must not duplicate.
 	CopyBatch(ctx context.Context, rows []HotMsg) (int64, error)
+}
 
-	// DeleteHot removes hot rows for the caller-provided cutoff boundary.
-	// Careful: only ever called after CopyBatch committed for those rows —
-	// the ordering is the archiver's contract, not this interface's.
-	DeleteHot(ctx context.Context, before int64) (int64, error)
+// HotPruner is the HOT side of the archiver: it deletes rows from the hot
+// store. Only the hot store can implement this — the hot messages live in
+// SQLite, so a cold (Postgres) handle must NOT expose a delete-hot method.
+//
+// The ordering is the archiver's contract: prune only after the copy of
+// exactly those rows COMMITTED.
+type HotPruner interface {
+	// DeleteHotBefore removes hot rows whose sent_at is strictly older than
+	// the cutoff; returns the number of rows removed.
+	DeleteHotBefore(ctx context.Context, before int64) (int64, error)
+}
+
+// ------------------------------------------------------------- trim (expiry)
+
+// TrimTarget deletes expired rows from ONE whitelisted table. The table name
+// is a KEY, never SQL text: implementations map it to a fixed statement
+// (like orderSQL does for ORDER BY) and reject anything unknown.
+type TrimTarget interface {
+	// TrimTable deletes rows of the named table that expired before the
+	// cutoff; returns the number of rows removed.
+	TrimTable(ctx context.Context, table string, olderThan int64) (int64, error)
 }
 
 // ------------------------------------------------------------ audit (cold)

@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"github.com/yingo-server/OpenChat/server/internal/pkg/i18n"
 )
 
 var errUsage = errors.New("usage")
@@ -90,6 +92,11 @@ func run(args []string, in io.Reader, out, errw io.Writer) int {
 func parseGlobals(args []string) (globals, []string, error) {
 	var g globals
 	var rest []string
+	var langSeen string
+	// Language resolution: explicit --lang wins, else LC_ALL/LANG (i18n.DetectLang).
+	if langSeen == "" {
+		i18n.SetLang(i18n.DetectLang(""))
+	}
 	take := func(i *int, inline, name string) (string, error) {
 		if inline != "" {
 			return inline, nil
@@ -128,6 +135,13 @@ func parseGlobals(args []string) (globals, []string, error) {
 			g.IdemKey = a[len("--idempotency-key="):]
 		case a == "--no-save":
 			g.NoSave = true
+		case a == "--lang" || strings.HasPrefix(a, "--lang="):
+			v, lerr := take(&i, a, "--lang")
+			if lerr != nil {
+				return g, nil, lerr
+			}
+			i18n.SetLang(i18n.DetectLang(v))
+			langSeen = v
 		default:
 			rest = append(rest, a)
 		}

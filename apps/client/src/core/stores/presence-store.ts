@@ -33,6 +33,9 @@ export const usePresenceStore = create<PresenceStore>()((set, get) => ({
 
   setStatus: (payload) => {
     if (!payload.userId || payload.userId === get().selfUserId) return;
+    const existing = get().byUserId[payload.userId];
+    // presence 无服务端序号：用 at（毫秒）做单调守卫，乱序到达的旧事件不得覆盖新状态（P0-3）。
+    if (existing && existing.at > payload.at) return;
     set({
       byUserId: {
         ...get().byUserId,

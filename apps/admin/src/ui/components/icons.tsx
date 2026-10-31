@@ -191,3 +191,18 @@ export const IconExternal = (p: IconProps) => (
     <path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
   </svg>
 );
+
+export const IconBell = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6" />
+    <path d="M10 19a2 2 0 0 0 4 0" />
+  </svg>
+);
+
+export const IconBellOff = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6" />
+    <path d="M10 19a2 2 0 0 0 4 0" />
+    <path d="m3 3 18 18" />
+  </svg>
+);

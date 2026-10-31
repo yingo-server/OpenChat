@@ -29,8 +29,22 @@ type Req struct {
 type FrameSource func(*proto.Frame) Req
 
 // ShellFrameSource is the default FrameSource (kind shell only).
+//
+// It must carry the payload across: frames that are NOT wrapped in an
+// InternalFrame (e.g. the user layer's presence connect/disconnect events)
+// reach the pipe as bare envelopes, and dropping their payload made the
+// data layer parse an empty body (uid 0) — the event was silently dropped.
 func ShellFrameSource(f *proto.Frame) Req {
-	return Req{Kind: f.Kind, Frame: f}
+	r := Req{Kind: f.Kind, Frame: f}
+	if f != nil && f.Env != nil {
+		r.Payload = f.Env.GetPayload()
+		r.ConvID = f.Env.GetConvId()
+		r.RequestID = f.Env.GetRequestId()
+		if uid := f.Env.GetUserId(); uid > 0 {
+			r.UserID = uint64(uid)
+		}
+	}
+	return r
 }
 
 // EmitFunc converts an outbound env into a transport frame for Peer.Send.

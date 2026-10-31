@@ -52,6 +52,44 @@ func (w *msgWriter) AppendMessages(ctx context.Context, batch []store.PendingMsg
 	return nil
 }
 
+// MarkRecalled implements store.MsgWriter.MarkRecalled: a conditional
+// UPDATE that only matches the exact (cid, msg_id, sender_id) row and only
+// when it has not been recalled already (idempotent re-recall succeeds
+// without touching the row).
+func (w *msgWriter) MarkRecalled(ctx context.Context, cid, msgID, senderID, at int64) (*store.HotMsg, error) {
+	res, err := w.db.ExecContext(ctx,
+		`UPDATE msg_messages_hot SET recalled = ? WHERE cid = ? AND msg_id = ? AND sender_id = ? AND recalled = 0`,
+		at, cid, msgID, senderID)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: mark recalled cid=%d msg=%d: %w", cid, msgID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Either the row is absent, or it was already recalled. Read to
+		// distinguish so callers can compose 404 vs idempotent-OK.
+		var m store.HotMsg
+		qerr := w.db.QueryRowContext(ctx,
+			`SELECT msg_id, cid, seq, sender_id, client_msg_id, content, sent_at, edited, recalled
+FROM msg_messages_hot WHERE cid = ? AND msg_id = ?`, cid, msgID).
+			Scan(&m.MsgID, &m.Cid, &m.Seq, &m.SenderID, &m.ClientMsgID, &m.Content, &m.SentAt, &m.Edited, &m.Recalled)
+		if errors.Is(qerr, sql.ErrNoRows) {
+			return nil, fmt.Errorf("sqlite: msg cid=%d id=%d: %w", cid, msgID, store.ErrNotFound)
+		}
+		if qerr != nil {
+			return nil, fmt.Errorf("sqlite: read recalled msg cid=%d id=%d: %w", cid, msgID, qerr)
+		}
+		return &m, nil // already recalled: report the row, caller treats as ok
+	}
+	var m store.HotMsg
+	err = w.db.QueryRowContext(ctx,
+		`SELECT msg_id, cid, seq, sender_id, client_msg_id, content, sent_at, edited, recalled
+FROM msg_messages_hot WHERE cid = ? AND msg_id = ?`, cid, msgID).
+		Scan(&m.MsgID, &m.Cid, &m.Seq, &m.SenderID, &m.ClientMsgID, &m.Content, &m.SentAt, &m.Edited, &m.Recalled)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: re-read recalled msg cid=%d id=%d: %w", cid, msgID, err)
+	}
+	return &m, nil
+}
+
 // AllocateSeq atomically reserves the next n sequence numbers for cid and
 // returns the inclusive start: the caller owns [start, start+n-1].
 //

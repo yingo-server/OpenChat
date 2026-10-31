@@ -211,6 +211,27 @@ func (f *FakeConvStore) NextSeq(ctx context.Context, cid int64) (int64, error) {
 	return f.NextSeqs[cid], nil
 }
 
+// MemberPeersOf implements store.ConvStore.MemberPeersOf over the fake member map.
+func (f *FakeConvStore) MemberPeersOf(ctx context.Context, uid int64) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cids := map[int64]bool{}
+	for key := range f.Members {
+		if key[1] == uid {
+			cids[key[0]] = true
+		}
+	}
+	seen := map[int64]bool{}
+	var out []int64
+	for key, m := range f.Members {
+		if cids[key[0]] && m.UID != uid && !seen[m.UID] {
+			seen[m.UID] = true
+			out = append(out, m.UID)
+		}
+	}
+	return out, nil
+}
+
 // FakeSysStore implements store.SysStore minimally.
 type FakeSysStore struct {
 	mu        sync.Mutex
@@ -285,6 +306,26 @@ func (f *FakeSysStore) SetPenalty(ctx context.Context, p *store.Penalty) error {
 	defer f.mu.Unlock()
 	f.Penalties[p.Subject+"|"+p.Penalty] = p
 	return nil
+}
+
+// MarkRecalled soft-deletes one fake row (exact cid+msg+sender match,
+// not-already-recalled guard), mirroring the sqlite semantics.
+func (f *FakeMsgStore) MarkRecalled(ctx context.Context, cid, msgID, senderID, at int64) (*store.HotMsg, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for k, m := range f.Rows {
+		if m.Cid == cid && m.MsgID == msgID && m.SenderID == senderID {
+			if m.Recalled != 0 {
+				row := m
+				return &row, nil // already recalled: report the row
+			}
+			m.Recalled = at
+			f.Rows[k] = m
+			row := m
+			return &row, nil
+		}
+	}
+	return nil, fmt.Errorf("fake: msg cid=%d id=%d: %w", cid, msgID, store.ErrNotFound)
 }
 
 // FakeArchive implements store.ArchiveTarget with call recording.

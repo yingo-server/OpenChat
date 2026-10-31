@@ -60,6 +60,8 @@ export interface SessionPort {
   toast(key: string, params?: Record<string, string | number>): void;
   /** 读取单个 feature flag（缺省返回 undefined）。 */
   flag(key: string): string | undefined;
+  /** 读取整张 feature flag 表（判定口径见 core/stores/session-store 的 isFlagEnabled）。 */
+  flags(): Record<string, string>;
 }
 
 export interface ConvPort {

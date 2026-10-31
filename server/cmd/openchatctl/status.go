@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/yingo-server/OpenChat/server/internal/pkg/i18n"
 )
 
 // statusReport is the `status` payload. Field names double as the JSON keys.
@@ -94,6 +96,11 @@ func cmdStatus(ctx context.Context, e *environment, g globals, args []string) er
 }
 
 func renderStatus(e *environment, rep statusReport) {
+	// TTY → ASCII table frame; non-TTY (pipes/CI) → plain text as before.
+	if i18n.StdinIsTTY() {
+		e.printf("+--------------------------------------------------\n")
+		defer e.printf("+--------------------------------------------------\n")
+	}
 	e.printf("unit        : %s\n", rep.Unit)
 	state := rep.State
 	if rep.PID > 0 {

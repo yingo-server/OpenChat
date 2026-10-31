@@ -53,6 +53,11 @@ func newTestEnv(t *testing.T, fs *fakeSystem) (*environment, *bytes.Buffer, *byt
 	out, errb := &bytes.Buffer{}, &bytes.Buffer{}
 	e := defaultEnv()
 	e.stdout, e.stderr = out, errb
+	// Isolate the credential lookup: the default env reads the real HOME, so a
+	// developer machine (or a parallel test) with a leftover
+	// ~/.config/openchat/adminctl.json silently changes the expected outcome.
+	t.Setenv("OPENCHAT_ADMIN_CREDENTIALS", filepath.Join(t.TempDir(), "adminctl.json"))
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	e.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		key := name + " " + strings.Join(args, " ")
 		fs.cmds = append(fs.cmds, key)

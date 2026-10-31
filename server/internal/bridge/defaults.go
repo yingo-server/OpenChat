@@ -16,11 +16,16 @@ func defaultCaps() map[string][]kinds.Kind {
 			// direct/embedded frame source with SrcLayer=data passes the
 			// verifier instead of being dropped as "outside capability".
 			kinds.KindConvCreate, kinds.KindConvUpdate, kinds.KindMemberAdd, kinds.KindMemberRemove,
+			kinds.KindMemberUpdate,
 			// 数据层回程：提交后的 ack / 错误 / 读结果必须能上行到 bridge，
 			// 否则 101 的 ack 会被 Verifier 以「能力外」丢弃。
 			kinds.KindMsgAck, kinds.KindMsgNew, kinds.KindError,
 			kinds.KindReadHistoryResult, kinds.KindConvDataResult, kinds.KindConvPayload,
 			kinds.KindIdentityResult, kinds.KindFlagResult, kinds.KindJobStatus,
+			// 回执/输入中/presence/撤回：上行请求与下行事件共用这些 kind
+			// （能力表按层不按方向区分；回程帧 SrcLayer=data 也须通过）。
+			kinds.KindMsgRead, kinds.KindMsgDelivered, kinds.KindMsgDelete, kinds.KindMsgRecall,
+			kinds.KindTyping, kinds.KindPresenceUpdate, kinds.KindPresenceSubscribe, kinds.KindPresenceUnsubscribe,
 			// 通话信令回程（data → user）：OFFER/ANSWER/CANDIDATE/BUSY/HANGUP。
 			kinds.KindCallOffer, kinds.KindCallAnswer, kinds.KindCallCandidate,
 			kinds.KindCallBusy, kinds.KindCallHangup,

@@ -52,7 +52,7 @@ export interface Media {
   mime?: string;
   /** 内联缩略图（data URL 或 base64）；列表先用它做低清占位 */
   thumb?: string;
-  /** 24 段波形采样 0..1；缺省时渲染器用时长 hash 生成，保证稳定 */
+  /** 24 段波形采样 0..100 整数（与服务端 0-100 校验区间一致）；缺省时渲染器用时长 hash 生成 */
   waveform?: number[];
   /** 可直接播放/下载的地址（mock 演示用 data URL） */
   url?: string;
@@ -204,16 +204,53 @@ function bool(value: unknown, fallback = false): boolean {
 
 const MEDIA_TYPES: MediaType[] = ['image', 'audio', 'video', 'file'];
 
-function mapMediaType(value: unknown): MediaType {
-  if (typeof value === 'string' && (MEDIA_TYPES as string[]).includes(value)) {
-    return value as MediaType;
-  }
-  return MEDIA_TYPES[num(value, 3)] ?? 'file';
+/**
+ * 领域类型 → wire mtype 数字（与服务端 mediasvc 分类 + chatpb.Media 语义一致）：
+ *   1 image / 2 audio / 3 video / 4 file。
+ * 上行 MSG_SEND 与服务端下行 MSG_NEW 都必须用数字：服务端 wire.go 用
+ * `MType int32` 解析，发字符串会导致 json.Unmarshal 整体失败、payload 原样
+ * 透传、对端收到空消息（P0-1）。
+ */
+const MTYPE_OF_TYPE: Record<MediaType, number> = {
+  image: 1,
+  audio: 2,
+  video: 3,
+  file: 4,
+};
+
+const TYPE_OF_MTYPE: Record<number, MediaType> = {
+  1: 'image',
+  2: 'audio',
+  3: 'video',
+  4: 'file',
+};
+
+/** 领域媒体类型 → wire mtype 数字（image→1 / audio→2 / video→3 / file→4）。 */
+export function mediaTypeToMtype(type: MediaType): number {
+  return MTYPE_OF_TYPE[type] ?? 4;
 }
 
+/** wire mtype 数字 → 领域媒体类型；未知值回退为 file。 */
+export function mtypeToMediaType(mtype: number): MediaType {
+  return TYPE_OF_MTYPE[mtype] ?? 'file';
+}
+
+function mapMediaType(value: unknown): MediaType {
+  // 服务端下行（buildMsgNewPayload / wire.Media）是数字 mtype。
+  if (typeof value === 'number' && Number.isFinite(value)) return mtypeToMediaType(value);
+  // 兼容旧/演示数据里的字符串形态（'image'|'audio'|'video'|'file'）。
+  if (typeof value === 'string') {
+    if ((MEDIA_TYPES as string[]).includes(value)) return value as MediaType;
+    const asNum = Number(value);
+    if (Number.isFinite(asNum)) return mtypeToMediaType(asNum);
+  }
+  return 'file';
+}
+
+/** 波形采样统一到 0-100 整数（服务端 validateThumbWaveform 校验区间）。 */
 function decodeWaveform(value: unknown): number[] | undefined {
   if (Array.isArray(value)) {
-    return value.slice(0, 24).map((v) => Math.max(0, Math.min(1, Number(v) || 0)));
+    return value.slice(0, 24).map((v) => Math.round(Math.max(0, Math.min(100, Number(v) || 0))));
   }
   return undefined;
 }
@@ -253,7 +290,7 @@ export function mapMedia(raw: RawMedia): Media {
 export function encodeMedia(media: Media): RawMedia {
   return {
     media_id: media.mediaId,
-    mtype: media.type,
+    mtype: mediaTypeToMtype(media.type),
     name: media.name,
     size: media.size,
     width: media.width,
@@ -368,25 +405,26 @@ export function encodeMsgAck(payload: MsgAckPayload): Uint8Array {
   });
 }
 
-export function decodeReceipt(bytes: Uint8Array): ReceiptPayload | null {
+/**
+ * MSG_READ(104) / MSG_DELIVERED(105) payload → 回执数组。
+ * proto 复用 MessagePayload.receipts：可能是 {"receipts":[...]} 批量形态，
+ * 也可能是单条扁平形态。返回数组，由 handler 逐条应用（P1：不丢批次内后续回执）。
+ */
+export function decodeReceipt(bytes: Uint8Array): ReceiptPayload[] {
   const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
-  // proto 复用 MessagePayload.receipts：容忍 {"receipts":[...]} 形态。
-  if (Array.isArray(raw.receipts) && raw.receipts.length > 0) {
-    const first = raw.receipts[0] as Record<string, unknown>;
-    return {
-      msgId: num(first.msg_id),
-      userId: num(first.user_id),
-      at: num(first.at, Date.now()),
-      type: num(first.rtype) === 0 ? 'read' : 'delivered',
-    };
+  const mapRow = (row: Record<string, unknown>): ReceiptPayload => ({
+    msgId: num(row.msg_id),
+    userId: num(row.user_id),
+    at: num(row.at, Date.now()),
+    type: num(row.rtype) === 1 ? 'delivered' : 'read',
+  });
+  if (Array.isArray(raw.receipts)) {
+    return (raw.receipts as Array<Record<string, unknown>>)
+      .map(mapRow)
+      .filter((receipt) => receipt.msgId > 0);
   }
-  if (!raw.msg_id) return null;
-  return {
-    msgId: num(raw.msg_id),
-    userId: num(raw.user_id),
-    at: num(raw.at, Date.now()),
-    type: num(raw.rtype) === 1 ? 'delivered' : 'read',
-  };
+  if (!raw.msg_id) return [];
+  return [mapRow(raw)];
 }
 
 export function encodeReceipt(payload: ReceiptPayload): Uint8Array {
@@ -604,12 +642,27 @@ export function decodeTyping(bytes: Uint8Array): TypingPayload {
   };
 }
 
+/**
+ * PRESENCE_UPDATE(400) / PRESENCE_SUBSCRIBE(401) / PRESENCE_UNSUBSCRIBE(402) payload。
+ *
+ * 服务端有两种形态（wire.PresenceSignal，见 data/pipe/wire/wire.go:201）：
+ *  - 400 上行广播：{user_id, status:'online'|'away'|'offline', at}
+ *  - 401/402 连接/断开：{user_id, online:bool, at}
+ * 只读 status 会把 online:true 解析成 offline（P0-2），故同时兼容布尔 online。
+ */
 export function decodePresence(bytes: Uint8Array): PresencePayload {
   const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
-  const status = str(raw.status, 'offline');
+  let status: PresencePayload['status'] = 'offline';
+  if (typeof raw.online === 'boolean') {
+    // 401/402 形态：布尔 online（true→online, false→offline）。
+    status = raw.online ? 'online' : 'offline';
+  } else {
+    const value = str(raw.status, 'offline');
+    status = value === 'online' || value === 'away' ? value : 'offline';
+  }
   return {
     userId: num(raw.user_id),
-    status: status === 'online' || status === 'away' ? status : 'offline',
+    status,
     at: num(raw.at, Date.now()),
   };
 }

@@ -161,6 +161,14 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 		return nil, err
 	}
 	a.adminKey = adminKey
+	// Production must never run without rate limiting: the switch exists for
+	// capacity measurements, and a production profile with it off would expose
+	// the gateway to the abuse surface the limiter exists to stop.
+	if isProduction(cfg) && !cfg.RateLimitEnabled {
+		return nil, fmt.Errorf("chatd: rate_limit_enabled=false is not allowed in production " +
+			"(https + APP_ENV!=dev); it exists only for capacity testing")
+	}
+
 	signer := authn.NewSigner(priv).WithKID("k1")
 	pub, ok := priv.Public().(ed25519.PublicKey)
 	if !ok {

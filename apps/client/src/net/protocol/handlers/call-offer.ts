@@ -5,6 +5,7 @@
  */
 import { decodeOffer, sendBusy } from '../../call/signal';
 import { callController } from '../../call/controller';
+import { isFlagEnabled } from '../../../core/stores/session-store';
 import type { Handler } from '../registry';
 
 export const handleCallOffer: Handler = (env, ctx) => {
@@ -15,7 +16,8 @@ export const handleCallOffer: Handler = (env, ctx) => {
     return;
   }
   if (!payload.callId || !payload.fromUserId) return;
-  if (ctx.session.flag('call_enabled') === '0') {
+  // call_enabled 只认 "true"（服务端 flagString 的输出）；缺失/其它值一律视为关闭。
+  if (!isFlagEnabled(ctx.session.flags(), 'call_enabled')) {
     sendBusy(ctx.client, payload.fromUserId, {
       callId: payload.callId,
       reason: 'unsupported',

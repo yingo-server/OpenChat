@@ -30,9 +30,8 @@ function AudioBody({ media, mine, src }: { media: Media; mine: boolean; src?: st
   const duration = Math.max(1000, media.durationMs || 1000);
   const waveform = useMemo(() => {
     if (media.waveform?.length === 24) {
-      // 兼容两种刻度：0-100 整数（服务端上传字段）或 0-1（渲染内部）
-      const max = Math.max(...media.waveform);
-      return max > 1 ? media.waveform.map((value) => Math.min(1, value / 100)) : media.waveform;
+      // 统一 0-100 量纲（服务端校验区间）：渲染用 0-1，除以 100。
+      return media.waveform.map((value) => Math.max(0, Math.min(1, value / 100)));
     }
     return pseudoWaveform(media.mediaId, duration);
   }, [media.mediaId, media.waveform, duration]);

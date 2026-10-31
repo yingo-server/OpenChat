@@ -35,6 +35,8 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3" // hot.db read-only diagnostics
+
+	"github.com/yingo-server/OpenChat/server/internal/pkg/i18n"
 )
 
 // Exit codes.
@@ -252,6 +254,12 @@ func parseGlobals(args []string) (globals, []string, error) {
 				return g, nil, usagef("invalid --timeout %q", v)
 			}
 			g.Timeout = d
+		case a == "--lang" || strings.HasPrefix(a, "--lang="):
+			v, err := take(&i, a, "--lang")
+			if err != nil {
+				return g, nil, err
+			}
+			i18n.SetLang(i18n.DetectLang(v))
 		default:
 			rest = append(rest, a)
 		}

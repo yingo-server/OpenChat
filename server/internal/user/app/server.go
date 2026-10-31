@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -98,10 +99,16 @@ func New(cfg Config, authn AuthnFunc, peer transport.Peer) (*Server, error) {
 			return
 		}
 		lim.AddConn(c.ID(), c.UserID())
+		// 401 PRESENCE_SUBSCRIBE：上线事件发给数据层，数据层向该用户的会话
+		// 成员广播（瞬态，不落 per-user 投递）。帧不带 env user_id —— 数据层
+		// 从 payload 读 user_id 并当作内部事件处理。
+		emitPresenceEvent(peer, uint32(kinds.KindPresenceSubscribe), c.UserID())
 	}
 	acc.OnDisconnect = func(c *ws.Conn) {
 		sess.Unregister(c.ID())
 		lim.RemoveConn(c.ID())
+		// 402 PRESENCE_UNSUBSCRIBE：下线事件，同上。
+		emitPresenceEvent(peer, uint32(kinds.KindPresenceUnsubscribe), c.UserID())
 	}
 
 	return &Server{
@@ -250,3 +257,29 @@ func (s *Server) Drain(ctx context.Context) error {
 // Broadcast 向全部在线连接投递一帧（SIGHUP flag 重下发等进程内广播）。
 // 返回成功入队的连接数。
 func (s *Server) Broadcast(b []byte) int { return s.sess.BroadcastAll(b) }
+
+// emitPresenceEvent publishes the user layer's internal connect/disconnect
+// notification (401 online / 402 offline) to the bridge. The frame carries NO
+// env user_id: the data layer reads user_id from the JSON payload and treats
+// the frame as an internal event, fanning it out to the user's conversation
+// peers (buildRoutes routes these kinds to "data.presence").
+func emitPresenceEvent(peer transport.Peer, kind uint32, uid int64) {
+	if peer == nil || uid <= 0 {
+		return
+	}
+	online := kind == uint32(kinds.KindPresenceSubscribe)
+	body, err := json.Marshal(map[string]any{
+		"user_id": uid, "online": online, "at": time.Now().UnixMilli(),
+	})
+	if err != nil {
+		return
+	}
+	_ = peer.Send(&proto.Frame{
+		Kind: kind,
+		// UserId marks the SUBJECT of this internal event; it is written by the
+		// server, never by a client. The data layer requires it to match the
+		// authenticated actor so a forged client frame cannot impersonate.
+		Env:  &chatpb.Envelope{Kind: kind, Payload: body, Target: &chatpb.Envelope_UserId{UserId: uint64(uid)}},
+		Meta: &proto.FrameMeta{SrcLayer: "user", TraceID: "presence"},
+	})
+}

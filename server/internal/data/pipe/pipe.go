@@ -72,6 +72,10 @@ type Pipe struct {
 	calls *callRegistry // in-process call-signaling state (kinds 350-354)
 	cache *cache.Cache
 
+	// recallWindow is the recall time window in seconds (injectable; 0 =
+	// default 120s).
+	recallWindow int64
+
 	senderDone chan struct{}
 
 	// outMu guards writes to writeCh/outCh against Drain closing them.
@@ -216,6 +220,16 @@ func (p *Pipe) dispatch(ctx context.Context, req Req) {
 		uint32(kinds.KindCallCandidate), uint32(kinds.KindCallBusy), // 352/353
 		uint32(kinds.KindCallHangup): // 354
 		p.onCall(ctx, req)
+	case uint32(kinds.KindMsgRead), uint32(kinds.KindMsgDelivered): // 104/105 receipts (transient)
+		p.onReceipt(ctx, req)
+	case uint32(kinds.KindTyping): // 230 typing (transient)
+		p.onTyping(ctx, req)
+	case uint32(kinds.KindPresenceUpdate): // 400 client presence status
+		p.onPresenceUp(ctx, req)
+	case uint32(kinds.KindPresenceSubscribe), uint32(kinds.KindPresenceUnsubscribe): // 401/402 user-layer connect/disconnect
+		p.onPresenceConnect(ctx, req)
+	case uint32(kinds.KindMsgDelete), uint32(kinds.KindMsgRecall): // 107/108 recall (persisted)
+		p.onRecall(ctx, req)
 	default:
 		p.lg.Debug("pipe: unhandled kind", "kind", kinds.KindName(req.Kind))
 	}

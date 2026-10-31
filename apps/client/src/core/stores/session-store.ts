@@ -8,6 +8,26 @@ import type { StoredSession } from '../../net/auth/token-store';
 
 export type SessionStatus = 'anonymous' | 'authenticated' | 'guest' | 'banned';
 
+/**
+ * feature flag 判定 —— 唯一权威口径（P0-4）。
+ *
+ * 服务端下发的 flag 值是字符串（router.go 的 flagString：bool → "true"/"false"，
+ * 字符串原样透传），**从不是 "0"/"1"**。因此「值 === 'true' 才算开」，
+ * 缺失（flags 尚未到达 / 无该 key）一律视为关闭 —— 保守：拿不到 flag 就不显示入口。
+ *
+ * 历史遗留的 `flags[key] !== '0'` 判定恒真（服务端从不下发 "0"），导致
+ * call_enabled 关闭时按钮照样显示。
+ */
+export function isFlagEnabled(
+  flags: Record<string, string> | undefined | null,
+  key: string,
+): boolean {
+  if (!flags) return false;
+  const value = flags[key];
+  if (typeof value !== 'string') return false;
+  return value === 'true';
+}
+
 export interface BanInfo {
   reason: string;
   until: number;

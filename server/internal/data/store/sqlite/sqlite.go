@@ -46,6 +46,16 @@ func (db *DB) ScanOlder(ctx context.Context, cutoff int64, limit int) ([]store.H
 	return db.msgr.ScanOlder(ctx, cutoff, limit)
 }
 
+// MarkRecalled delegates to the message writer's soft delete (msgwriter.go).
+func (db *DB) MarkRecalled(ctx context.Context, cid, msgID, senderID, at int64) (*store.HotMsg, error) {
+	return db.msgw.MarkRecalled(ctx, cid, msgID, senderID, at)
+}
+
+// MemberPeersOf delegates to the conv store's presence peer set (conv.go).
+func (db *DB) MemberPeersOf(ctx context.Context, uid int64) ([]int64, error) {
+	return db.conv.MemberPeersOf(ctx, uid)
+}
+
 // Open opens (creating if needed) the hot SQLite database at path and applies
 // the hot migration tree. PRAGMAs per docs: WAL journaling (readers never
 // block the single writer), busy_timeout 5000ms (writers queue politely
