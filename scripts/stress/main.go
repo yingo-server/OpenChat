@@ -457,12 +457,26 @@ func main() {
 	}
 }
 
-// runLadder boots one chatd, then scales concurrency up the ladder until
-// availability (successful sends / total sends) drops below 70%. Prints a
-// capacity table and writes the full curve to out.
+// runLadder boots one chatd, then scales concurrency geometrically (×2) until
+// availability drops below 70% OR the host is saturated (all workers hit
+// connection errors). No fixed ceiling — the ladder grows until the server
+// breaks. Prints a capacity table; writes the curve to out.
 // 全局 RPM 同时统计：每档记录 (成功发送+ACK)/分钟。
 func runLadder(base, ladder string, secs int, out string) {
-	levels := strings.Split(ladder, ",")
+	// 自动扩展：从 start 倍增，无固定上限。start/max 可由 ladder 字符串覆盖
+	//（"start=128,max=1_000_000" 形式），默认 256 → 直到崩。
+	start, maxConns := 256, 1<<20
+	n2 := 0
+	for _, part := range strings.Split(ladder, ",") {
+		part = strings.TrimSpace(part)
+		if v, err := fmt.Sscanf(part, "start=%d", &n2); err == nil && v == 1 {
+			start = n2
+			continue
+		}
+		if v, err := fmt.Sscanf(part, "max=%d", &n2); err == nil && v == 1 {
+			maxConns = n2
+		}
+	}
 	dir, _ := os.MkdirTemp("", "ocladder-")
 	defer os.RemoveAll(dir)
 
@@ -513,7 +527,7 @@ rate_limit_enabled = false
 		fmt.Println("seed:", err)
 		os.Exit(2)
 	}
-	fmt.Printf("%8s %10s %10s %12s %12s %10s\n", "conns", "sends", "avail%", "global RPM", "conn p95", "verdict")
+	fmt.Printf("%8s %10s %9s %12s %10s %6s %10s %10s %10s\n", "conns", "sends", "avail%", "global RPM", "conn p95", "samp", "avg lat", "p95 lat", "verdict")
 	type row struct {
 		Conns  int     `json:"conns"`
 		Sends  int64   `json:"sends"`
@@ -525,17 +539,24 @@ rate_limit_enabled = false
 	}
 	var rows []row
 	limit := 0.70
-	for _, lv := range levels {
-		n := 0
-		fmt.Sscanf(strings.TrimSpace(lv), "%d", &n)
-		if n <= 0 {
-			continue
-		}
+	for n := start; n <= maxConns; n *= 2 {
 		st := newStats()
 		var wg sync.WaitGroup
 		// 全局发送计数（RPM 用）
 		var globalSent atomic.Int64
 		dl := time.Now().Add(time.Duration(secs) * time.Second)
+		// 延迟采样：每档采 100 份（均匀分布在时间窗内），计入平均/分位数。
+		sampleN := 100
+		sampleEvery := time.Duration(int64(time.Duration(secs)*time.Second) / int64(sampleN))
+		if sampleEvery < time.Millisecond {
+			sampleEvery = time.Millisecond
+		}
+		var nextSample atomic.Int64
+		var (
+			pendingSample atomic.Int64
+			latMu         sync.Mutex
+			latSamples    []time.Duration
+		)
 		for i := 0; i < n; i++ {
 			wg.Add(1)
 			go func(id int) {
@@ -569,6 +590,13 @@ rate_limit_enabled = false
 						}
 						if json.Unmarshal(data, &env) == nil && env.Kind == 103 {
 							sent.Add(1)
+							// 完成最早的待采样发送：记录 send→ack 延迟。
+							if t := pendingSample.Swap(0); t != 0 {
+								lat := time.Since(time.Unix(0, t))
+								latMu.Lock()
+								latSamples = append(latSamples, lat)
+								latMu.Unlock()
+							}
 						}
 					}
 				}()
@@ -579,6 +607,12 @@ rate_limit_enabled = false
 						return
 					}
 					globalSent.Add(1)
+					// 全局 ACK 回流时间 = send→ack 的真实投递延迟；
+					// 采样窗内的发送才计入 100 份样本（recordAck 里判断）。
+					if int(nextSample.Load()) < sampleN && time.Since(t0) >= 0 && id == int(nextSample.Load())%n {
+						pendingSample.Store(t0.UnixNano())
+						nextSample.Add(1)
+					}
 					st.add("ws.send", time.Since(t0), nil)
 					time.Sleep(20 * time.Millisecond)
 				}
@@ -606,14 +640,32 @@ rate_limit_enabled = false
 		if c := st.byName["ws.connect"]; c != nil {
 			connP95 = pct(c.lat, .95).Milliseconds()
 		}
+		latMu.Lock()
+		avgLat := time.Duration(0)
+		if len(latSamples) > 0 {
+			var sum time.Duration
+			for _, d := range latSamples {
+				sum += d
+			}
+			avgLat = sum / time.Duration(len(latSamples))
+		}
+		samples := len(latSamples)
+		p95Lat := pct(latSamples, .95)
+		latMu.Unlock()
+
 		pass := avail >= limit*100
+		// 饱和检测：连不上也发不出（全灭）→ 主机资源耗尽，再翻倍无意义。
+		saturated := total > 0 && sends == 0
 		verdict := "PASS"
 		if !pass {
 			verdict = "FAIL"
 		}
-		fmt.Printf("%8d %10d %9.1f%% %12.0f %10dms %10s\n", n, sends, avail, rpm, connP95, verdict)
+		if saturated {
+			verdict = "SATURATED"
+		}
+		fmt.Printf("%8d %10d %9.1f%% %12.0f %10dms %6d %10v %10v %10s\n", n, sends, avail, rpm, connP95, samples, avgLat, p95Lat, verdict)
 		rows = append(rows, row{n, sends, fails, avail, rpm, connP95, pass})
-		if !pass {
+		if !pass || saturated {
 			break
 		}
 	}
