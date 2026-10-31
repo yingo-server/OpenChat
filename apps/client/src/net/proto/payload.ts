@@ -75,6 +75,8 @@ export interface MsgNewPayload {
   content: MessageContent;
   /** 会话 id：Envelope.target 已有，payload 冗余一份便于 mock/离线重放 */
   convId?: number;
+  /** 非 0 = 该消息已在 unix 秒时刻被撤回；拉历史时必须渲染为墓碑而非原文 */
+  recalled?: number;
 }
 
 export interface MsgAckPayload {
@@ -360,6 +362,7 @@ export function decodeMsgNew(bytes: Uint8Array): MsgNewPayload {
     sent_at?: unknown;
     content?: RawContent;
     conv_id?: unknown;
+    recalled?: unknown;
   }>(bytes);
   const msgId = num(raw.msg_id);
   const seq = num(raw.seq);
@@ -371,6 +374,10 @@ export function decodeMsgNew(bytes: Uint8Array): MsgNewPayload {
     sentAt: num(raw.sent_at, Date.now()),
     content: mapContent(raw.content),
     convId: raw.conv_id ? num(raw.conv_id) : undefined,
+    // Non-zero = the message was recalled at that unix second. The server marks
+    // it in the stored row, so a device that fetches history after a recall
+    // must render the tombstone instead of the original text.
+    recalled: num(raw.recalled) || 0,
   };
 }
 

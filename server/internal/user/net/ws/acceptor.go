@@ -86,6 +86,10 @@ type Conn struct {
 	// 必须与对端一致，否则客户端解析失败——格式是传输属性，不是信任边界。
 	jsonMode atomic.Bool
 
+	// flushed 在 writeLoop 把队列里剩余帧写完并关闭 socket 后关闭，
+	// 供 CloseFlush 等待。见 CloseFlush 注释。
+	flushed chan struct{}
+
 	// 统计（atomic）：写缓冲满丢弃数。
 	dropped atomic.Uint64
 }
@@ -151,6 +155,38 @@ func (c *Conn) Close() error {
 		c.closeErr = c.ws.Close()
 	})
 	return c.closeErr
+}
+
+// CloseFlush sends a final frame and then closes, waiting (bounded) until the
+// write loop has actually written it to the socket.
+//
+// Why: c.Write only ENQUEUES. Closing right after enqueue raced the write loop
+// and the frame was dropped — clients never saw the protocol-error reason for
+// a malformed frame. This is the only path that needs the guarantee, so it
+// lives here rather than making every write synchronous.
+func (c *Conn) CloseFlush(last []byte, code int, reason string, budget time.Duration) {
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	if last != nil {
+		select {
+		case c.send <- last:
+		case <-c.done:
+			return
+		}
+	}
+	// Give the write loop a bounded window to drain, then force-close.
+	if c.flushed != nil {
+		t := time.NewTimer(budget)
+		select {
+		case <-c.flushed:
+			t.Stop()
+		case <-t.C:
+		}
+	}
+	_ = c.CloseWith(code, reason)
 }
 
 // CloseWith 以指定 WS close code 关闭。
@@ -292,6 +328,7 @@ func (a *Acceptor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ws:         c,
 		send:       make(chan []byte, a.cfg.WriteChanCap),
 		done:       make(chan struct{}),
+		flushed:    make(chan struct{}),
 		createdAt:  time.Now(),
 		remoteAddr: r.RemoteAddr,
 	}
@@ -412,8 +449,8 @@ func (a *Acceptor) readLoop(c *Conn) {
 		env, err := frame.Decode(data)
 		if err != nil {
 			// 坏帧：回 ERROR{code=PROTOCOL} 后按 1003 关闭（资源立即回收）。
-			_ = c.Write(buildErrorFrame(4000, "bad frame: "+err.Error()))
-			_ = c.CloseWith(websocket.CloseUnsupportedData, "bad frame")
+			c.CloseFlush(buildErrorFrame(4000, "bad frame: "+err.Error()),
+				websocket.CloseUnsupportedData, "bad frame", 300*time.Millisecond)
 			return
 		}
 		ev := &FrameEvent{Conn: c, Env: env, RecvAt: time.Now()}

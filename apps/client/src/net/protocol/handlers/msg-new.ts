@@ -33,6 +33,10 @@ export const handleMsgNew: Handler = (env, ctx) => {
     },
     status: 'sent',
     clientMsgId: content.clientMsgId || undefined,
+    // A recalled message that we learn about via history/sync must land as a
+    // tombstone immediately — otherwise a device that reinstalls would show
+    // the original text that the server already hides elsewhere.
+    deleted: payload.recalled ? true : undefined,
   };
   void ctx.sync.ingestNew(convId, message).catch((error) => {
     console.warn('[msg-new] ingest failed', error);

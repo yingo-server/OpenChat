@@ -143,11 +143,11 @@ func DefaultConfig() Config {
 			kinds.KindCallBusy:      {Rate: 40, Burst: 60, Capacity: 120, PayloadCap: 16 << 10},
 			kinds.KindCallHangup:    {Rate: 40, Burst: 60, Capacity: 120, PayloadCap: 16 << 10},
 		},
-		DefaultRule:    Rule{Rate: 10, Burst: 20, Capacity: 40},
-		UserDeviceCap:  3,
-		KillWindow:     60 * time.Second,
-		KillRatio:      0.5,
-		KillMinFrames:  20,
+		DefaultRule:      Rule{Rate: 10, Burst: 20, Capacity: 40},
+		UserDeviceCap:    3,
+		KillWindow:       60 * time.Second,
+		KillRatio:        0.5,
+		KillMinFrames:    20,
 		UserHalfWindows:  defaultUserHalfWindows,
 		UserKillWindows:  defaultUserKillWindows,
 		UserHalfDuration: defaultUserHalfDuration,
@@ -208,9 +208,9 @@ type userState struct {
 	conns   int
 
 	// --- 连续超限窗口惩罚状态（L3/L4，security-spec §1.2.1）---
-	overWindows int       // 连续超限窗口计数
-	winStart    time.Time // 当前用户级窗口起点
-	winOver     bool      // 当前窗口内是否发生过用户级超限
+	overWindows  int       // 连续超限窗口计数
+	winStart     time.Time // 当前用户级窗口起点
+	winOver      bool      // 当前窗口内是否发生过用户级超限
 	penaltyUntil time.Time // 预算减半生效截止时间
 	killUntil    time.Time // 惩罚断连生效截止时间
 }

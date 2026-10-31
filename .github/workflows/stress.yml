@@ -1,7 +1,11 @@
-# 压测结果受安全限流（security-spec §1.2.2）约束。压测的目的是测带载极限：
-# ladder 模式以 rate_limit_enabled=false 启动 chatd（一个开关同时放大 WS 帧
-# 限流、upgrade 限流、连接上限），持续加压直到可用性跌破 70% 为止。
-# 同时统计全局 RPM。
+# 压测结果受安全限流（security-spec §1.2.2）约束。本工作流跑 ladder 模式：
+# 复用一次性预注册的用户池（注册与连接分离），每档只用已注册 token 做 WS 握手，
+# 逐档倍增并发直到可用性（ACK/发送）跌破 70%。
+#
+# 生产默认 rate_limit_enabled=true。ladder 从单一 IP 发起海量 upgrade，
+# 生产级 upgrade 限流会把握手本身打挂（测的是限流，不是容量），所以 ladder
+# 默认用 --no-ratelimit 打开"原始容量上限"模式，并在日志/summary **显著标注**
+# 是否关闭了限流。需要测"带生产限流"的容量时把 no_ratelimit 设为 false。
 
 name: Stress
 
@@ -9,11 +13,17 @@ on:
   workflow_dispatch:
     inputs:
       ladder:
-        description: ladder (comma conn counts; stops at availability < 70%)
-        default: "256,512,1024,2048,4096,8192"
+        description: ladder ('start=N,max=M'; doubles conns until availability < 70%)
+        default: "start=256,max=8192"
       duration:
         description: seconds per level
         default: "10"
+      conv_members:
+        description: members per conversation (fanout width)
+        default: "50"
+      no_ratelimit:
+        description: "DISABLE rate limiting for raw-ceiling mode (true/false)"
+        default: "true"
   push:
     tags: ['v*']
 
@@ -58,24 +68,54 @@ jobs:
           go build -o /tmp/chatd ./server/cmd/chatd
           go build -o /tmp/stressd ./scripts/stress
 
-      - name: Verify binaries
-        run: test -x /tmp/chatd && test -x /tmp/stressd && echo ready
+      - name: Verify binaries + unit tests
+        run: |
+          test -x /tmp/chatd && test -x /tmp/stressd && echo ready
+          go test ./scripts/stress -run 'TestPercentile|TestAvailability|TestMergeSamples|TestRing' -v
 
       # ---- ladder 压测（自动加压到可用性 70%）----
       - name: Run ladder stress
         env:
           CHATD_BIN: /tmp/chatd
-          LADDER: ${{ github.event.inputs.ladder || '256,512,1024,2048,4096,8192' }}
+          LADDER: ${{ github.event.inputs.ladder || 'start=256,max=8192' }}
           DURATION: ${{ github.event.inputs.duration || '10' }}
+          CONV_MEMBERS: ${{ github.event.inputs.conv_members || '50' }}
+          NO_RATELIMIT: ${{ github.event.inputs.no_ratelimit || 'true' }}
         run: |
-          /tmp/stressd -ladder "$LADDER" -duration "$DURATION" -out ladder.json | tee stress.log
-          echo '## Capacity ladder' >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -E '^\s+[0-9]+ ' stress.log >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          # 提取极限档位写进 summary
-          LAST_PASS=$(grep 'PASS' stress.log | tail -1 | awk '{print $1}')
-          FIRST_FAIL=$(grep 'FAIL' stress.log | head -1 | awk '{print $1}')
+          set -e
+          EXTRA=""
+          RL_STATE="ENABLED (production parity)"
+          if [ "$NO_RATELIMIT" = "true" ]; then
+            EXTRA="--no-ratelimit"
+            RL_STATE="DISABLED (raw-ceiling mode — NOT production limits)"
+          fi
+          echo "rate limiting: $RL_STATE" | tee stress.log
+          /tmp/stressd -ladder "$LADDER" -duration "$DURATION" \
+            -mode mixed --conv-members "$CONV_MEMBERS" $EXTRA \
+            -out ladder.json 2>&1 | tee -a stress.log
+
+          {
+            echo '## OpenChat capacity ladder'
+            echo ''
+            echo "- **rate limiting:** $RL_STATE"
+            echo "- **conv members / fanout width:** $CONV_MEMBERS"
+            echo "- **mode:** mixed (MSG_SEND 70% / TYPING 15% / RECEIPT 10% / PRESENCE 5%)"
+            echo ''
+            echo '```'
+            grep -E '^\s+[0-9]+ ' stress.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # 可信度声明（预注册用户数 / 是否关限流 / 样本是否足够 / ramp 是否超时）
+          {
+            echo '### 可信度声明'
+            echo '```'
+            sed -n '/== 可信度声明/,/send->peer_recv/p' stress.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          LAST_PASS=$(grep -E '^\s+[0-9]+ ' stress.log | grep 'PASS' | tail -1 | awk '{print $1}')
+          FIRST_FAIL=$(grep -E '^\s+[0-9]+ ' stress.log | grep -E 'FAIL|SATURATED|RAMP_TIMEOUT' | head -1 | awk '{print $1}')
           {
             echo "- **last passing level:** ${LAST_PASS:-n/a} conns"
             echo "- **first failing level:** ${FIRST_FAIL:-none reached}"

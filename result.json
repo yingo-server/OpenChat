@@ -1,26 +1,26 @@
 {
   "base": "http://127.0.0.1:18080",
-  "conns": 64,
-  "duration": 6,
-  "total_fail": 44,
-  "total_ok": 1870,
+  "conns": 3,
+  "duration": 2,
+  "total_fail": 0,
+  "total_ok": 99,
   "ws.connect": {
-    "fail": 44,
-    "ok": 20,
-    "p50_ms": 124,
-    "p95_ms": 158,
-    "p99_ms": 158
+    "fail": 0,
+    "ok": 3,
+    "p50_ms": 12,
+    "p95_ms": 12,
+    "p99_ms": 12
   },
   "ws.ping": {
     "fail": 0,
-    "ok": 925,
+    "ok": 48,
     "p50_ms": 0,
-    "p95_ms": 1,
-    "p99_ms": 3
+    "p95_ms": 0,
+    "p99_ms": 0
   },
   "ws.send": {
     "fail": 0,
-    "ok": 925,
+    "ok": 48,
     "p50_ms": 0,
     "p95_ms": 1,
     "p99_ms": 2

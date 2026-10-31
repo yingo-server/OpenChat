@@ -80,10 +80,11 @@ type callState struct {
 // expiredCall is one swept-out call, handed back to the pipe so it can emit the
 // timeout hangup to both parties outside the registry lock.
 type expiredCall struct {
-	callID string
-	convID int64
-	from   int64
-	to     int64
+	callID    string
+	convID    int64
+	from      int64
+	to        int64
+	startedAt time.Time
 }
 
 // callRegistry is the guarded in-process call table plus a reverse index
@@ -92,11 +93,11 @@ type callRegistry struct {
 	mu         sync.Mutex
 	calls      map[string]*callState
 	userInCall map[int64]string
-	timeout    time.Duration       // ring window
-	maxCallDur time.Duration       // active-call ceiling (maxCallDuration)
-	maxCalls   int                 // table size cap
-	sweepEvery time.Duration       // ticker interval
-	now        func() time.Time    // injectable clock (tests advance it)
+	timeout    time.Duration    // ring window
+	maxCallDur time.Duration    // active-call ceiling (maxCallDuration)
+	maxCalls   int              // table size cap
+	sweepEvery time.Duration    // ticker interval
+	now        func() time.Time // injectable clock (tests advance it)
 }
 
 func newCallRegistry() *callRegistry {
@@ -209,7 +210,7 @@ func (c *callRegistry) sweepExpired(now time.Time) []expiredCall {
 		delete(c.calls, id)
 		delete(c.userInCall, st.from)
 		delete(c.userInCall, st.to)
-		out = append(out, expiredCall{callID: id, convID: st.convID, from: st.from, to: st.to})
+		out = append(out, expiredCall{callID: id, convID: st.convID, from: st.from, to: st.to, startedAt: st.startedAt})
 	}
 	return out
 }
@@ -268,6 +269,15 @@ func (p *Pipe) runCallSweeper(ctx context.Context) {
 func (p *Pipe) sweepCalls(now time.Time) {
 	for _, ex := range p.calls.sweepExpired(now) {
 		p.sendCallHangup(ex.callID, ex.convID, ex.from, ex.to)
+		// Audit the timed-out call end (metadata only, never SDP). The call is
+		// already cleared, so duration comes from the swept snapshot.
+		p.audit(context.Background(), "call.end", ex.from, "call:"+ex.callID, map[string]any{
+			"call_id":     ex.callID,
+			"conv_id":     ex.convID,
+			"peer_uid":    ex.to,
+			"duration_ms": now.Sub(ex.startedAt).Milliseconds(),
+			"reason":      "timeout",
+		})
 	}
 }
 
@@ -336,9 +346,15 @@ func (p *Pipe) onCallOffer(ctx context.Context, req Req, sig wire.CallSignal, se
 		return
 	}
 	p.relayCall(req, sig, sender, to)
+	// Audit call establishment: metadata only, NEVER SDP/candidate content.
+	p.audit(ctx, "call.start", sender, "call:"+sig.CallID, map[string]any{
+		"call_id":     sig.CallID,
+		"conv_id":     convID,
+		"peer_uid":    to,
+		"duration_ms": int64(0),
+		"reason":      "offer",
+	})
 }
-
-// replyCallBusy emits CALL_BUSY{reason:"busy"} back to the calling uid.
 func (p *Pipe) replyCallBusy(callID string, convID, to int64) {
 	pl, _ := wire.Marshal(wire.CallSignal{CallID: callID, Reason: "busy", FromUserID: uint64(to)})
 	p.reply(&env{Kind: uint32(kinds.KindCallBusy), ConvID: uint64(convID), UserID: uint64(to), Payload: pl})
@@ -395,6 +411,21 @@ func (p *Pipe) onCallTeardown(ctx context.Context, req Req, sig wire.CallSignal,
 	}
 	p.calls.remove(sig.CallID)
 	p.relayCall(req, sig, sender, peer)
+	// Audit call end on an explicit HANGUP (BUSY is a pre-call rejection, not a
+	// call end). Metadata only — duration/reason/peer, never SDP.
+	if req.Kind == uint32(kinds.KindCallHangup) {
+		reason := sig.Reason
+		if reason == "" {
+			reason = "hangup"
+		}
+		p.audit(ctx, "call.end", sender, "call:"+sig.CallID, map[string]any{
+			"call_id":     sig.CallID,
+			"conv_id":     st.convID,
+			"peer_uid":    peer,
+			"duration_ms": time.Since(st.startedAt).Milliseconds(),
+			"reason":      reason,
+		})
+	}
 }
 
 // relayCall rewrites FromUserID to the real sender and emits the frame to

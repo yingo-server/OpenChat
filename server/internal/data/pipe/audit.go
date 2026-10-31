@@ -15,6 +15,7 @@ package pipe
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 
 	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
@@ -25,7 +26,7 @@ import (
 // JSON-serialized verbatim into AuditEvent.Detail. A nil journal or a failing
 // Append is logged and ignored (best-effort; never blocks the caller).
 func (p *Pipe) audit(ctx context.Context, action string, actor int64, subject string, detail map[string]any) {
-	if p.cold.Audit == nil {
+	if auditJournalNil(p.cold.Audit) {
 		return // no cold store: auditing disabled (assembly logs the absent-cold WARN)
 	}
 	var payload []byte
@@ -88,4 +89,20 @@ func userActor(uid int64) string {
 		return "user:0"
 	}
 	return "user:" + itoa(uid)
+}
+
+// auditJournalNil reports whether j is unusable (absent). It treats BOTH an
+// untyped nil interface AND a typed-nil pointer (e.g. a (*pg.ColdDB)(nil)
+// stashed into the interface when the cold store is unavailable) as absent —
+// otherwise calling Append on the typed nil would panic instead of degrading.
+func auditJournalNil(j store.AuditJournal) bool {
+	if j == nil {
+		return true
+	}
+	v := reflect.ValueOf(j)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
+		return v.IsNil()
+	}
+	return false
 }
