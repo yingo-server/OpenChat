@@ -223,8 +223,16 @@ jobs:
       - name: Build SHA256SUMS
         run: |
           cd dist
-          sha256sum *.tar.gz *.zip > SHA256SUMS 2>/dev/null || sha256sum * > SHA256SUMS
+          # Artifacts unpack into per-artifact subdirectories, so a plain
+          # "sha256sum *" hits directories and fails. Flatten the package
+          # files to dist/ first, then hash only those.
+          find . -mindepth 2 -maxdepth 3 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv -f {} . \;
+          rm -rf web-client web-admin src-package 2>/dev/null || true
+          find . -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) -printf '%P\n' \
+            | sort | xargs -r sha256sum > SHA256SUMS
           ls -lh; cat SHA256SUMS
+          # A release with no packages is a silent failure — make it loud.
+          test -s SHA256SUMS
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
