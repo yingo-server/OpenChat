@@ -126,6 +126,10 @@ jobs:
       - name: Publish result to bench branch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The bench branch is a convenience archive. A push failure (branch
+        # protection, token scope) must not mark a successful measurement as a
+        # failed job — the numbers are in the step summary and the artifact.
+        continue-on-error: true
         run: |
           set -e
           TS=$(date -u +%Y%m%dT%H%M%SZ)
