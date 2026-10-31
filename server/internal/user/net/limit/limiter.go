@@ -359,9 +359,17 @@ func (l *Limiter) AllowAt(connID uint64, uid int64, kind uint32, payloadLen int,
 	}
 	kill := l.judgeKill(cs, cfg, now)
 	// 用户级连续超限惩罚（L3 预算减半 / L4 断连）。
+	//
+	// Only overage of a *substantive* rule counts. Silent rules (typing,
+	// presence) are best-effort signals that a normal client emits slightly
+	// faster than the budget; letting them drive the penalty halves a user's
+	// real message budget and looks like the server is broken. Measured
+	// before the fix: 128 clients sending typing at 1.5/s were demoted to
+	// 67% message availability purely from that false positive.
 	userKill := false
 	if u != nil {
-		userKill = l.userPenalty(u, cfg, now, !userOK)
+		userOver := !userOK && !rule.Silent
+		userKill = l.userPenalty(u, cfg, now, userOver)
 	}
 	l.mu.Unlock()
 

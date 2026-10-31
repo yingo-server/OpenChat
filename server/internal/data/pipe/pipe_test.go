@@ -392,13 +392,23 @@ func TestMsgSendMediaPersistAndFanout(t *testing.T) {
 
 	// Drain the outbound lane: ack (sender) then MSG_NEW (uid 8). The commit
 	// happens before either is emitted, so snapshot is valid afterwards.
+	// The ACK arrives on the reply lane; the broadcast copy on the fan-out
+	// lane. They are separate queues by design, so read both.
 	var msgNew []byte
-	for i := 0; i < 3; i++ {
-		e := waitEnv(t, p.Outbound())
-		if e.Kind == uint32(kinds.KindMsgNew) {
-			msgNew = e.Payload
-			break
+	for i := 0; i < 3 && msgNew == nil; i++ {
+		select {
+		case e := <-p.Outbound():
+			_ = e // ACK for the sender
+		case e := <-p.OutboundFan():
+			if e.Kind == uint32(kinds.KindMsgNew) {
+				msgNew = e.Payload
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for ACK / MSG_NEW")
 		}
+	}
+	if msgNew == nil {
+		t.Fatalf("no MSG_NEW observed on the fan-out lane")
 	}
 
 	// 1) stored content keeps the media reference.

@@ -25,7 +25,8 @@ type ColdDeps struct {
 
 const (
 	writeChBuf    = 128    // D-1 red line: 满则 BUSY NACK，绝不阻塞
-	outChBuf      = 4096   // outbound lane to the peer (与 egress 队列同量级)
+	outChBuf      = 8192   // reply lane (acks/errors/results)
+	outFanBuf     = 8192   // bulk fan-out lane
 	dedupCapacity = 100000 // memory dedup LRU: 10 万
 )
 
@@ -60,7 +61,17 @@ type Pipe struct {
 	lg   *log.Logger
 
 	writeCh chan ReadyMsg
-	outCh   chan *env
+	// outCh carries replies: ACKs, error/result frames — the client is blocked
+	// on these, so they must never queue behind broadcast traffic.
+	outCh chan *env
+	// outFan carries bulk fan-out (MSG_NEW copies, typing, presence, receipts,
+	// member updates). A 50-member group emits 50 frames per message; on one
+	// shared queue those frames delayed every ACK by seconds (measured: 22%
+	// ACK rate at 128 connections). Separate queue, separate sender.
+	outFan chan *env
+	// sendMu serialises peer.Send across the two sender goroutines.
+	sendMu  sync.Mutex
+	fanDone chan struct{}
 
 	// emit converts an outbound env into a transport frame. Per instance (see
 	// SetEmit): a package-level global raced between two assemblies.
@@ -126,6 +137,8 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 		lg:          lg,
 		writeCh:     make(chan ReadyMsg, writeChBuf),
 		outCh:       make(chan *env, outChBuf),
+		outFan:      make(chan *env, outFanBuf),
+		fanDone:     make(chan struct{}),
 		FrameSource: ShellFrameSource,
 		dedup:       NewDedup(dedupCapacity),
 		cache:       cache.New(cache.DefaultCapacity),
@@ -133,6 +146,8 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 	}
 	p.seq = &seqAlloc{w: hot}
 	p.fl = newFlusher(hot, hot, p.outCh, p.writeCh, p.dedup, lg)
+	p.fl.putBulk = p.sendFanout
+	p.fl.putAck = p.reply
 	p.fl.setMediaStore(hot)
 	p.mc = newMemberCache(hot)
 	p.fl.mc = p.mc
@@ -141,7 +156,7 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 	p.mc = newMemberCache(hot)
 	p.conv = &convDomain{conv: hot, id: hot, cache: p.cache, members: p.mc}
 	p.emit = DefaultEmit
-	p.fanout = newFanoutPlane(p.mc, p.outCh, lg)
+	p.fanout = newFanoutPlane(p.mc, p.sendFanout, lg)
 	p.ident = identity.New(hot, p.cache)
 	p.sys = &sysDomain{sys: hot}
 	p.calls = newCallRegistry()
@@ -155,6 +170,9 @@ func (p *Pipe) SetTrunkee(t Trunkee) { p.trunk = t }
 // Outbound exposes the outbound env lane (tests/assembly tapping).
 func (p *Pipe) Outbound() <-chan *env { return p.outCh }
 
+// OutboundFan exposes the bulk fan-out lane (tests assert broadcast frames).
+func (p *Pipe) OutboundFan() <-chan *env { return p.outFan }
+
 // Run starts the goroutine group and blocks until ctx is canceled or the
 // peer's frame stream closes.
 func (p *Pipe) Run(ctx context.Context) {
@@ -163,6 +181,7 @@ func (p *Pipe) Run(ctx context.Context) {
 	go p.fl.run(fctx)
 	go p.fanout.start(fctx)
 	go p.sender()
+	go p.fanSender()
 	go p.runCallSweeper(fctx)
 
 	for {
@@ -183,9 +202,25 @@ func (p *Pipe) Run(ctx context.Context) {
 func (p *Pipe) sender() {
 	defer close(p.senderDone)
 	for e := range p.outCh {
-		if err := p.peer.Send(p.emit(e)); err != nil {
-			p.lg.Warn("pipe: peer send failed", "err", err.Error())
-		}
+		p.sendOne(e)
+	}
+}
+
+// fanSender drains the bulk lane. It is a separate goroutine so a burst of
+// broadcast frames can neither fill nor delay the reply lane.
+func (p *Pipe) fanSender() {
+	defer close(p.fanDone)
+	for e := range p.outFan {
+		p.sendOne(e)
+	}
+}
+
+func (p *Pipe) sendOne(e *env) {
+	p.sendMu.Lock()
+	err := p.peer.Send(p.emit(e))
+	p.sendMu.Unlock()
+	if err != nil {
+		p.lg.Warn("pipe: peer send failed", "err", err.Error())
 	}
 }
 
@@ -216,6 +251,7 @@ func (p *Pipe) Drain(ctx context.Context) {
 
 	p.outMu.Lock()
 	close(p.outCh)
+	close(p.outFan)
 	p.outMu.Unlock()
 
 	select {
@@ -465,6 +501,22 @@ func (p *Pipe) reply(e *env) {
 	select {
 	case p.outCh <- e:
 	default:
-		p.lg.Warn("pipe: outbound lane full; reply dropped")
+		p.lg.Warn("pipe: reply lane full; reply dropped")
+	}
+}
+
+// sendFanout places one bulk frame on the fan-out lane. Returns false when the
+// frame was dropped (counted by the caller).
+func (p *Pipe) sendFanout(e *env) bool {
+	p.outMu.RLock()
+	defer p.outMu.RUnlock()
+	if p.draining {
+		return false
+	}
+	select {
+	case p.outFan <- e:
+		return true
+	default:
+		return false
 	}
 }

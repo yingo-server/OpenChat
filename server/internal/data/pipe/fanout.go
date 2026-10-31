@@ -146,8 +146,9 @@ type fanoutPlane struct {
 
 	mc *memberCache // recipient-set cache (member list / peer set)
 
-	// out is the outbound lane of the pipe.
-	out chan *env
+	// put places one frame on the outbound lane, honouring the reserve the pipe
+	// keeps for replies. Returns false when the frame was dropped.
+	put func(*env) bool
 
 	// window is the aggregation window (injectable for tests).
 	window time.Duration
@@ -196,12 +197,12 @@ type presenceSlot struct {
 }
 
 // newFanoutPlane builds the fan-out plane.
-func newFanoutPlane(mc *memberCache, out chan *env, lg *log.Logger) *fanoutPlane {
+func newFanoutPlane(mc *memberCache, put func(*env) bool, lg *log.Logger) *fanoutPlane {
 	return &fanoutPlane{
 		queue:          make(chan fanoutJob, fanoutQueueBuf),
 		lg:             lg,
 		mc:             mc,
-		out:            out,
+		put:            put,
 		window:         defaultFanoutWindow,
 		presenceWindow: defaultPresenceDebounce,
 		buckets:        map[string]*fanoutBucket{},
@@ -499,14 +500,13 @@ func (f *fanoutPlane) broadcast(ctx context.Context, job fanoutJob) {
 func (f *fanoutPlane) emit(kind uint32, cid, uid uint64, payload []byte) {
 	if kind == 401 || kind == 402 {
 	}
-	select {
-	case f.out <- &env{Kind: kind, ConvID: cid, UserID: uid, Payload: payload}:
+	if f.put(&env{Kind: kind, ConvID: cid, UserID: uid, Payload: payload}) {
 		f.stBroadcasts.Add(1)
-	default:
-		f.stOutboundDrop.Add(1)
-		f.lg.Warn("fanout: outbound lane full; frame dropped",
-			"kind", kinds.KindName(kind), "uid", uid)
+		return
 	}
+	f.stOutboundDrop.Add(1)
+	f.lg.Warn("fanout: outbound lane at bulk high-water; frame dropped",
+		"kind", kinds.KindName(kind), "uid", uid)
 }
 
 // isTypingKind reports whether kind is the typing signal.

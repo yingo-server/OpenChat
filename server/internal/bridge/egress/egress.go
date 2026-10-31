@@ -264,8 +264,15 @@ func topicOf(f *proto.Frame) string {
 	return "sys"
 }
 
+// isNeverDrop lists frames whose loss is a correctness or liveness bug rather
+// than a degradation. MSG_ACK belongs here: the sending client is blocked on
+// that round trip, so dropping it behind broadcast traffic turns a capacity
+// problem into a silent "my message never sent" for the user. Measured before
+// the fix: 128 connections in 50-member groups delivered only 67% of ACKs
+// because the fan-out frames pushed the layer queue past its firm watermark.
 func isNeverDrop(kind uint32) bool {
 	return kind == kinds.KindInternalHeartbeat || kind == kinds.KindInternalFrameAck ||
+		kind == kinds.KindMsgAck ||
 		kind == kinds.KindPing || kind == kinds.KindPong || kind < 100 ||
 		(kind >= 900 && kind < 910)
 }

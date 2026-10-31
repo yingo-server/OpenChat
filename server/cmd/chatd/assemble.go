@@ -301,7 +301,12 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	// aggregate budget; converge the limiter's MSG_SEND rule onto it
 	// (never looser — see limitwire.go). Applied post-construction via the
 	// same atomic-swap path that SIGHUP reload() uses.
-	if a.policy != nil {
+	// Only converge policy limits when rate limiting is actually enabled: the
+	// disabled path scales every rule to 1e9 in app.Config.Policy(), and
+	// re-applying the policy numbers here silently undid that — a flag that
+	// says "off" but behaves "on" (measured: 2 MSG_SEND kills per connection
+	// in a capacity test that asked for no limits).
+	if a.policy != nil && a.cfg.RateLimitEnabled {
 		snap := a.user.Policy().Snapshot()
 		snap.Limits = limitFromPolicy(a.policy.Current().Policy, snap.Limits)
 		a.user.ReloadPolicy(snap)
@@ -538,7 +543,7 @@ func (a *assembly) reload(ctx context.Context) {
 	// gateway's limiter (see limitwire.go for the mapping semantics).
 	// The limiter stores rules in an atomic pointer: the swap is lock-free
 	// and immediately visible to every live connection's verdict path.
-	if a.policy != nil && a.user != nil {
+	if a.policy != nil && a.user != nil && a.cfg.RateLimitEnabled {
 		snap := a.user.Policy().Snapshot()
 		snap.Limits = limitFromPolicy(a.policy.Current().Policy, snap.Limits)
 		a.user.ReloadPolicy(snap)

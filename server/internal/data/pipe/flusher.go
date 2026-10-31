@@ -22,10 +22,16 @@ const (
 // Acks hang off the COMMIT, never off the enqueue (docs §1.2). A failed
 // batch answers the WHOLE batch with code=500 (all-or-nothing contract).
 type flusher struct {
-	w         store.MsgWriter
-	convs     store.ConvStore
-	media     store.MediaStore // optional: enriches media[] with thumb/waveform/status
-	out       chan<- *env
+	w     store.MsgWriter
+	convs store.ConvStore
+	media store.MediaStore // optional: enriches media[] with thumb/waveform/status
+	out   chan<- *env
+	// putBulk places a fan-out frame on the lane, honouring the reserve the
+	// pipe keeps for replies. Fan-out must never consume the ACK headroom.
+	putBulk func(*env) bool
+	// putAck places an ACK on the lane with full capacity: the sender is
+	// blocked on it, so it outranks broadcast traffic.
+	putAck    func(*env)
 	lg        *log.Logger
 	batchSize int
 	interval  time.Duration
@@ -205,10 +211,8 @@ func (f *flusher) fanoutNew(m store.PendingMsg, mediaIdx map[string]*store.Media
 			continue
 		}
 		e := &env{Kind: uint32(kinds.KindMsgNew), ConvID: uint64(m.Cid), UserID: uint64(member.UID), Payload: payload}
-		select {
-		case f.out <- e:
-		default:
-			f.lg.Warn("flusher: outbound lane full; MSG_NEW dropped", "cid", m.Cid, "uid", member.UID)
+		if f.putBulk != nil && !f.putBulk(e) {
+			f.lg.Warn("flusher: outbound lane at bulk high-water; MSG_NEW dropped", "cid", m.Cid, "uid", member.UID)
 		}
 	}
 }
@@ -480,9 +484,7 @@ const maxWaveformSamples = 24
 // (dedup memory + DB UNIQUE) is the safety net for a dropped ack.
 func (f *flusher) emit(m store.PendingMsg, status uint32, reason string) {
 	e := buildAckEnv(m.SenderID, m.Cid, m.ClientMsgID, m.MsgID, m.Seq, status)
-	select {
-	case f.out <- e:
-	default:
-		f.lg.Warn("flusher: outbound lane full; ack dropped (retry will dedup)")
-	}
+	// ACK goes through the full-capacity path: bulk fan-out is capped below the
+	// high-water mark so the round trip the client is waiting on always fits.
+	f.putAck(e)
 }
