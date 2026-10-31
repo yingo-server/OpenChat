@@ -42,8 +42,11 @@ proto:
 build: proto
 	go build ./...
 
+# -p 1: each test package boots a real server; running many in parallel on a
+# small machine exhausts ports/CPU and produces spurious failures (observed
+# locally with 2 cores). Determinism matters more than wall-clock here.
 test:
-	go test ./... -race -count=1
+	go test ./... -race -count=1 -p 1
 
 lint:
 	go vet ./...

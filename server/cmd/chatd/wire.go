@@ -615,13 +615,13 @@ func buildRoutesFromData() map[uint32][]router.Target {
 		// these entries the main table routes them BACK to data (same kinds
 		// as the uplink) and the frame loops until dropped — the peer never
 		// sees it. Same bug class as the call signaling loop, different kinds.
-		kinds.KindMsgRead:             toUser("sys.receipt"),
-		kinds.KindMsgDelivered:        toUser("sys.receipt"),
-		kinds.KindTyping:              toUser("sys.typing"),
-		kinds.KindMsgDelete:           toUser("sys.mutation"),
-		kinds.KindMsgRecall:           toUser("sys.mutation"),
-		kinds.KindPresenceUpdate:      toUser("sys.presence"),
-		kinds.KindPresenceOnline:   toUser("sys.presence"),
+		kinds.KindMsgRead:         toUser("sys.receipt"),
+		kinds.KindMsgDelivered:    toUser("sys.receipt"),
+		kinds.KindTyping:          toUser("sys.typing"),
+		kinds.KindMsgDelete:       toUser("sys.mutation"),
+		kinds.KindMsgRecall:       toUser("sys.mutation"),
+		kinds.KindPresenceUpdate:  toUser("sys.presence"),
+		kinds.KindPresenceOnline:  toUser("sys.presence"),
 		kinds.KindPresenceOffline: toUser("sys.presence"),
 	}
 }

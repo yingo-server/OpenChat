@@ -122,8 +122,8 @@ func DefaultConfig() Config {
 			// TYPING 1/s 3 5 0B（无 payload）— §1.2.2 第 3 行；"0B"落地为 64B 硬上限
 			kinds.KindTyping: {Rate: 1, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
 			// PRESENCE 1/10s 3 5 0B — §1.2.2 第 4 行（update/subscribe/unsubscribe）；"0B"→64B
-			kinds.KindPresenceUpdate:      {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
-			kinds.KindPresenceOnline:   {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
+			kinds.KindPresenceUpdate:  {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
+			kinds.KindPresenceOnline:  {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
 			kinds.KindPresenceOffline: {Rate: 1.0 / 10.0, Burst: 3, Capacity: 5, PayloadCap: 64, Silent: true},
 			// READ_ACK / DELIVER_ACK 10/s 30 60 256B — §1.2.2 第 5 行
 			kinds.KindMsgRead:      {Rate: 10, Burst: 30, Capacity: 60, MaxPayload: 256, PayloadCap: 256},
