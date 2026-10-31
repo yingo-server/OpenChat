@@ -36,7 +36,10 @@ type stats struct {
 	byName map[string]*stats1
 }
 
-type stats1 struct{ ok, fail int64; lat []time.Duration }
+type stats1 struct {
+	ok, fail int64
+	lat      []time.Duration
+}
 
 func newStats() *stats {
 	return &stats{errs: map[string]int{}, byName: map[string]*stats1{}}
@@ -218,7 +221,13 @@ func dialWS(base, token string) (*websocket.Conn, error) {
 }
 
 func mkSend(cid uint64, text string) []byte {
-	pl, _ := json.Marshal(map[string]any{"text": text, "clientMsgId": randHex(12)})
+	return mkSendWithID(cid, text, randHex(12))
+}
+
+// mkSendWithID builds a MSG_SEND envelope with an explicit client message id so
+// the ACK can be correlated back to the send timestamp (send→ACK latency).
+func mkSendWithID(cid uint64, text, cmid string) []byte {
+	pl, _ := json.Marshal(map[string]any{"text": text, "clientMsgId": cmid})
 	env := jsonEnvelope{ID: 1, Kind: 101, Version: 1, RequestID: randHex(10),
 		SentAt: uint64(time.Now().UnixMilli()), ConvID: cid,
 		Payload: base64.StdEncoding.EncodeToString(pl)}
@@ -529,146 +538,224 @@ rate_limit_enabled = false
 	}
 	fmt.Printf("%8s %10s %9s %12s %10s %6s %10s %10s %10s\n", "conns", "sends", "avail%", "global RPM", "conn p95", "samp", "avg lat", "p95 lat", "verdict")
 	type row struct {
-		Conns  int     `json:"conns"`
-		Sends  int64   `json:"sends"`
-		Fails  int64   `json:"fails"`
-		Avail  float64 `json:"avail_pct"`
-		RPM    float64 `json:"global_rpm"`
-		ConnP95 int64  `json:"conn_p95_ms"`
-		Pass   bool    `json:"pass"`
+		Conns   int     `json:"conns"`
+		Sends   int64   `json:"sends"`
+		Fails   int64   `json:"fails"`
+		Avail   float64 `json:"avail_pct"`
+		RPM     float64 `json:"global_rpm"`
+		ConnP95 int64   `json:"conn_p95_ms"`
+		Pass    bool    `json:"pass"`
 	}
 	var rows []row
 	limit := 0.70
+	// 每档：先爬坡建连（ramp），再进入稳态发送窗口（measure）。
+	// 关键修正：① ramp 阶段失败计入可用性（否则"啥都没发"会被算成 100% PASS）
+	//          ② 发送窗口从"爬坡完成后"起算，测的是稳态吞吐而非建连开销
+	//          ③ 时间驱动的 100 份延迟采样（send→ACK 全程）
 	for n := start; n <= maxConns; n *= 2 {
-		st := newStats()
-		var wg sync.WaitGroup
-		// 全局发送计数（RPM 用）
-		var globalSent atomic.Int64
-		dl := time.Now().Add(time.Duration(secs) * time.Second)
-		// 延迟采样：每档采 100 份（均匀分布在时间窗内），计入平均/分位数。
-		sampleN := 100
-		sampleEvery := time.Duration(int64(time.Duration(secs)*time.Second) / int64(sampleN))
-		if sampleEvery < time.Millisecond {
-			sampleEvery = time.Millisecond
+		rampBudget := 60 * time.Second
+		if n > 2048 {
+			rampBudget = 120 * time.Second
 		}
-		var nextSample atomic.Int64
+
+		type worker struct {
+			conn *websocket.Conn
+			tok  string
+		}
 		var (
-			pendingSample atomic.Int64
-			latMu         sync.Mutex
-			latSamples    []time.Duration
+			mu      sync.Mutex
+			ready   []*worker
+			rampErr int64
 		)
+
+		// ---- phase A: ramp ----
+		rampStart := time.Now()
+		var rwg sync.WaitGroup
+		sem := make(chan struct{}, 512) // 限制同时在途的登录+握手，避免自我 DoS
 		for i := 0; i < n; i++ {
-			wg.Add(1)
-			go func(id int) {
-				defer wg.Done()
+			rwg.Add(1)
+			go func() {
+				defer rwg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
 				c, err := guest(baseURL)
 				if err != nil {
+					atomic.AddInt64(&rampErr, 1)
 					return
 				}
 				var conn *websocket.Conn
-				for attempt := 0; attempt < 5; attempt++ {
-					hdr := http.Header{"Cookie": []string{"access_token=" + c.tok}}
+				hdr := http.Header{"Cookie": []string{"access_token=" + c.tok}}
+				for attempt := 0; attempt < 6; attempt++ {
 					conn, _, err = websocket.DefaultDialer.Dial("ws"+baseURL[len("http"):]+"/ws", hdr)
 					if err == nil {
 						break
 					}
-					time.Sleep(200 * time.Millisecond)
+					time.Sleep(250 * time.Millisecond)
 				}
 				if err != nil {
-					st.add("ws.connect", 0, err)
+					atomic.AddInt64(&rampErr, 1)
 					return
 				}
-				var sent atomic.Int64
+				mu.Lock()
+				ready = append(ready, &worker{conn: conn, tok: c.tok})
+				mu.Unlock()
+			}()
+		}
+
+		rampDone := make(chan struct{})
+		go func() { rwg.Wait(); close(rampDone) }()
+		rampTimedOut := false
+		select {
+		case <-rampDone:
+		case <-time.After(rampBudget):
+			rampTimedOut = true
+		}
+
+		mu.Lock()
+		ok := len(ready)
+		mu.Unlock()
+		rampDur := time.Since(rampStart)
+		rampPct := float64(ok) / float64(n) * 100
+
+		// 爬坡成功率不足 70% → 该档已饱和，停止加压。
+		if rampPct < 70 {
+			fmt.Printf("%8d %10s %9.1f%% %12s %10s %6d %10s %10s %10s  (ramp %d/%d in %s, errs=%d)\n",
+				n, "-", rampPct, "-", rampDur.Round(time.Millisecond).String(), 0, "-", "-", "SATURATED", ok, n, rampDur.Round(time.Millisecond), atomic.LoadInt64(&rampErr))
+			rows = append(rows, row{Conns: n, Sends: 0, Fails: int64(n - ok), Avail: rampPct, RPM: 0, ConnP95: rampDur.Milliseconds(), Pass: false})
+			break
+		}
+		if rampTimedOut {
+			fmt.Printf("%8d %10s %9.1f%% %12s %10s %6d %10s %10s %10s  (ramp timeout %d/%d)\n",
+				n, "-", rampPct, "-", rampDur.Round(time.Millisecond).String(), 0, "-", "-", "RAMP_TIMEOUT", ok, n)
+			rows = append(rows, row{Conns: n, Sends: 0, Fails: int64(n - ok), Avail: rampPct, RPM: 0, ConnP95: rampDur.Milliseconds(), Pass: false})
+			break
+		}
+
+		// ---- phase B: steady-state send ----
+		var (
+			sendOK     int64
+			sendFail   int64
+			globalSent int64
+			lastLat    int64 // 最近一次 send→ACK 延迟（ns）
+		)
+		win := time.Duration(secs) * time.Second
+		dl := time.Now().Add(win)
+		for _, w := range ready {
+			go func(w *worker) {
+				pending := make(map[string]time.Time, 16)
+				var pmu sync.Mutex
+				// 读线程：ACK 到达即计算 send→ACK 延迟
 				go func() {
 					for {
-						_, data, err := conn.ReadMessage()
+						_, data, err := w.conn.ReadMessage()
 						if err != nil {
 							return
 						}
 						var env struct {
-							Kind uint32 `json:"kind"`
+							Kind    uint32 `json:"kind"`
+							Payload string `json:"payload"`
 						}
-						if json.Unmarshal(data, &env) == nil && env.Kind == 103 {
-							sent.Add(1)
-							// 完成最早的待采样发送：记录 send→ack 延迟。
-							if t := pendingSample.Swap(0); t != 0 {
-								lat := time.Since(time.Unix(0, t))
-								latMu.Lock()
-								latSamples = append(latSamples, lat)
-								latMu.Unlock()
-							}
+						if json.Unmarshal(data, &env) != nil || env.Kind != 103 {
+							continue
 						}
+						// ACK payload 里带 clientMsgId
+						raw, derr := base64.StdEncoding.DecodeString(env.Payload)
+						if derr != nil {
+							continue
+						}
+						var ack struct {
+							ClientMsgID string `json:"clientMsgId"`
+						}
+						if json.Unmarshal(raw, &ack) != nil {
+							continue
+						}
+						pmu.Lock()
+						if t0, found := pending[ack.ClientMsgID]; found {
+							delete(pending, ack.ClientMsgID)
+							atomic.StoreInt64(&lastLat, int64(time.Since(t0)))
+						}
+						pmu.Unlock()
 					}
 				}()
+
 				for time.Now().Before(dl) {
-					t0 := time.Now()
-					if err := conn.WriteMessage(websocket.TextMessage, mkSend(uint64(cid), "l")); err != nil {
-						st.add("ws.send", 0, err)
+					cmid := randHex(12)
+					msg := mkSendWithID(uint64(cid), "l", cmid)
+					pmu.Lock()
+					pending[cmid] = time.Now()
+					pmu.Unlock()
+					if err := w.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+						atomic.AddInt64(&sendFail, 1)
 						return
 					}
-					globalSent.Add(1)
-					// 全局 ACK 回流时间 = send→ack 的真实投递延迟；
-					// 采样窗内的发送才计入 100 份样本（recordAck 里判断）。
-					if int(nextSample.Load()) < sampleN && time.Since(t0) >= 0 && id == int(nextSample.Load())%n {
-						pendingSample.Store(t0.UnixNano())
-						nextSample.Add(1)
-					}
-					st.add("ws.send", time.Since(t0), nil)
+					atomic.AddInt64(&sendOK, 1)
+					atomic.AddInt64(&globalSent, 1)
 					time.Sleep(20 * time.Millisecond)
 				}
-			}(i)
+			}(w)
 		}
-		wg.Wait()
-		// 等待 ACK 回流
-		time.Sleep(2 * time.Second)
-		s := st.byName["ws.send"]
-		sends := int64(0)
-		if s != nil {
-			sends = s.ok
+
+		// 时间驱动采样：窗口内均匀取 100 个点
+		samples := make([]time.Duration, 0, 100)
+		sampleTick := win / 100
+		if sampleTick < time.Millisecond {
+			sampleTick = time.Millisecond
 		}
-		fails := int64(0)
-		if s != nil {
-			fails = s.fail
+		stk := time.NewTicker(sampleTick)
+		for len(samples) < 100 {
+			select {
+			case <-stk.C:
+				if v := atomic.LoadInt64(&lastLat); v > 0 {
+					samples = append(samples, time.Duration(v))
+				}
+			case <-time.After(time.Until(dl) + 500*time.Millisecond):
+				stk.Stop()
+				goto sendDone
+			}
 		}
-		total := sends + fails
+		stk.Stop()
+	sendDone:
+		time.Sleep(1500 * time.Millisecond) // 收尾 ACK
+
+		total := sendOK + sendFail
 		avail := 100.0
 		if total > 0 {
-			avail = float64(sends) / float64(total) * 100
+			avail = float64(sendOK) / float64(total) * 100
 		}
-		rpm := float64(globalSent.Load()) / float64(secs) * 60
-		connP95 := int64(0)
-		if c := st.byName["ws.connect"]; c != nil {
-			connP95 = pct(c.lat, .95).Milliseconds()
+		// 分母为 0 = 一条消息都没发出去，这不是 100%，是失败。
+		if total == 0 {
+			avail = 0
 		}
-		latMu.Lock()
-		avgLat := time.Duration(0)
-		if len(latSamples) > 0 {
-			var sum time.Duration
-			for _, d := range latSamples {
-				sum += d
-			}
-			avgLat = sum / time.Duration(len(latSamples))
+		rpm := float64(globalSent) / win.Seconds() * 60
+
+		var avgLat time.Duration
+		for _, d := range samples {
+			avgLat += d
 		}
-		samples := len(latSamples)
-		p95Lat := pct(latSamples, .95)
-		latMu.Unlock()
+		if len(samples) > 0 {
+			avgLat /= time.Duration(len(samples))
+		}
+		p95Lat := pct(samples, .95)
 
 		pass := avail >= limit*100
-		// 饱和检测：连不上也发不出（全灭）→ 主机资源耗尽，再翻倍无意义。
-		saturated := total > 0 && sends == 0
 		verdict := "PASS"
 		if !pass {
 			verdict = "FAIL"
 		}
-		if saturated {
-			verdict = "SATURATED"
+		fmt.Printf("%8d %10d %9.1f%% %12.0f %10s %6d %10v %10v %10s  (ramp %d/%d %s)\n",
+			n, sendOK, avail, rpm, rampDur.Round(time.Millisecond).String(), len(samples), avgLat.Round(time.Microsecond), p95Lat.Round(time.Microsecond), verdict, ok, n, rampDur.Round(time.Millisecond))
+		rows = append(rows, row{Conns: n, Sends: sendOK, Fails: sendFail, Avail: avail, RPM: rpm, ConnP95: rampDur.Milliseconds(), Pass: pass})
+
+		for _, w := range ready {
+			w.conn.Close()
 		}
-		fmt.Printf("%8d %10d %9.1f%% %12.0f %10dms %6d %10v %10v %10s\n", n, sends, avail, rpm, connP95, samples, avgLat, p95Lat, verdict)
-		rows = append(rows, row{n, sends, fails, avail, rpm, connP95, pass})
-		if !pass || saturated {
+
+		if !pass {
 			break
 		}
 	}
+
 	blob, _ := json.MarshalIndent(rows, "", "  ")
 	os.WriteFile(out, blob, 0o644)
 	fmt.Println("wrote", out)
