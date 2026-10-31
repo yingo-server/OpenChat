@@ -169,7 +169,10 @@ jobs:
           if [ "$GOOS" != windows ]; then
             cp -R deploy/systemd deploy/journald deploy/keygen deploy/install.sh deploy/backup.sh deploy/release.sh deploy/Caddyfile deploy/openchat.toml deploy/policy.json stage/deploy/ 2>/dev/null || true
           fi
-          VER="$(git describe --tags --always 2>/dev/null | tr -c 'A-Za-z0-9._-' '-')"
+          # tr -c would also turn the trailing newline into '-', producing
+          # 'v1.1.0-' and therefore 'openchat-v1.1.0--linux-amd64.tar.gz'.
+          # Strip the newline first.
+          VER="$(git describe --tags --always 2>/dev/null | tr -d '\n' | tr -c 'A-Za-z0-9._-' '-')"
           NAME="openchat-$VER-$GOOS-$GOARCH.$PKG"
           mkdir -p dist
           if [ "$PKG" = zip ]; then (cd stage && zip -qr "../dist/$NAME" .); else tar -czf "dist/$NAME" -C stage .; fi
@@ -193,7 +196,10 @@ jobs:
           fetch-depth: 0
       - name: Source tarball
         run: |
-          VER="$(git describe --tags --always 2>/dev/null | tr -c 'A-Za-z0-9._-' '-')"
+          # tr -c would also turn the trailing newline into '-', producing
+          # 'v1.1.0-' and therefore 'openchat-v1.1.0--linux-amd64.tar.gz'.
+          # Strip the newline first.
+          VER="$(git describe --tags --always 2>/dev/null | tr -d '\n' | tr -c 'A-Za-z0-9._-' '-')"
           mkdir -p dist
           git archive --format=tar.gz --prefix="openchat-$VER-src/" HEAD > "dist/openchat-$VER-src.tar.gz"
           ls -lh dist/
@@ -237,9 +243,11 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          # Windows cells without a mingw toolchain SKIP their package, so a
+          # *.zip pattern may legitimately match nothing — anchor on the
+          # package prefix and do not fail the release over a skipped target.
           files: |
-            dist/*.tar.gz
-            dist/*.zip
+            dist/openchat-*
             dist/SHA256SUMS
           generate_release_notes: true
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
