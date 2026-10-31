@@ -108,15 +108,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { goos: linux,   goarch: amd64,   pkg: tar.gz, cc: x86_64-linux-gnu-gcc,      apt: gcc-x86-64-linux-gnu}
-          - { goos: linux,   goarch: "386",   pkg: tar.gz, cc: i686-linux-gnu-gcc,        apt: gcc-i686-linux-gnu }
-          - { goos: linux,   goarch: arm64,   pkg: tar.gz, cc: aarch64-linux-gnu-gcc,     apt: gcc-aarch64-linux-gnu }
-          - { goos: linux,   goarch: arm,     pkg: tar.gz, cc: arm-linux-gnueabihf-gcc,   apt: gcc-arm-linux-gnueabihf }
-          - { goos: linux,   goarch: riscv64, pkg: tar.gz, cc: riscv64-linux-gnu-gcc,     apt: gcc-riscv64-linux-gnu }
-          - { goos: windows, goarch: amd64,   pkg: zip,    cc: x86_64-w64-mingw32-gcc,    apt: gcc-mingw-w64-x86-64 }
-          - { goos: windows, goarch: "386",   pkg: zip,    cc: i686-w64-mingw32-gcc,      apt: gcc-mingw-w64-i686 }
-          - { goos: windows, goarch: arm64,   pkg: zip,    cc: "",                        apt: "" }
-          - { goos: windows, goarch: arm,     pkg: zip,    cc: "",                        apt: "" }
+          # apt 必须同时装 gcc 交叉编译器与目标架构的 libc 开发头：只装 gcc-*-linux-gnu
+          # 会缺 bits/libc-header-start.h，CGO 编译直接失败（曾因此只剩 amd64 一格产物）。
+          - { goos: linux,   goarch: amd64,   pkg: tar.gz, cc: x86_64-linux-gnu-gcc,    apt: "gcc-x86-64-linux-gnu libc6-dev-amd64-cross" }
+          - { goos: linux,   goarch: "386",   pkg: tar.gz, cc: i686-linux-gnu-gcc,      apt: "gcc-i686-linux-gnu libc6-dev-i386-cross" }
+          - { goos: linux,   goarch: arm64,   pkg: tar.gz, cc: aarch64-linux-gnu-gcc,   apt: "gcc-aarch64-linux-gnu libc6-dev-arm64-cross" }
+          - { goos: linux,   goarch: arm,     pkg: tar.gz, cc: arm-linux-gnueabihf-gcc, apt: "gcc-arm-linux-gnueabihf libc6-dev-armhf-cross" }
+          - { goos: linux,   goarch: riscv64, pkg: tar.gz, cc: riscv64-linux-gnu-gcc,   apt: "gcc-riscv64-linux-gnu libc6-dev-riscv64-cross" }
+          - { goos: windows, goarch: amd64,   pkg: zip,    cc: x86_64-w64-mingw32-gcc,  apt: "gcc-mingw-w64-x86-64" }
+          - { goos: windows, goarch: "386",   pkg: zip,    cc: i686-w64-mingw32-gcc,    apt: "gcc-mingw-w64-i686" }
+          # 无 mingw 交叉编译器可产出 CGO 二进制；这两格不构建（在 README/known-issues 标注）
+          - { goos: windows, goarch: arm64,   pkg: zip,    cc: "", apt: "", unsupported: true }
+          - { goos: windows, goarch: arm,     pkg: zip,    cc: "", apt: "", unsupported: true }
     name: build
     steps:
       - uses: actions/checkout@v4
@@ -140,8 +143,7 @@ jobs:
         if: matrix.apt != ''
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ${{ matrix.apt }} zip
-        continue-on-error: true
+          sudo apt-get install -y ${{ matrix.apt }} zip
 
       - name: Build embedded web assets
         run: make web
@@ -153,16 +155,16 @@ jobs:
           CC: ${{ matrix.cc }}
           PKG: ${{ matrix.pkg }}
         run: |
+          if [ "${{ matrix.unsupported }}" = "true" ]; then
+            echo "::warning::windows/$GOARCH has no mingw CGO toolchain; not built (documented unsupported target)"
+            exit 0
+          fi
           if [ -n "$CC" ] && ! command -v "$CC" >/dev/null 2>&1; then
-            echo "cross compiler $CC unavailable — SKIP this target"; exit 0
+            echo "::error::cross compiler $CC missing but is required for $GOOS/$GOARCH"
+            exit 1
           fi
           CGO_ENABLED=1 GOOS=$GOOS GOARCH=$GOARCH CC=$CC \
-            go build -trimpath -ldflags "-s -w" -o "stage/chatd$([ "$GOOS" = windows ] && echo .exe)" ./server/cmd/chatd || {
-              # windows/arm(64) 与部分无 mingw 格：退回纯 Go 静态（chatd 依赖 cgo 的
-              # SQLite，纯 Go 会缺驱动；这里给 SKIP 并标注，不阻塞其他产物）
-              echo "cross build failed for $GOOS/$GOARCH — SKIP (needs CGO toolchain)"
-              exit 0
-            }
+            go build -trimpath -ldflags "-s -w" -o "stage/chatd$([ "$GOOS" = windows ] && echo .exe)" ./server/cmd/chatd
           mkdir -p stage/docs stage/deploy
           cp README.md LICENSE stage/
           cp docs/deploy.md docs/user-guide.md docs/admin-guide.md docs/known-issues.md stage/docs/ 2>/dev/null || true

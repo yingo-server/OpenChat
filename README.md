@@ -36,6 +36,16 @@
 
 ## 快速开始
 
+### 支持的平台
+
+| 平台 | 架构 | 产物 |
+|---|---|---|
+| Linux | x86_64 / x86 / arm64 / armv7 / riscv64 | `.tar.gz`（静态链接 SQLite） |
+| Windows | x86_64 / x86 | `.zip` |
+| 源码 | — | `openchat-<ver>-src.tar.gz` |
+
+Windows on ARM / ARM64 暂无产物（缺 mingw CGO 工具链），见 [已知问题](docs/known-issues.md#3-windows-arm--arm64-不提供构建产物)。
+
 ### 要求
 
 - Linux 服务器（2 核 2G 起），systemd
