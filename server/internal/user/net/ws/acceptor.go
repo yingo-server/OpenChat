@@ -257,22 +257,24 @@ func (a *Acceptor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// ---- upgrade 前限流（security-spec E-3/E-4）：被限直接 429，不建连 ----
+	// 限流发生在鉴权之前；token 维度的 key 用原始 token 串的 sha256（见
+	// upgradelimit.tokenKey），无需解析 JWT。空 token 共享一个桶。
 	ip := clientIP(r)
-	if ok, retry := a.limiter.Allow(ip); !ok {
+	rawToken := a.tokenFromRequest(r)
+	if ok, retry := a.limiter.Allow(ip, rawToken); !ok {
 		w.Header().Set("Retry-After", retryAfterSeconds(retry))
 		http.Error(w, "too many upgrade attempts", http.StatusTooManyRequests)
 		return
 	}
 	// ---- upgrade 前鉴权（security-spec §2.3）----
-	token := a.tokenFromRequest(r)
-	if token == "" {
-		a.limiter.RecordFailure(ip) // 失败也消耗配额
+	if rawToken == "" {
+		a.limiter.RecordFailure(ip, rawToken) // 失败也消耗配额
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	identity, err := a.authn(token)
+	identity, err := a.authn(rawToken)
 	if err != nil || identity == nil || identity.UserID <= 0 {
-		a.limiter.RecordFailure(ip) // 401 额外扣一次 token
+		a.limiter.RecordFailure(ip, rawToken) // 401 额外扣一次 token
 		if a.logger != nil {
 			a.logger.Warn("ws handshake rejected", "remote", r.RemoteAddr, "err", errString(err))
 		}
