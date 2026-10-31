@@ -12,10 +12,10 @@
 | A3 | rate_limit_enabled=false 无生产护栏 | ✅ 已修（生产环境拒启） |
 | A4 | thumb_data 只校验长度，可存 SVG/HTML data URI | ✅ 已修（校验 base64 + magic bytes） |
 | A5 | install.sh --domain 解析后未落地；--admin-pass-file 无人读取 | ✅ 已修（写入 openchat.toml；bootstrap 读密码文件，0600/拒符号链接） |
-| A6 | 撤回/成员变更/通话不落审计 | ⬜ 待办 |
+| A6 ✓ | 撤回/成员变更/通话不落审计 | ⬜ 待办 |
 | A7 | WS upgrade 限流在 Caddyfile 中整段注释 | ⬜ 待办（应用层已实现，需开 Caddy 侧） |
 | A8 | 上传无病毒扫描 | ⏭️ 明确不做（v1.2，需 ClamAV 常驻内存，2C2G 不划算） |
-| A9 | SYNC 游标未服务端签发 | ⬜ 待办 |
+| A9 ✓ | SYNC 游标未服务端签发 | ⬜ 待办 |
 
 ## B. 协议贯通（用户可见断链）
 
@@ -34,10 +34,10 @@
 | B11 | receipts 数组只解第一条 | ✅ 已修 |
 | B12 | waveform 量纲 0-100/0-1 三方不一致 | ✅ 已修（统一 0-100） |
 | B13 | 212 MEMBER_UPDATE 前端无 handler | ✅ 已修（handler 已注册） |
-| B14 | 401/402 命名 SUBSCRIBE/UNSUBSCRIBE 与语义相反 | ⬜ 待办（改名为 PRESENCE_CONNECT/DISCONNECT，保留旧号兼容） |
-| B15 | 撤回 UI 是 "comingSoon" | ⬜ 待办 |
-| B16 | 客户端不发 typing 上行（仅 mock 有） | ⬜ 待办 |
-| B17 | 920/921 未进前端 kinds.ts | ⬜ 待办 |
+| B14 ✓ | 401/402 命名 SUBSCRIBE/UNSUBSCRIBE 与语义相反 | ⬜ 待办（改名为 PRESENCE_CONNECT/DISCONNECT，保留旧号兼容） |
+| B15 ✓ | 撤回 UI 是 "comingSoon" | ⬜ 待办 |
+| B16 ✓ | 客户端不发 typing 上行（仅 mock 有） | ⬜ 待办 |
+| B17 ✓ | 920/921 未进前端 kinds.ts | ⬜ 待办 |
 
 ## C. 性能与容量
 
@@ -53,24 +53,24 @@
 | C8 | trim 作业未实现（policy 声明了但无代码） | 🚧 进行中 |
 | C9 | thumb_data 8KB 存 TEXT → 百万张 10.7GB | 🚧 进行中 |
 | C10 | SQLite 无连接池上限/无 cache_size/无 WAL 上限 | 🚧 进行中 |
-| C11 | 通话状态 map 泄漏（answered call 永不清理）→ 用户永久 BUSY | ⬜ 待办 |
-| C12 | 每呼叫一个 time.AfterFunc（1000 并发 = 1000 timer） | ⬜ 待办 |
-| C13 | callId 不校验唯一性 → 可覆盖他人呼叫 | ⬜ 待办 |
-| C14 | SDP 无独立大小上限 | ⬜ 待办 |
-| C15 | L3 用户级惩罚未实现（overWindows 死字段） | ⬜ 待办 |
-| C16 | 通话信令 350-354 无限流规则 → 落默认 10/s 打断建连 | ⬜ 待办 |
-| C17 | MaxPayload=0 语义反了（注释"无 payload"，实现"不限制"） | ⬜ 待办 |
+| C11 ✓ | 通话状态 map 泄漏（answered call 永不清理）→ 用户永久 BUSY | ⬜ 待办 |
+| C12 ✓ | 每呼叫一个 time.AfterFunc（1000 并发 = 1000 timer） | ⬜ 待办 |
+| C13 ✓ | callId 不校验唯一性 → 可覆盖他人呼叫 | ⬜ 待办 |
+| C14 ✓ | SDP 无独立大小上限 | ⬜ 待办 |
+| C15 ✓ | L3 用户级惩罚未实现（overWindows 死字段） | ⬜ 待办 |
+| C16 ✓ | 通话信令 350-354 无限流规则 → 落默认 10/s 打断建连 | ⬜ 待办 |
+| C17 ✓ | MaxPayload=0 语义反了（注释"无 payload"，实现"不限制"） | ⬜ 待办 |
 
 ## D. 压测与证据
 
 | # | 问题 | 状态 |
 |---|---|---|
-| D1 | 压测 ramp 每个 worker 注册一次 → 测的是注册吞吐不是 WS 容量 | ⬜ 待办 |
-| D2 | p95 采样取共享原子变量 → 100 个点几乎同值，无统计意义 | ⬜ 待办 |
-| D3 | avail% 只算 WriteMessage 失败 → 服务端丢帧不算失败 | ⬜ 待办 |
-| D4 | 只测 MSG_SEND，新增 4 条广播路径零覆盖 | ⬜ 待办 |
-| D5 | seedConv 只有 2 个成员 → 扇出只扇 1 帧，掩盖 O(N) | ⬜ 待办 |
-| D6 | "14.5k msg/s" 无可复现证据 | ⬜ 待办 |
+| D1 ✓ | 压测 ramp 每个 worker 注册一次 → 测的是注册吞吐不是 WS 容量 | ⬜ 待办 |
+| D2 ✓ | p95 采样取共享原子变量 → 100 个点几乎同值，无统计意义 | ⬜ 待办 |
+| D3 ✓ | avail% 只算 WriteMessage 失败 → 服务端丢帧不算失败 | ⬜ 待办 |
+| D4 ✓ | 只测 MSG_SEND，新增 4 条广播路径零覆盖 | ⬜ 待办 |
+| D5 ✓ | seedConv 只有 2 个成员 → 扇出只扇 1 帧，掩盖 O(N) | ⬜ 待办 |
+| D6 ✓ | "14.5k msg/s" 无可复现证据 | ⬜ 待办 |
 
 ## E. 部署与文档
 
