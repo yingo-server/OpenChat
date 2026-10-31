@@ -18,7 +18,7 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   CACHE_KEY_PREFIX: stress-bin
@@ -80,6 +80,24 @@ jobs:
             echo "- **last passing level:** ${LAST_PASS:-n/a} conns"
             echo "- **first failing level:** ${FIRST_FAIL:-none reached}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # 结果同时落地到仓库的 bench 分支：artifact 与 job log 走 Azure blob，
+      # 在某些网络环境下不可达；commit 一个分支则可通过 git 稳定取回。
+      - name: Publish result to bench branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          TS=$(date -u +%Y%m%dT%H%M%SZ)
+          mkdir -p bench
+          cp ladder.json "bench/ladder-$TS.json"
+          cp stress.log  "bench/ladder-$TS.log"
+          git config user.name  "openchat-bench"
+          git config user.email "bench@openchat.local"
+          git checkout -q -B bench
+          git add bench
+          git commit -q -m "bench: ladder $TS (run ${{ github.run_id }})"
+          git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" bench
 
       - name: Upload result
         uses: actions/upload-artifact@v4
