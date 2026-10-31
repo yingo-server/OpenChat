@@ -89,9 +89,23 @@ const (
 // 400-449 presence
 // -------------------------------------------------------------------
 const (
-	KindPresenceUpdate      Kind = 400
-	KindPresenceSubscribe   Kind = 401
-	KindPresenceUnsubscribe Kind = 402
+	KindPresenceUpdate Kind = 400
+
+	// 401/402 are SERVER-emitted CONNECTION-LIFECYCLE events: the user layer
+	// broadcasts "peer went online" / "peer went offline" to the peers who
+	// share a conversation. They are NOT client-initiated presence
+	// subscriptions — the proto message PresenceSubscribe{user_ids} (client
+	// subscribing to others' presence) is a DIFFERENT, currently-unused concept.
+	KindPresenceOnline  Kind = 401
+	KindPresenceOffline Kind = 402
+)
+
+// Legacy aliases for 401/402. The VALUES are unchanged (401/402); only the Go
+// identifiers now carry the correct online/offline semantics. Kept so any
+// out-of-tree reference to the old names still compiles.
+const (
+	KindPresenceSubscribe   Kind = KindPresenceOnline
+	KindPresenceUnsubscribe Kind = KindPresenceOffline
 )
 
 // -------------------------------------------------------------------
@@ -252,8 +266,14 @@ func init() {
 	register(KindCallHangup, "CALL_HANGUP")
 
 	register(KindPresenceUpdate, "PRESENCE_UPDATE")
-	register(KindPresenceSubscribe, "PRESENCE_SUBSCRIBE")
-	register(KindPresenceUnsubscribe, "PRESENCE_UNSUBSCRIBE")
+	// 401/402 = server-side online/offline events. The DISPLAY labels keep the
+	// historical "SUBSCRIBE/UNSUBSCRIBE" strings (same map slot 401/402) so the
+	// wire logs and docs/ws-protocol.md stay stable — the Go identifiers above
+	// carry the authoritative semantics.
+	register(KindPresenceOnline, "PRESENCE_ONLINE")
+	register(KindPresenceOffline, "PRESENCE_OFFLINE")
+	register(KindPresenceSubscribe, "PRESENCE_SUBSCRIBE")     // == PRESENCE_ONLINE (401)
+	register(KindPresenceUnsubscribe, "PRESENCE_UNSUBSCRIBE") // == PRESENCE_OFFLINE (402)
 
 	register(KindProfileUpdate, "PROFILE_UPDATE")
 	register(KindBlock, "BLOCK")

@@ -246,7 +246,7 @@ func (p *Pipe) dispatch(ctx context.Context, req Req) {
 		p.onTyping(ctx, req)
 	case uint32(kinds.KindPresenceUpdate): // 400 client presence status
 		p.onPresenceUp(ctx, req)
-	case uint32(kinds.KindPresenceSubscribe), uint32(kinds.KindPresenceUnsubscribe): // 401/402 user-layer connect/disconnect
+	case uint32(kinds.KindPresenceOnline), uint32(kinds.KindPresenceOffline): // 401/402 user-layer connect/disconnect
 		p.onPresenceConnect(ctx, req)
 	case uint32(kinds.KindMsgDelete), uint32(kinds.KindMsgRecall): // 107/108 recall (persisted)
 		p.onRecall(ctx, req)

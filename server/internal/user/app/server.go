@@ -102,13 +102,13 @@ func New(cfg Config, authn AuthnFunc, peer transport.Peer) (*Server, error) {
 		// 401 PRESENCE_SUBSCRIBE：上线事件发给数据层，数据层向该用户的会话
 		// 成员广播（瞬态，不落 per-user 投递）。帧不带 env user_id —— 数据层
 		// 从 payload 读 user_id 并当作内部事件处理。
-		emitPresenceEvent(peer, uint32(kinds.KindPresenceSubscribe), c.UserID())
+		emitPresenceEvent(peer, uint32(kinds.KindPresenceOnline), c.UserID())
 	}
 	acc.OnDisconnect = func(c *ws.Conn) {
 		sess.Unregister(c.ID())
 		lim.RemoveConn(c.ID())
 		// 402 PRESENCE_UNSUBSCRIBE：下线事件，同上。
-		emitPresenceEvent(peer, uint32(kinds.KindPresenceUnsubscribe), c.UserID())
+		emitPresenceEvent(peer, uint32(kinds.KindPresenceOffline), c.UserID())
 	}
 
 	return &Server{
@@ -267,7 +267,7 @@ func emitPresenceEvent(peer transport.Peer, kind uint32, uid int64) {
 	if peer == nil || uid <= 0 {
 		return
 	}
-	online := kind == uint32(kinds.KindPresenceSubscribe)
+	online := kind == uint32(kinds.KindPresenceOnline)
 	body, err := json.Marshal(map[string]any{
 		"user_id": uid, "online": online, "at": time.Now().UnixMilli(),
 	})

@@ -206,7 +206,7 @@ func TestE2EPresenceOnlineOfflineFanout(t *testing.T) {
 
 	// A connects → B receives 401 PRESENCE_SUBSCRIBE with user_id = A.
 	ca := dialToken(t, a.user.Addr(), alice.AccessToken)
-	env, _ := readKind(t, cb, kinds.KindPresenceSubscribe, 8*time.Second)
+	env, _ := readKind(t, cb, kinds.KindPresenceOnline, 8*time.Second)
 	var sig wire.PresenceSignal
 	if err := json.Unmarshal(env.Payload, &sig); err != nil {
 		t.Fatalf("401 payload: %v %q", err, env.Payload)
@@ -220,7 +220,7 @@ func TestE2EPresenceOnlineOfflineFanout(t *testing.T) {
 
 	// A disconnects → B receives 402 with online=false.
 	ca.Close()
-	env2, _ := readKind(t, cb, kinds.KindPresenceUnsubscribe, 8*time.Second)
+	env2, _ := readKind(t, cb, kinds.KindPresenceOffline, 8*time.Second)
 	var off wire.PresenceSignal
 	if err := json.Unmarshal(env2.Payload, &off); err != nil {
 		t.Fatalf("402 payload: %v %q", err, env2.Payload)

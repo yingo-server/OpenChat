@@ -195,7 +195,7 @@ func (p *Pipe) onPresenceConnect(ctx context.Context, req Req) {
 		p.lg.Warn("presence event rejected: actor mismatch", "actor", req.UserID, "subject", uid)
 		return
 	}
-	online := req.Kind == uint32(kinds.KindPresenceSubscribe) // 401 = connect
+	online := req.Kind == uint32(kinds.KindPresenceOnline) // 401 = connect
 	_ = p.hot.UpsertPresence(ctx, &store.Presence{UID: uid, Online: online, LastSeen: nowSec()})
 	// The per-user presence debounce (10s) lives in the fan-out plane: a
 	// user flapping between devices emits ONE broadcast per window

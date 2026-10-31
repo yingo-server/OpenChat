@@ -22,7 +22,7 @@ func TestTypingPayloadCapEnforced(t *testing.T) {
 	if v := l.AllowAt(1, 1, uint32(kinds.KindPresenceUpdate), 1024, now); v != Drop {
 		t.Fatalf("1KB presence = %v, want Drop", v)
 	}
-	if v := l.AllowAt(1, 1, uint32(kinds.KindPresenceSubscribe), 1024, now); v != Drop {
+	if v := l.AllowAt(1, 1, uint32(kinds.KindPresenceOnline), 1024, now); v != Drop {
 		t.Fatalf("1KB presence-sub = %v, want Drop", v)
 	}
 	// A legitimate small payload ({"conv_id":N} ~ 20B) still passes.

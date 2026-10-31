@@ -175,7 +175,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 	// The connect lifecycle now emits a 401 presence event before user
 	// traffic; skip it (and only it) so the assertion below sees MSG_SEND.
-	if upstream.Kind == kinds.KindPresenceSubscribe {
+	if upstream.Kind == kinds.KindPresenceOnline {
 		select {
 		case upstream = <-bridgePeer.up:
 		case <-time.After(3 * time.Second):

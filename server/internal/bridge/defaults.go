@@ -25,7 +25,7 @@ func defaultCaps() map[string][]kinds.Kind {
 			// 回执/输入中/presence/撤回：上行请求与下行事件共用这些 kind
 			// （能力表按层不按方向区分；回程帧 SrcLayer=data 也须通过）。
 			kinds.KindMsgRead, kinds.KindMsgDelivered, kinds.KindMsgDelete, kinds.KindMsgRecall,
-			kinds.KindTyping, kinds.KindPresenceUpdate, kinds.KindPresenceSubscribe, kinds.KindPresenceUnsubscribe,
+			kinds.KindTyping, kinds.KindPresenceUpdate, kinds.KindPresenceOnline, kinds.KindPresenceOffline,
 			// 通话信令回程（data → user）：OFFER/ANSWER/CANDIDATE/BUSY/HANGUP。
 			kinds.KindCallOffer, kinds.KindCallAnswer, kinds.KindCallCandidate,
 			kinds.KindCallBusy, kinds.KindCallHangup,
@@ -52,7 +52,7 @@ func allUserKinds() []kinds.Kind {
 		kinds.KindMemberUpdate, kinds.KindRoleSet, kinds.KindMute, kinds.KindPin, kinds.KindTyping, kinds.KindDraft,
 		kinds.KindConvDataResult,
 		kinds.KindMediaPresignRequest, kinds.KindMediaReady, kinds.KindMediaExpire, kinds.KindMediaThumb,
-		kinds.KindPresenceUpdate, kinds.KindPresenceSubscribe, kinds.KindPresenceUnsubscribe,
+		kinds.KindPresenceUpdate, kinds.KindPresenceOnline, kinds.KindPresenceOffline,
 		kinds.KindProfileUpdate, kinds.KindBlock, kinds.KindUnblock, kinds.KindReport,
 		kinds.KindAdminBroadcast, kinds.KindAnnounce, kinds.KindMaintenance,
 		kinds.KindShutdownNotice, kinds.KindFlagSync, kinds.KindConfigUpdate,

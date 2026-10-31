@@ -383,11 +383,24 @@ message PresenceUpdate {
   reserved 4 to 9;
 }
 
+// PresenceSubscribe is a CLIENT→SERVER intent to watch other users' presence
+// (user_ids = the peers to observe). NOTE: this message is currently UNUSED —
+// the server does not implement client-driven presence subscription. In
+// particular it is NOT what WS kind 401/402 carry.
+//
+// The real, in-use 401/402 semantics are SERVER-emitted connection-lifecycle
+// events: 401 (PRESENCE_ONLINE) = a peer came online, 402 (PRESENCE_OFFLINE) =
+// a peer went offline, fanned out to the peers sharing a conversation. Do not
+// model 401/402 as (un)subscribe requests — a client built on that reading
+// would be exactly backwards.
 message PresenceSubscribe {
   repeated uint64 user_ids = 1;
   reserved 2 to 9;
 }
 
+// PresenceUnsubscribe is the counterpart of PresenceSubscribe above and is
+// likewise UNUSED (see the note on PresenceSubscribe). WS kind 402 is the
+// server's "peer went offline" event, not a client unsubscribe request.
 message PresenceUnsubscribe {
   repeated uint64 user_ids = 1;
   reserved 2 to 9;

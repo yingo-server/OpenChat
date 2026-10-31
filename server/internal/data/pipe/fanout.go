@@ -515,8 +515,8 @@ func isTypingKind(kind uint32) bool { return kind == uint32(kinds.KindTyping) }
 // isPresenceKind reports whether kind is a presence signal (400/401/402).
 func isPresenceKind(kind uint32) bool {
 	return kind == uint32(kinds.KindPresenceUpdate) ||
-		kind == uint32(kinds.KindPresenceSubscribe) ||
-		kind == uint32(kinds.KindPresenceUnsubscribe)
+		kind == uint32(kinds.KindPresenceOnline) ||
+		kind == uint32(kinds.KindPresenceOffline)
 }
 
 // isReceiptKind reports whether kind is a read/delivered receipt.

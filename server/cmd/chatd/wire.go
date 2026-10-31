@@ -566,8 +566,8 @@ func buildRoutes() map[uint32][]router.Target {
 	rt[kinds.KindPresenceUpdate] = toData("data.presence")
 	// 401/402: the USER LAYER emits connect/disconnect events addressed by
 	// user_id; they ride the data lane so the pipe fans them out to peers.
-	rt[kinds.KindPresenceSubscribe] = toData("data.presence")
-	rt[kinds.KindPresenceUnsubscribe] = toData("data.presence")
+	rt[kinds.KindPresenceOnline] = toData("data.presence")
+	rt[kinds.KindPresenceOffline] = toData("data.presence")
 	rt[kinds.KindMsgDelete] = toData("data.recall")
 	rt[kinds.KindMsgRecall] = toData("data.recall")
 
@@ -621,8 +621,8 @@ func buildRoutesFromData() map[uint32][]router.Target {
 		kinds.KindMsgDelete:           toUser("sys.mutation"),
 		kinds.KindMsgRecall:           toUser("sys.mutation"),
 		kinds.KindPresenceUpdate:      toUser("sys.presence"),
-		kinds.KindPresenceSubscribe:   toUser("sys.presence"),
-		kinds.KindPresenceUnsubscribe: toUser("sys.presence"),
+		kinds.KindPresenceOnline:   toUser("sys.presence"),
+		kinds.KindPresenceOffline: toUser("sys.presence"),
 	}
 }
 

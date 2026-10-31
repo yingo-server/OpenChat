@@ -25,3 +25,6 @@ apps/admin/dist/
 /chatd
 /openchatctl
 /server/chatd
+
+# stress binary built by "go build ./scripts/stress"
+/stress
