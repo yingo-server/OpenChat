@@ -127,7 +127,11 @@ func (c Config) Policy() policy.Config {
 		p.Limits.Rules[kind] = limitRule(r.Rate, r.Burst, r.Capacity, r.MaxPayload, r.Silent)
 	}
 	if !c.EnableRateLimit {
-		// 测试/压测：放大到实际上无限。
+		// 测试/压测：放大到实际上无限（含 upgrade 限流——容量测试要的是
+		// 带载极限，不是攻击面）。
+		p.UpgradeRatePerMin = 1e9
+		p.UpgradeBurst = 1e9
+		p.UpgradeFailureThreshold = 1e9
 		for k, r := range p.Limits.Rules {
 			r.Rate = 1e9
 			r.Burst = 1e9

@@ -43,6 +43,10 @@ type config struct {
 	RefreshTTLSec int
 	DevOTP        bool
 
+	// RateLimitEnabled=false 放大 WS 限流到实际上无限——仅供压测/容量测试
+	// 使用（测「带载极限」而非「攻击面」）。生产配置绝不可置 false。
+	RateLimitEnabled bool
+
 	// Flags are the boot-time feature-flag defaults written into the hot DB
 	// and served to clients (SIGHUP re-publishes them).
 	Flags map[string]bool
@@ -117,6 +121,8 @@ func loadConfig(path string) (*config, error) {
 			cfg.MediaDir = v
 		case "log_level":
 			cfg.LogLevel = v
+		case "rate_limit_enabled":
+			cfg.RateLimitEnabled = v == "true"
 		case "dev_otp":
 			cfg.DevOTP = v == "true"
 		case "shutdown_timeout_sec":

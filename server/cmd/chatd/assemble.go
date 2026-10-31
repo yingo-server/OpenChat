@@ -270,6 +270,7 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	userCfg.PublicOrigin = cfg.PublicOrigin
 	userCfg.BridgeAddr = "embedded"
 	userCfg.LogLevel = cfg.LogLevel
+	userCfg.EnableRateLimit = cfg.RateLimitEnabled
 	userCfg.ExtraRoutes = a.buildHTTP(authSvc.Routes())
 	userCfg.Flags = a.flags
 

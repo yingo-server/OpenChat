@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -78,6 +79,7 @@ func pct(lat []time.Duration, p float64) time.Duration {
 
 func runChatd(dir string) (*exec.Cmd, string, error) {
 	cfg := filepath.Join(dir, "chatd.toml")
+	rl := os.Getenv("STRESS_RATE_LIMIT") != "false"
 	toml := fmt.Sprintf(`mode = "embedded"
 listen = "127.0.0.1:18080"
 admin_listen = "127.0.0.1:17780"
@@ -89,7 +91,8 @@ jwt_key_path = "%[1]s/keys/jwt.pem"
 media_dir = "%[1]s/media"
 log_level = "info"
 dev_otp = true
-`, dir)
+rate_limit_enabled = %[2]t
+`, dir, rl)
 	if err := os.WriteFile(cfg, []byte(toml), 0o600); err != nil {
 		return nil, "", err
 	}
@@ -234,8 +237,14 @@ func main() {
 		base     = flag.String("base", "http://127.0.0.1:18080", "chatd base URL")
 		out      = flag.String("out", "result.json", "result file")
 		assert   = flag.Bool("assert", false, "exit 1 when thresholds are missed")
+		ladder   = flag.String("ladder", "", "auto-scale: comma conn counts; stop when availability < 70%")
 	)
 	flag.Parse()
+
+	if *ladder != "" {
+		runLadder(*base, *ladder, *secs, *out)
+		return
+	}
 
 	dir, _ := os.MkdirTemp("", "ocstress-")
 	defer os.RemoveAll(dir)
@@ -274,7 +283,7 @@ func main() {
 	deadline := time.Now().Add(time.Duration(*secs) * time.Second)
 
 	var wg sync.WaitGroup
-	// phase 1: HTTP API
+	// phase 1: HTTP API（独占跑完再开 WS，否则 guest 注册风暴会挤掉 WS 握手）
 	if *mode != "ws" {
 		for i := 0; i < *conns; i++ {
 			wg.Add(1)
@@ -333,6 +342,9 @@ func main() {
 		}
 	}
 
+	wg.Wait()
+	fmt.Println("== phase 2: WebSocket ==")
+
 	// phase 2: WebSocket
 	if *mode != "http" {
 		for i := 0; i < *conns; i++ {
@@ -343,8 +355,24 @@ func main() {
 				if id%2 == 1 {
 					c = b
 				}
+				var conn *websocket.Conn
 				t0 := time.Now()
-				conn, err := dialWS(*base, c.tok)
+				// 压力下瞬时握手失败应重试（用户基数大 ≠ 攻击；这正是被测目标）。
+				for attempt := 0; attempt < 5; attempt++ {
+					var resp *http.Response
+					var derr error
+					u := "ws" + (*base)[len("http"):] + "/ws"
+					hdr := http.Header{"Cookie": []string{"access_token=" + c.tok}}
+					conn, resp, derr = websocket.DefaultDialer.Dial(u, hdr)
+					if derr != nil && resp != nil {
+						fmt.Printf("  dial fail: http=%d\n", resp.StatusCode)
+					}
+					if derr == nil {
+						break
+					}
+					err = derr
+					time.Sleep(300 * time.Millisecond)
+				}
 				st.add("ws.connect", time.Since(t0), err)
 				if err != nil {
 					return
@@ -427,4 +455,169 @@ func main() {
 			os.Exit(1)
 		}
 	}
+}
+
+// runLadder boots one chatd, then scales concurrency up the ladder until
+// availability (successful sends / total sends) drops below 70%. Prints a
+// capacity table and writes the full curve to out.
+// 全局 RPM 同时统计：每档记录 (成功发送+ACK)/分钟。
+func runLadder(base, ladder string, secs int, out string) {
+	levels := strings.Split(ladder, ",")
+	dir, _ := os.MkdirTemp("", "ocladder-")
+	defer os.RemoveAll(dir)
+
+	cfg := filepath.Join(dir, "chatd.toml")
+	toml := fmt.Sprintf(`mode = "embedded"
+listen = "127.0.0.1:18080"
+admin_listen = "127.0.0.1:17780"
+admin_rest_listen = "127.0.0.1:17781"
+hot_db = "%[1]s/hot.db"
+admin_db = "%[1]s/admin.db"
+policy_path = "%[1]s/policy.json"
+jwt_key_path = "%[1]s/keys/jwt.pem"
+media_dir = "%[1]s/media"
+log_level = "info"
+dev_otp = true
+rate_limit_enabled = false
+`, dir)
+	os.WriteFile(cfg, []byte(toml), 0o600)
+	os.WriteFile(filepath.Join(dir, "policy.json"), []byte(`{"hot_retention_days": 90}`), 0o600)
+	os.MkdirAll(filepath.Join(dir, "keys"), 0o750)
+	os.MkdirAll(filepath.Join(dir, "media"), 0o750)
+
+	cmd := exec.Command(os.Getenv("CHATD_BIN"), "-config", cfg)
+	cmd.Env = append(os.Environ(), "APP_ENV=dev")
+	logf, _ := os.Create(filepath.Join(dir, "chatd.log"))
+	cmd.Stdout, cmd.Stderr = logf, logf
+	if err := cmd.Start(); err != nil {
+		fmt.Println("boot:", err)
+		os.Exit(2)
+	}
+	defer cmd.Process.Signal(os.Interrupt)
+	baseURL := "http://127.0.0.1:18080"
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if r, err := http.Get(baseURL + "/healthz"); err == nil {
+			r.Body.Close()
+			if r.StatusCode == 200 {
+				break
+			}
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	a2, _ := guest(baseURL)
+	b2, _ := guest(baseURL)
+	cid, err := seedConv(filepath.Join(dir, "hot.db"), a2.uid, b2.uid)
+	if err != nil {
+		fmt.Println("seed:", err)
+		os.Exit(2)
+	}
+	fmt.Printf("%8s %10s %10s %12s %12s %10s\n", "conns", "sends", "avail%", "global RPM", "conn p95", "verdict")
+	type row struct {
+		Conns  int     `json:"conns"`
+		Sends  int64   `json:"sends"`
+		Fails  int64   `json:"fails"`
+		Avail  float64 `json:"avail_pct"`
+		RPM    float64 `json:"global_rpm"`
+		ConnP95 int64  `json:"conn_p95_ms"`
+		Pass   bool    `json:"pass"`
+	}
+	var rows []row
+	limit := 0.70
+	for _, lv := range levels {
+		n := 0
+		fmt.Sscanf(strings.TrimSpace(lv), "%d", &n)
+		if n <= 0 {
+			continue
+		}
+		st := newStats()
+		var wg sync.WaitGroup
+		// 全局发送计数（RPM 用）
+		var globalSent atomic.Int64
+		dl := time.Now().Add(time.Duration(secs) * time.Second)
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				c, err := guest(baseURL)
+				if err != nil {
+					return
+				}
+				var conn *websocket.Conn
+				for attempt := 0; attempt < 5; attempt++ {
+					hdr := http.Header{"Cookie": []string{"access_token=" + c.tok}}
+					conn, _, err = websocket.DefaultDialer.Dial("ws"+baseURL[len("http"):]+"/ws", hdr)
+					if err == nil {
+						break
+					}
+					time.Sleep(200 * time.Millisecond)
+				}
+				if err != nil {
+					st.add("ws.connect", 0, err)
+					return
+				}
+				var sent atomic.Int64
+				go func() {
+					for {
+						_, data, err := conn.ReadMessage()
+						if err != nil {
+							return
+						}
+						var env struct {
+							Kind uint32 `json:"kind"`
+						}
+						if json.Unmarshal(data, &env) == nil && env.Kind == 103 {
+							sent.Add(1)
+						}
+					}
+				}()
+				for time.Now().Before(dl) {
+					t0 := time.Now()
+					if err := conn.WriteMessage(websocket.TextMessage, mkSend(uint64(cid), "l")); err != nil {
+						st.add("ws.send", 0, err)
+						return
+					}
+					globalSent.Add(1)
+					st.add("ws.send", time.Since(t0), nil)
+					time.Sleep(20 * time.Millisecond)
+				}
+			}(i)
+		}
+		wg.Wait()
+		// 等待 ACK 回流
+		time.Sleep(2 * time.Second)
+		s := st.byName["ws.send"]
+		sends := int64(0)
+		if s != nil {
+			sends = s.ok
+		}
+		fails := int64(0)
+		if s != nil {
+			fails = s.fail
+		}
+		total := sends + fails
+		avail := 100.0
+		if total > 0 {
+			avail = float64(sends) / float64(total) * 100
+		}
+		rpm := float64(globalSent.Load()) / float64(secs) * 60
+		connP95 := int64(0)
+		if c := st.byName["ws.connect"]; c != nil {
+			connP95 = pct(c.lat, .95).Milliseconds()
+		}
+		pass := avail >= limit*100
+		verdict := "PASS"
+		if !pass {
+			verdict = "FAIL"
+		}
+		fmt.Printf("%8d %10d %9.1f%% %12.0f %10dms %10s\n", n, sends, avail, rpm, connP95, verdict)
+		rows = append(rows, row{n, sends, fails, avail, rpm, connP95, pass})
+		if !pass {
+			break
+		}
+	}
+	blob, _ := json.MarshalIndent(rows, "", "  ")
+	os.WriteFile(out, blob, 0o644)
+	fmt.Println("wrote", out)
 }
