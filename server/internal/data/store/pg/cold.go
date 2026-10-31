@@ -32,10 +32,15 @@ import (
 
 // ColdDB is the cold store handle. Implements:
 //
-//	store.ArchiveTarget  — idempotent hot->cold copy + hot delete
-//	store.AuditJournal   — append-only hash-chained audit log
+//	store.ArchiveSource — idempotent hot->cold copy (the COLD half only)
+//	store.AuditJournal  — append-only hash-chained audit log
 //
 // plus Search (trgm full-text) and the archive_runs ledger.
+//
+// Red line: ColdDB does NOT delete hot rows. The hot table lives in SQLite;
+// deleting it from a Postgres handle is a bug (the statement targets a table
+// that does not exist there). Hot deletion is the hot store's job
+// (store.HotPruner).
 type ColdDB struct {
 	DB *sql.DB
 

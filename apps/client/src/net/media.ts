@@ -48,11 +48,11 @@ const MAGIC_TABLE: Array<{ offset: number; prefix: number[]; mtype: MediaMtype }
 
 export type MediaMtype = 1 | 2 | 4;
 
-export function mtypeToMediaType(mtype: number): MediaType {
-  if (mtype === 1) return 'image';
-  if (mtype === 2) return 'audio';
-  return 'file';
-}
+/**
+ * wire mtype → 领域媒体类型。单一权威实现见 proto/payload.ts 的
+ * mtypeToMediaType（含 video=3），此处转发，避免两处映射漂移。
+ */
+export { mtypeToMediaType } from './proto/payload';
 
 /** Composer 的 accept：服务端白名单的并集（video 留 1.1）。 */
 export const UPLOAD_ACCEPT = [

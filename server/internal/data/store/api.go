@@ -227,7 +227,16 @@ type Media struct {
 	// (≤8KB accepted). Waveform is a JSON array of 0-100 ints (≤32 elements)
 	// used to render the audio scrubber without a second round-trip. Both are
 	// metadata only — the media bytes themselves still live on disk.
+	//
+	// NEW (0003): ThumbData is LEGACY — new uploads keep the thumbnail in a
+	// FILE (media_dir/thumbs/.../<sha>.thumb) and ThumbPath carries its path
+	// (tens of bytes instead of ~10.7KB of TEXT per row). ThumbData is still
+	// populated by readers as a FALLBACK for existing rows whose file was
+	// never written; writers must write the file and set ThumbPath = "".
 	ThumbData string
+	// ThumbPath is the on-disk thumbnail path (relative to media_dir) when the
+	// thumbnail is stored as a file. Empty for legacy rows.
+	ThumbPath string
 	Waveform  string
 }
 
@@ -252,6 +261,16 @@ type MediaStore interface {
 	// AddRef is shorthand for IncRefCount(+1) after a message referencing the
 	// media commits; implementations may assert existence.
 	AddRef(ctx context.Context, mediaID string) error
+}
+
+// MediaQuota is the quota accounting surface (SUM(size) over media_media).
+// The LIMITS themselves are policy/config (mediasvc), never store logic.
+type MediaQuota interface {
+	// UsageOf returns the total stored bytes owned by uid.
+	UsageOf(ctx context.Context, uid int64) (int64, error)
+
+	// TotalUsage returns the total stored bytes across all users.
+	TotalUsage(ctx context.Context) (int64, error)
 }
 
 // ---------------------------------------------------------------- sys domain

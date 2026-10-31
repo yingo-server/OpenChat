@@ -436,7 +436,7 @@ export class MockBridge implements NetClient {
     for (const conv of this.convs) this.emitConv(conv);
     this.emit(KINDS.FEATURE_FLAGS, {
       payload: encodeFeatureFlags(
-        { 'media.enabled': '1', 'read.receipt': '1', 'chat.max_length': '500' },
+        { 'media.enabled': 'true', 'read.receipt': 'true', 'chat.max_length': '500', 'call_enabled': 'true' },
         1,
       ),
     });
@@ -663,7 +663,7 @@ function demoAudio(): Media {
     size: 48_200,
     durationMs: 12_400,
     mime: 'audio/mp4',
-    waveform: [0.2, 0.45, 0.8, 0.35, 0.6, 0.95, 0.5, 0.3, 0.7, 0.9, 0.4, 0.25, 0.55, 0.85, 0.65, 0.3, 0.75, 0.95, 0.45, 0.2, 0.6, 0.8, 0.4, 0.3],
+    waveform: [20, 45, 80, 35, 60, 95, 50, 30, 70, 90, 40, 25, 55, 85, 65, 30, 75, 95, 45, 20, 60, 80, 40, 30],
     status: 'ready',
   };
 }

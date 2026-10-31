@@ -57,7 +57,7 @@ export const useSessionStore = create<SessionStore>()((set, get) => ({
   displayName: '',
   avatar: undefined,
   guest: false,
-  flags: { 'media.enabled': '1', 'read.receipt': '1' },
+  flags: { 'media.enabled': 'true', 'read.receipt': 'true' },
   flagsVersion: 0,
   ban: null,
 

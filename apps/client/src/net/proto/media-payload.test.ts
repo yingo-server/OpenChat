@@ -27,11 +27,11 @@ describe('media payload 编解码（wire 字段名对齐）', () => {
     status: 'ready',
   };
 
-  it('encodeMedia 输出 snake_case wire 字段', () => {
+  it('encodeMedia 输出 snake_case wire 字段（mtype 为数字，P0-1）', () => {
     const raw = encodeMedia(media) as Record<string, unknown>;
     expect(raw).toEqual({
       media_id: 'Ab3_-xYZ0123456789abcd',
-      mtype: 'image',
+      mtype: 1,
       name: '截图.png',
       size: 123_456,
       width: 800,
@@ -45,7 +45,7 @@ describe('media payload 编解码（wire 字段名对齐）', () => {
     });
   });
 
-  it('encodeMessageSend → JSON 携带 media 数组（MSG_SEND 101 契约）', () => {
+  it('encodeMessageSend → JSON 携带 media 数组（MSG_SEND 101 契约，mtype 数字）', () => {
     const bytes = encodeMessageSend({
       clientMsgId: 'c-1',
       text: '',
@@ -58,7 +58,7 @@ describe('media payload 编解码（wire 字段名对齐）', () => {
     );
     const wire = (parsed.media as Record<string, unknown>[])[0];
     expect(wire.media_id).toBe('Ab3_-xYZ0123456789abcd');
-    expect(wire.mtype).toBe('image');
+    expect(wire.mtype).toBe(1);
     expect(wire.width).toBe(800);
     expect(wire.mime).toBe('image/png');
   });

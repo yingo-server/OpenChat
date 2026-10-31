@@ -381,6 +381,7 @@ func (a *assembly) buildHTTP(auth http.Handler) http.Handler {
 		Verifier: a.verifier,
 		Media:    a.hot,
 		Sys:      a.hot,
+		Quota:    a.hot, // store.MediaQuota (SUM(size) accounting)
 		Conv:     a.hot,
 		QueryDB:  a.hot.DB,
 		Logger:   log.For("media"),

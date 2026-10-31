@@ -63,7 +63,7 @@ func newArchiver(rows []store.HotMsg, cutoff int64) (*Archiver, *fakeScanner, *p
 	s := &fakeScanner{rows: rows}
 	a := &pipefakes.FakeArchive{}
 	return &Archiver{
-		S: s, W: a,
+		S: s, W: a, P: a,
 		Cutoff:    func() int64 { return cutoff },
 		BatchSize: 2,
 		Now:       func() int64 { return cutoffNow },
@@ -188,7 +188,7 @@ type failingArchive struct{}
 func (failingArchive) CopyBatch(ctx context.Context, rows []store.HotMsg) (int64, error) {
 	return 0, errors.New("cold down")
 }
-func (failingArchive) DeleteHot(ctx context.Context, before int64) (int64, error) {
+func (failingArchive) DeleteHotBefore(ctx context.Context, before int64) (int64, error) {
 	return 0, nil
 }
 

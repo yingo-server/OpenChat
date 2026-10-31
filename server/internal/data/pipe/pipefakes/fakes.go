@@ -328,7 +328,8 @@ func (f *FakeMsgStore) MarkRecalled(ctx context.Context, cid, msgID, senderID, a
 	return nil, fmt.Errorf("fake: msg cid=%d id=%d: %w", cid, msgID, store.ErrNotFound)
 }
 
-// FakeArchive implements store.ArchiveTarget with call recording.
+// FakeArchive implements the archiver's two ports with call recording:
+// store.ArchiveSource (cold copy) and store.HotPruner (hot delete).
 type FakeArchive struct {
 	hot                    []store.HotMsg
 	mu                     sync.Mutex
@@ -337,6 +338,7 @@ type FakeArchive struct {
 	DeletedBefore          int64
 	Deleted                int64
 	FailCopy               bool
+	FailDelete             bool
 }
 
 func (f *FakeArchive) CopyBatch(ctx context.Context, rows []store.HotMsg) (int64, error) {
@@ -364,13 +366,16 @@ func (f *FakeArchive) CopyBatch(ctx context.Context, rows []store.HotMsg) (int64
 	return n, nil
 }
 
-func (f *FakeArchive) DeleteHot(ctx context.Context, before int64) (int64, error) {
+// DeleteHotBefore prunes the HOT side only; f.Copied is the archive and stays
+// immutable (that is what makes a re-run copy zero new rows).
+func (f *FakeArchive) DeleteHotBefore(ctx context.Context, before int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.DeleteCalls++
 	f.DeletedBefore = before
-	// DeleteHot prunes the HOT side only; f.Copied is the archive and stays
-	// immutable (that is what makes a re-run copy zero new rows).
+	if f.FailDelete {
+		return 0, fmt.Errorf("fake hot pruner down")
+	}
 	var n int64
 	kept := f.hot[:0]
 	for _, r := range f.hot {

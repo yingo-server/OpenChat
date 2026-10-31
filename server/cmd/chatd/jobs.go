@@ -5,15 +5,18 @@ package main
 //
 //   - Archiver (job.Unit) reads hot rows older than policy.hot_retention_days
 //     via sqlite.ScanOlder and moves them through pg.ColdDB
-//     (store.ArchiveTarget) with the archive_runs ledger for breakpoints.
-//   - Jobber fires it per policy.archive.cron (job.ParseCronKind) and serves
-//     manual triggers: a 980 JOB_TRIGGER frame on the data lane becomes
+//     (store.ArchiveSource — the COLD copy) with the archive_runs ledger for
+//     breakpoints. The HOT delete is done by the SQLite store itself
+//     (store.HotPruner): the cold DB must never touch the hot table.
+//   - Trimmer (job.Unit) executes policy.trim plus the built-in expiry rules
+//     against the hot SQLite store (no cold DB needed).
+//   - Jobber fires them per policy cron (job.ParseCronKind) and serves manual
+//     triggers: a 980 JOB_TRIGGER frame on the data lane becomes
 //     jobber.Trigger (pipe.Trunkee), replied with 981 JOB_STATUS.
 //
-// Degradation: without a cold DB the archiver is still registered and
-// runnable as a DRY RUN (estimate-only), but a real run fails fast with a
-// clear error — never silently pretend rows were archived. No cold DB is a
-// documented skeleton deployment form (docs/deploy.md 附录 A).
+// Degradation: without a cold DB the archiver degrades to a HOT-ONLY prune
+// (keep the last N days) instead of doing nothing — the hot DB must not grow
+// without bound. The trimmer always runs (all its tables are in the hot DB).
 
 import (
 	"context"
@@ -32,6 +35,7 @@ import (
 type jobPlane struct {
 	jobber   *job.Jobber
 	archiver *job.Archiver
+	trimmer  *job.Trimmer
 	cancel   context.CancelFunc
 }
 
@@ -50,27 +54,48 @@ func archiveCutoff(pol *policy.Store, now func() time.Time) func() int64 {
 	}
 }
 
-// newJobPlane builds the jobber + archiver. cold may be nil (degraded mode:
-// dry-run works, a real run reports the missing archive target).
+// newJobPlane builds the jobber + archiver + trimmer. cold may be nil
+// (degraded mode: the archiver prunes hot rows only, the trimmer runs as
+// usual).
 func newJobPlane(hot *sqlite.DB, cold *pg.ColdDB, pol *policy.Store, lg *log.Logger) *jobPlane {
 	now := time.Now
 	batch := 1000
+	hotRetentionDays := 90
 	if pol != nil {
 		if b := pol.Current().Policy.Archive.BatchSize; b > 0 {
 			batch = b
 		}
+		if d := pol.Current().Policy.HotRetentionDays; d > 0 {
+			hotRetentionDays = d
+		}
 	}
-	arch := &job.Archiver{S: hot, // *sqlite.DB implements job.HotScanner via ScanOlder
-		W:         cold,
+	arch := &job.Archiver{
+		S: hot, // *sqlite.DB implements job.HotScanner via ScanOlder
+		// W = the COLD copy side. pg.ColdDB implements store.ArchiveSource
+		// (CopyBatch only — it must not delete hot rows).
+		P:         hot, // *sqlite.DB implements store.HotPruner via DeleteHotBefore
 		Cutoff:    archiveCutoff(pol, now),
 		BatchSize: batch,
+		// Degraded mode keeps the last N days in the hot store.
+		KeepDays: hotRetentionDays,
 	}
 	if cold != nil {
+		arch.W = cold
 		arch.Ledger = cold // archive_runs ledger (breakpoint bookkeeping)
+	}
+	trim := &job.Trimmer{
+		T:      hot, // *sqlite.DB implements store.TrimTarget via TrimTable
+		Now:    func() int64 { return now().Unix() },
+		Vacuum: hot.IncrementalVacuum,
+		Log:    lg,
+	}
+	if pol != nil {
+		trim.Rules = job.PolicyRules{Rules: pol.Current().Policy.Trim}
 	}
 	jb := job.NewJobber(lg)
 	jb.Register(arch, archiveSpec(pol, lg))
-	return &jobPlane{jobber: jb, archiver: arch}
+	jb.Register(trim, trimSpec(pol, lg))
+	return &jobPlane{jobber: jb, archiver: arch, trimmer: trim}
 }
 
 // archiveSpec parses policy.archive.cron. A malformed cron is a loud WARN +
@@ -97,6 +122,16 @@ func archiveSpec(pol *policy.Store, lg *log.Logger) job.Spec {
 	}
 }
 
+// trimSpec parses the trim schedule. The trim rules themselves live in
+// policy.trim (no separate cron field yet): the trimmer runs daily at 03:30,
+// half an hour before the archive pass, so expired rows are gone before the
+// hot DB is pruned and vacuumed.
+func trimSpec(pol *policy.Store, lg *log.Logger) job.Spec {
+	_ = pol
+	_ = lg
+	return job.Spec{Kind: job.CronDaily, Hour: 3, Min: 30}
+}
+
 // start launches the scheduler loop. jobber.Run returns when ctx is canceled
 // (SIGTERM): running archives stop at the batch boundary (archiver checks
 // ctx.Err per batch) and resume idempotently on the next start.
@@ -116,7 +151,7 @@ func (jp *jobPlane) stop() {
 	}
 }
 
-// triggerJob implements pipe.Trunkee: kind 980 → jobber.Trigger, single-flight
+// TriggerJob implements pipe.Trunkee: kind 980 → jobber.Trigger, single-flight
 // (concurrent triggers answer job.ErrRunning, which the pipe maps to a busy
 // 981 status).
 func (jp *jobPlane) TriggerJob(ctx context.Context, name string, dryRun bool) (job.Result, error) {

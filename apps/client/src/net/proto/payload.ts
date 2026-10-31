@@ -468,12 +468,100 @@ export function decodeResumeResult(bytes: Uint8Array): ResumeResultPayload {
   };
 }
 
+/** 极简 protobuf varint/length 读取器（仅用于本文件的 protobuf payload 兜底）。 */
+function readVarint(bytes: Uint8Array, offset: number): { value: number; next: number } {
+  let result = 0;
+  let shift = 0;
+  let pos = offset;
+  for (;;) {
+    if (pos >= bytes.length) throw new PayloadError('protobuf: truncated varint');
+    const byte = bytes[pos++];
+    result += (byte & 0x7f) * Math.pow(2, shift);
+    if ((byte & 0x80) === 0) return { value: result, next: pos };
+    shift += 7;
+    if (shift > 63) throw new PayloadError('protobuf: varint too long');
+  }
+}
+
+/**
+ * FEATURE_FLAGS(12) 下行 payload 解码。
+ *
+ * 双形态：
+ *  - 前端 mockBridge / 演示：JSON {version, flags}；
+ *  - 真实 usergw：router.go 用 `chatpb.FeatureFlags.Marshal()` 生成 **protobuf**
+ *    字节（version=1 varint，flags=2 map<string,string>），JSON 解析会失败 →
+ *    若只支持 JSON，flags 永远为空（P0-4 仍不生效）。故 JSON 失败时按 protobuf 兜底。
+ */
 export function decodeFeatureFlags(bytes: Uint8Array): FeatureFlagsPayload {
-  const raw = decodeJsonPayload<{ version?: unknown; flags?: Record<string, string> }>(bytes);
-  return {
-    version: num(raw.version),
-    flags: raw.flags && typeof raw.flags === 'object' ? raw.flags : {},
-  };
+  let raw: { version?: unknown; flags?: Record<string, unknown> } | null = null;
+  try {
+    raw = decodeJsonPayload<{ version?: unknown; flags?: Record<string, unknown> }>(bytes);
+  } catch {
+    raw = null;
+  }
+  if (raw) {
+    const flags: Record<string, string> = {};
+    if (raw.flags && typeof raw.flags === 'object') {
+      for (const [key, value] of Object.entries(raw.flags)) flags[key] = String(value);
+    }
+    return { version: num(raw.version), flags };
+  }
+  return decodeFeatureFlagsProto(bytes);
+}
+
+/** protobuf FeatureFlags：field1 version varint，field2 map entry{key=1,value=2}。 */
+function decodeFeatureFlagsProto(bytes: Uint8Array): FeatureFlagsPayload {
+  let version = 0;
+  const flags: Record<string, string> = {};
+  let pos = 0;
+  const decoder = new TextDecoder();
+  try {
+    while (pos < bytes.length) {
+      const tag = readVarint(bytes, pos);
+      pos = tag.next;
+      const field = tag.value >>> 3;
+      const wire = tag.value & 7;
+      if (wire === 0) {
+        const v = readVarint(bytes, pos);
+        pos = v.next;
+        if (field === 1) version = v.value;
+      } else if (wire === 2) {
+        const len = readVarint(bytes, pos);
+        pos = len.next;
+        const end = pos + len.value;
+        if (end > bytes.length) throw new PayloadError('protobuf: bad length');
+        const chunk = bytes.subarray(pos, end);
+        pos = end;
+        if (field === 2) {
+          let k = '';
+          let v = '';
+          let p = 0;
+          while (p < chunk.length) {
+            const et = readVarint(chunk, p);
+            p = et.next;
+            const eField = et.value >>> 3;
+            if ((et.value & 7) !== 2) break;
+            const el = readVarint(chunk, p);
+            p = el.next;
+            const str = decoder.decode(chunk.subarray(p, p + el.value));
+            p += el.value;
+            if (eField === 1) k = str;
+            else if (eField === 2) v = str;
+          }
+          if (k) flags[k] = v;
+        }
+      } else if (wire === 5) {
+        pos += 4;
+      } else if (wire === 1) {
+        pos += 8;
+      } else {
+        break;
+      }
+    }
+  } catch {
+    return { version: 0, flags: {} };
+  }
+  return { version, flags };
 }
 
 export function decodeKicked(bytes: Uint8Array): KickedPayload {
