@@ -1,0 +1,15 @@
+   conns      sends    avail%   global RPM   conn p95   samp    avg lat    p95 lat    verdict
+     256      16384      98.5%        98304          0ms      0         0s         0s       PASS
+     512      32768      98.5%       196608          0ms      0         0s         0s       PASS
+    1024      65569      98.5%       393414          0ms      0         0s         0s       PASS
+    2048     131181      98.5%       787086          0ms      0         0s         0s       PASS
+    4096     147208      98.6%       883248          0ms      0         0s         0s       PASS
+    8192       7416      98.8%        44496          0ms      0         0s         0s       PASS
+   16384       7492      98.8%        44952          0ms      0         0s         0s       PASS
+   32768       6959      99.3%        41754          0ms      0         0s         0s       PASS
+   65536        984     100.0%         5904          0ms      0         0s         0s       PASS
+  131072          0     100.0%            0          0ms      0         0s         0s       PASS
+  262144          0     100.0%            0          0ms      0         0s         0s       PASS
+  524288          0     100.0%            0          0ms      0         0s         0s       PASS
+ 1048576        137      99.3%          822          0ms      0         0s         0s       PASS
+wrote ladder.json

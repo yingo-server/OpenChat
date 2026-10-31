@@ -1,0 +1,119 @@
+[
+  {
+    "conns": 256,
+    "sends": 16384,
+    "fails": 256,
+    "avail_pct": 98.46153846153847,
+    "global_rpm": 98304,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 512,
+    "sends": 32768,
+    "fails": 512,
+    "avail_pct": 98.46153846153847,
+    "global_rpm": 196608,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 1024,
+    "sends": 65569,
+    "fails": 1024,
+    "avail_pct": 98.46230084243088,
+    "global_rpm": 393414,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 2048,
+    "sends": 131181,
+    "fails": 2047,
+    "avail_pct": 98.46353619359294,
+    "global_rpm": 787086,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 4096,
+    "sends": 147208,
+    "fails": 2056,
+    "avail_pct": 98.62257476685605,
+    "global_rpm": 883248,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 8192,
+    "sends": 7416,
+    "fails": 93,
+    "avail_pct": 98.76148621654015,
+    "global_rpm": 44496,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 16384,
+    "sends": 7492,
+    "fails": 89,
+    "avail_pct": 98.82601239941961,
+    "global_rpm": 44952,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 32768,
+    "sends": 6959,
+    "fails": 46,
+    "avail_pct": 99.34332619557459,
+    "global_rpm": 41754,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 65536,
+    "sends": 984,
+    "fails": 0,
+    "avail_pct": 100,
+    "global_rpm": 5904,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 131072,
+    "sends": 0,
+    "fails": 0,
+    "avail_pct": 100,
+    "global_rpm": 0,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 262144,
+    "sends": 0,
+    "fails": 0,
+    "avail_pct": 100,
+    "global_rpm": 0,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 524288,
+    "sends": 0,
+    "fails": 0,
+    "avail_pct": 100,
+    "global_rpm": 0,
+    "conn_p95_ms": 0,
+    "pass": true
+  },
+  {
+    "conns": 1048576,
+    "sends": 137,
+    "fails": 1,
+    "avail_pct": 99.27536231884058,
+    "global_rpm": 822,
+    "conn_p95_ms": 0,
+    "pass": true
+  }
+]
