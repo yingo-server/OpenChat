@@ -1,29 +1,19 @@
-# 压测结果受安全限流（security-spec §1.2.2）约束——WS 每连接 20 msg/s、
-# HTTP 由 acceptor 限流守护。压测工具刻意按限流档位错峰（125ms/条），
-# 以测「在合法速率下的稳定性」而非「攻击面」。
-# L4 断连语义（超限断连 + 退避）本身是被测目标之一：压力下出现断连属预期。
-#
-# 缓存策略：构建产物（chatd/stressd 二进制）与 Go 构建缓存按 HEAD commit hash
-# 精确缓存。同一次提交重复跑（或 workflow_dispatch 改参数重跑）时跳过全部
-# 构建步骤，直接进入压测——只有压测负载本身是每次执行的。
+# 压测结果受安全限流（security-spec §1.2.2）约束。压测的目的是测带载极限：
+# ladder 模式以 rate_limit_enabled=false 启动 chatd（一个开关同时放大 WS 帧
+# 限流、upgrade 限流、连接上限），持续加压直到可用性跌破 70% 为止。
+# 同时统计全局 RPM。
 
 name: Stress
 
 on:
   workflow_dispatch:
     inputs:
-      conns:
-        description: concurrent workers
-        default: "64"
+      ladder:
+        description: ladder (comma conn counts; stops at availability < 70%)
+        default: "256,512,1024,2048,4096,8192"
       duration:
-        description: seconds per phase
-        default: "20"
-      assert:
-        description: enforce thresholds (true/false)
-        default: "false"
-      skip-cache:
-        description: force rebuild (ignore cache)
-        default: "false"
+        description: seconds per level
+        default: "10"
   push:
     tags: ['v*']
 
@@ -46,12 +36,10 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # ---- 缓存的构建产物 ----
+      # ---- 缓存构建产物（按 HEAD hash），重跑秒级进入压测 ----
       - name: Compute cache key
         id: key
-        run: |
-          echo "hash=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "ver=$(git describe --tags --always 2>/dev/null)" >> "$GITHUB_OUTPUT"
+        run: echo "hash=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Restore build cache
         id: cache
@@ -60,42 +48,44 @@ jobs:
           path: |
             /tmp/chatd
             /tmp/stressd
-          key: ${{ env.CACHE_KEY_PREFIX }}-${{ steps.key.outputs.hash }}-${{ inputs.skip-cache == 'true' && github.run_id || 'shared' }}
+          key: ${{ env.CACHE_KEY_PREFIX }}-${{ steps.key.outputs.hash }}
           restore-keys: |
-            ${{ env.CACHE_KEY_PREFIX }}-${{ steps.key.outputs.hash }}-
+            ${{ env.CACHE_KEY_PREFIX }}-
 
       - name: Build chatd + stress tool
-        # cache-hit 且未强制重建 → 跳过编译（省 60-90s 的两次 go build）
-        if: steps.cache.outputs.cache-hit != 'true' || inputs.skip-cache == 'true'
+        if: steps.cache.outputs.cache-hit != 'true'
         run: |
           go build -o /tmp/chatd ./server/cmd/chatd
           go build -o /tmp/stressd ./scripts/stress
 
       - name: Verify binaries
-        run: |
-          test -x /tmp/chatd && test -x /tmp/stressd && echo "binaries ready (cached or fresh)"
-          /tmp/chatd -h 2>&1 | head -2 || true
+        run: test -x /tmp/chatd && test -x /tmp/stressd && echo ready
 
-      # ---- 压测（总是执行）----
-      - name: Run stress (HTTP + WS)
+      # ---- ladder 压测（自动加压到可用性 70%）----
+      - name: Run ladder stress
         env:
           CHATD_BIN: /tmp/chatd
-          CONNS: ${{ github.event.inputs.conns || '64' }}
-          DURATION: ${{ github.event.inputs.duration || '20' }}
-          ASSERT: ${{ github.event.inputs.assert || 'false' }}
+          LADDER: ${{ github.event.inputs.ladder || '256,512,1024,2048,4096,8192' }}
+          DURATION: ${{ github.event.inputs.duration || '10' }}
         run: |
-          ARGS=""
-          [ "$ASSERT" = "true" ] && ARGS="-assert"
-          /tmp/stressd -conns "$CONNS" -duration "$DURATION" $ARGS -out result.json | tee stress.log
+          /tmp/stressd -ladder "$LADDER" -duration "$DURATION" -out ladder.json | tee stress.log
+          echo '## Capacity ladder' >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -A 20 '^endpoint' stress.log >> "$GITHUB_STEP_SUMMARY"
+          grep -E '^\s+[0-9]+ ' stress.log >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # 提取极限档位写进 summary
+          LAST_PASS=$(grep 'PASS' stress.log | tail -1 | awk '{print $1}')
+          FIRST_FAIL=$(grep 'FAIL' stress.log | head -1 | awk '{print $1}')
+          {
+            echo "- **last passing level:** ${LAST_PASS:-n/a} conns"
+            echo "- **first failing level:** ${FIRST_FAIL:-none reached}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: stress-result-${{ github.run_id }}
+          name: ladder-result-${{ github.run_id }}
           path: |
-            result.json
+            ladder.json
             stress.log
-          retention-days: 7
+          retention-days: 30
