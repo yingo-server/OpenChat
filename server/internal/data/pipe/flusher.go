@@ -277,7 +277,14 @@ func (f *flusher) fanoutNew(m store.PendingMsg, mediaIdx map[string]*store.Media
 	// and shared by reference across every member's frame.
 	envs, _ := buildFanoutEnvs(defaultFanoutEncode, uint32(kinds.KindMsgNew), "", payload, uint64(m.Cid), uids)
 	for _, e := range envs {
-		if f.putBulk != nil && !f.putBulk(e) {
+		if f.putBulk == nil {
+			// No fan-out plane wired (test assemblies without Run): the frame
+			// would be silently dropped with its shared reference never
+			// released. Release to keep the refcount invariant.
+			e.releaseShared()
+			continue
+		}
+		if !f.putBulk(e) {
 			e.releaseShared()
 			f.lg.Warn("flusher: outbound lane at bulk high-water; MSG_NEW dropped", "cid", m.Cid, "uid", e.UserID)
 		}

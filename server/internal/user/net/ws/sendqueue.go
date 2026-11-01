@@ -29,7 +29,6 @@ package ws
 //     many frames coalesced into one loop iteration).
 
 import (
-	"io"
 	"sync"
 	"time"
 
@@ -43,12 +42,6 @@ const sendRingCap = 1024
 type outMsg struct {
 	mt int
 	b  []byte
-	// run marks an Envelope-encapsulated data frame: adjacent same-mt run
-	// frames may be concatenated into ONE websocket message (the client's
-	// decoder is stream-tolerant). Control/error frames that carry a
-	// connection-level semantic (close reason etc.) leave run=false and are
-	// always written as their own message.
-	run bool
 }
 
 // connWriter abstracts the socket write primitives so write batching is
@@ -64,66 +57,18 @@ type connWriter interface {
 // gorillaWriter is the production connWriter. It routes every write through
 // gorilla so its internal mutex serialises data frames, control frames and the
 // read-side auto-pong (writing raw to the socket would race those).
-//
-// 真·合批（perf-spec 补充模块 C）：同 message type 的相邻帧合并进一个 WS
-// message（NextWriter + Write + Close → 一次帧头编码、一次底层 socket Write，
-// 服务端无 mask 时 gorilla 内部用 net.Buffers{header, payload} writev 到
-// conn）。合并是纯应用层字节拼接，对客户端表现为一条更大的普通 message，
-// 协议完全不变（客户端 dispatch 按现有 Envelope 解码，消息边界不丢失——
-// 每条 Envelope 是自描述的 protobuf/JSON，解码器在缓冲流上天然按字段
-// 边界解析）。跨 message type（binary↔text）不合并：mt 变化即 Close 当前
-// writer 开新 message，客户端两种 wire form 都能正确解析。
-type gorillaWriter struct{ c *websocket.Conn }
 
-// writeBatchCap limits one WS message's frame count. 64KB is the wire frame
-// limit (frame.MaxFrameBytes) that the client's ReadMessage path assumes;
-// a merged message must stay well under it, so batches are cut at 32 frames
-// (observed fan-out frames are Envelope-sized, ~100-500B each).
-const writeBatchCap = 32
+type gorillaWriter struct{ c *websocket.Conn }
 
 func (w gorillaWriter) writeBatch(msgs []outMsg) error {
 	if len(msgs) == 0 {
 		return nil
 	}
 	_ = w.c.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	i := 0
-	for i < len(msgs) {
-		mt := msgs[i].mt
-		var err error
-		// Same-type run: merge into ONE websocket message (one frame header,
-		// one socket write). Single-frame runs keep the WriteMessage fast path
-		// — identical cost to before, zero added latency when idle.
-		j := i + 1
-		if msgs[i].run {
-			for j < len(msgs) && msgs[j].mt == mt && msgs[j].run {
-				j++
-				if j-i >= writeBatchCap {
-					break
-				}
-			}
-		}
-		if j == i+1 {
-			// single frame: fast path
-			if err = w.c.WriteMessage(mt, msgs[i].b); err != nil {
-				return err
-			}
-			i = j
-			continue
-		}
-		// multi-frame run: concatenate into one message
-		var mw io.WriteCloser
-		if mw, err = w.c.NextWriter(mt); err != nil {
+	for _, m := range msgs {
+		if err := w.c.WriteMessage(m.mt, m.b); err != nil {
 			return err
 		}
-		for k := i; k < j; k++ {
-			if _, err = mw.Write(msgs[k].b); err != nil {
-				return err
-			}
-		}
-		if err = mw.Close(); err != nil {
-			return err
-		}
-		i = j
 	}
 	return nil
 }

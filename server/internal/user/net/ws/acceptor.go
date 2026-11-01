@@ -556,13 +556,16 @@ func flushConn(c *Conn) bool {
 		mt, out := frameWireMsgCached(jsonMode, b, &fc)
 		msgs = append(msgs, outMsg{mt: mt, b: out})
 	}
-	// Inline data frames are plain Envelope messages — stream-tolerant decoders
-	// (protobuf/JSON per Envelope) parse a concatenated buffer exactly like
-	// separate frames, so adjacent same-type frames may share one WS message
-	// (真·合批，perf-spec 补充模块 C).
+	// Inline data frames are plain Envelope messages. NOTE: they are NOT
+	// concatenated into one WS message — protobuf wire format is not
+	// self-delimiting across Envelope boundaries (fields of adjacent frames
+	// would merge/overwrite, and the trailing remainder is silently dropped).
+	// See docs/perf-postmortem-v1.2-draft.md: the "stream-tolerant decoder"
+	// assumption was falsified by the e2e suite (all E2E tests timed out
+	// waiting for frames that had been merged away).
 	for _, b := range data {
 		mt, out := frameWireMsgCached(jsonMode, b, &fc)
-		msgs = append(msgs, outMsg{mt: mt, b: out, run: true})
+		msgs = append(msgs, outMsg{mt: mt, b: out})
 	}
 	return c.writer.writeBatch(msgs) == nil
 }
@@ -679,7 +682,7 @@ type frameJSONCache struct {
 }
 
 func (fc *frameJSONCache) get(b []byte) (int, []byte, bool) {
-	if len(fc.src) != len(b) || &fc.src[0] != &b[0] {
+	if len(b) == 0 || len(fc.src) != len(b) || &fc.src[0] != &b[0] {
 		return 0, nil, false
 	}
 	return websocket.TextMessage, fc.out, fc.ok

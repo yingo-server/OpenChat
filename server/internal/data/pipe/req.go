@@ -82,6 +82,9 @@ func (t *TestPeer) Send(f *proto.Frame) error {
 	}
 }
 func (t *TestPeer) Frames() <-chan *proto.Frame { return t.in }
+
+// Out exposes the outbound lane for tests that pump sendOne concurrently.
+func (t *TestPeer) Out() <-chan *proto.Frame { return t.out }
 func (t *TestPeer) Close() error {
 	select {
 	case <-t.closed:
