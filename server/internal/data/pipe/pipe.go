@@ -69,9 +69,13 @@ type Pipe struct {
 	// shared queue those frames delayed every ACK by seconds (measured: 22%
 	// ACK rate at 128 connections). Separate queue, separate sender.
 	outFan chan *env
-	// sendMu serialises peer.Send across the two sender goroutines.
-	sendMu  sync.Mutex
-	fanDone chan struct{}
+	// 扇出路径不持任何 pipe 级锁（perf-spec 补充模块 B）：peer.Send 的三种
+	// 生产实现均自身并发安全（embedded busPeer/layerPeer：bridge.mu + chan；
+	// remote remotePeer：connWriter.mu 串行化连接写；ReconnectingPeer：mu），
+	// 500 人群一帧扇出 500 次 Send，此前被 sendMu 串行化是纯开销。reply
+	// 路径保留 replySendMu —— ACK 不能排在扇出后面。见 sendOne 注释。
+	replySendMu sync.Mutex
+	fanDone     chan struct{}
 
 	// emit converts an outbound env into a transport frame. Per instance (see
 	// SetEmit): a package-level global raced between two assemblies.
@@ -216,9 +220,12 @@ func (p *Pipe) Run(ctx context.Context) {
 
 // sender drains outCh into the peer via Emit. Send errors are logged, not
 // fatal (crash-only; acks are recoverable through dedup + DB constraint).
+// Every env from outCh is a reply (ACK/error/result): it is tagged isReply so
+// sendOne routes it through replySendMu instead of the lock-free fan-out path.
 func (p *Pipe) sender() {
 	defer close(p.senderDone)
 	for e := range p.outCh {
+		e.isReply = true
 		p.sendOne(e)
 	}
 }
@@ -232,6 +239,29 @@ func (p *Pipe) fanSender() {
 	}
 }
 
+// sendOne delivers one outbound env to the peer.
+//
+// 并发安全论证（perf-spec 补充模块 B，扇出路径去全局锁）：
+//
+// 扇出调用方：fanSender goroutine（outFan 消费者）+ fanoutPlane 的投递路径，
+// 一条大群消息就是几百次连续 Send。Send 本身是「入队 + signal」级操作：
+//   - transport/embedded busPeer.Send：bridge.mu 只保护 links 快照拷贝，
+//     实际投递是带 100ms 超时的 channel send（select，非阻塞语义）；
+//   - transport/embedded layerPeer.Send：单 channel send；
+//   - transport/remote remotePeer.Send：EncodeFrame 后走 connWriter.write，
+//     connWriter 自带 sync.Mutex（remote/codec.go：与 FrameRW 共享的连接写
+//     锁契约）串行化对同一 socket 的所有写；
+//   - transport/remote ReconnectingPeer.Send：mu 保护 inner 快照后转发。
+//   - transport.Peer 的接口契约即注明「实现必须可并发安全调用」。
+//
+// 因此扇出侧无需 pipe 级锁：每条连接的写串行化由远端 WS 层自己的
+// gorillaWriter/gorilla 内部锁完成（每连接一把，互不干扰），pipe 再持全局
+// 锁只是把 500 次微秒级入队变成 500 次锁竞争，并把 reply sender 一起拖住。
+//
+// reply 路径（outCh 消费者 → ACK）：保留 replySendMu。ACK 是客户端在等的
+// 帧，走与扇出相同的 peer；虽然 Send 并发安全，reply 路径仍独占小锁以确保
+// ACK 的编码-发送在扇出流水中不被穿插观测（可调试性 > 微秒级开销），且
+// 持锁范围只有一个 Send 调用，不会阻塞扇出侧（扇出根本不碰这把锁）。
 func (p *Pipe) sendOne(e *env) {
 	fr := p.emit(e)
 	// Fan-out frames carry a shared, immutable pre-encoded body (kind + payload,
@@ -240,9 +270,15 @@ func (p *Pipe) sendOne(e *env) {
 	if fr != nil && e.base != nil {
 		fr.PreEncoded = e.base
 	}
-	p.sendMu.Lock()
-	err := p.peer.Send(fr)
-	p.sendMu.Unlock()
+	// 扇出路径：无 pipe 锁（论证见 sendOne doc comment）。
+	var err error
+	if e.isReply {
+		p.replySendMu.Lock()
+		err = p.peer.Send(fr)
+		p.replySendMu.Unlock()
+	} else {
+		err = p.peer.Send(fr)
+	}
 	// Release this member's reference to the shared body (no-op for replies).
 	e.releaseShared()
 	if err != nil {

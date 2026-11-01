@@ -546,14 +546,23 @@ func flushConn(c *Conn) bool {
 	jsonMode := c.jsonMode.Load()
 	// Control frames ride the same wire form as data: a browser connection
 	// speaks JSON, so a protobuf-encoded RESYNC/ERROR must be re-encoded too —
-	// otherwise the client sees a binary frame it cannot parse.
+	// otherwise the client sees a binary frame it cannot parse. Control frames
+	// are never coalesced (run=false): they are one-per-message by definition.
+	// Per-flush JSON cache (perf-spec 补充模块 A): fan-out hands the same
+	// immutable frame bytes to many connections; Decode+EncodeJSON runs once
+	// per distinct frame per flush, not once per JSON connection.
+	var fc frameJSONCache
 	for _, b := range ctrl {
-		mt, out := frameWireMsg(jsonMode, b)
+		mt, out := frameWireMsgCached(jsonMode, b, &fc)
 		msgs = append(msgs, outMsg{mt: mt, b: out})
 	}
+	// Inline data frames are plain Envelope messages — stream-tolerant decoders
+	// (protobuf/JSON per Envelope) parse a concatenated buffer exactly like
+	// separate frames, so adjacent same-type frames may share one WS message
+	// (真·合批，perf-spec 补充模块 C).
 	for _, b := range data {
-		mt, out := frameWireMsg(jsonMode, b)
-		msgs = append(msgs, outMsg{mt: mt, b: out})
+		mt, out := frameWireMsgCached(jsonMode, b, &fc)
+		msgs = append(msgs, outMsg{mt: mt, b: out, run: true})
 	}
 	return c.writer.writeBatch(msgs) == nil
 }
@@ -653,16 +662,61 @@ func (a *Acceptor) sendQueueCap() int {
 	return sendRingCap
 }
 
-// frameWireMsg picks the on-the-wire WebSocket message type for one prepared
-// protobuf frame: JSON text for browser connections, binary otherwise.
-func frameWireMsg(jsonMode bool, b []byte) (int, []byte) {
+// frameJSONCache caches the JSON wire form of one prepared protobuf frame for
+// the current flush (perf-spec 补充模块 A). The data-plane fan-out hands the
+// SAME immutable frame bytes to every connection: without the cache a
+// 500-connection flush re-ran frame.Decode + frame.EncodeJSON 500 times on
+// identical bytes. The cache is per drain call (never stored on the Conn), so
+// there is no cross-message staleness: a cache miss falls back to the classic
+// per-frame conversion, and a decode failure still degrades to binary.
+//
+// Concurrency: flushConn runs on the single per-connection write loop, so one
+// cache instance is confined to one flush; a plain struct (no locks) is safe.
+type frameJSONCache struct {
+	src []byte // the binary frame the json form was derived from
+	out []byte // its JSON wire form; nil when not convertible
+	ok  bool   // whether out is valid (EncodeJSON succeeded)
+}
+
+func (fc *frameJSONCache) get(b []byte) (int, []byte, bool) {
+	if len(fc.src) != len(b) || &fc.src[0] != &b[0] {
+		return 0, nil, false
+	}
+	return websocket.TextMessage, fc.out, fc.ok
+}
+
+func (fc *frameJSONCache) put(src, json []byte) {
+	fc.src, fc.out, fc.ok = src, json, true
+}
+
+// frameWireMsgCached is frameWireMsg with a per-flush JSON conversion cache.
+// Identical frame bytes (the fan-out shares one immutable pre-encoded body per
+// message) are converted Decode+EncodeJSON at most ONCE per flush instead of
+// once per JSON connection.
+func frameWireMsgCached(jsonMode bool, b []byte, fc *frameJSONCache) (int, []byte) {
 	if !jsonMode {
 		return websocket.BinaryMessage, b
 	}
+	if mt, out, ok := fc.get(b); ok {
+		if out == nil {
+			return websocket.BinaryMessage, b
+		}
+		return mt, out
+	}
 	if env, err := frame.Decode(b); err == nil {
 		if jb, jerr := frame.EncodeJSON(env); jerr == nil {
+			fc.put(b, jb)
 			return websocket.TextMessage, jb
 		}
 	}
+	// Not convertible: remember the negative result so repeated bad frames do
+	// not re-decode per connection.
+	fc.put(b, nil)
 	return websocket.BinaryMessage, b
+}
+
+// frameWireMsg picks the on-the-wire WebSocket message type for one prepared
+// protobuf frame: JSON text for browser connections, binary otherwise.
+func frameWireMsg(jsonMode bool, b []byte) (int, []byte) {
+	return frameWireMsgCached(jsonMode, b, &frameJSONCache{})
 }

@@ -16,6 +16,12 @@ type env struct {
 	UserID    uint64
 	Payload   []byte
 
+	// isReply marks ACK/error/result frames: they take the reply lane's
+	// replySendMu in sendOne (fan-out frames take no pipe-level lock at all,
+	// perf-spec 补充模块 B). The sender goroutine sets it on every env it
+	// forwards from outCh.
+	isReply bool
+
 	// base / shared are set only for fan-out frames (perf-spec §2.1). base is
 	// the recipient-independent encoded envelope body (kind + request_id +
 	// payload), serialised ONCE per message and shared by every member's env.
