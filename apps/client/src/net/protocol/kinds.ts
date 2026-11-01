@@ -77,6 +77,8 @@ export const KINDS = {
   MAINTENANCE: 502,
 
   // 900-999 数据层（用户面代理到 930 会话数据）
+  READ_HISTORY: 920,
+  READ_HISTORY_RESULT: 921,
   CONV_DATA_REQUEST: 930,
   CONV_DATA_RESULT: 931,
 } as const;

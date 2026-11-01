@@ -25,6 +25,9 @@ type Policy struct {
 	// the counting primitive; these are the limits.
 	RateLimit RateLimitConfig `json:"rate_limit"`
 
+	// WritePath tunes the group-commit write pipeline (flusher).
+	WritePath WritePathConfig `json:"write_path"`
+
 	// Group holds the group-conversation limits.
 	//
 	// MaxMembers is the hard ceiling on the member count of a group
@@ -73,6 +76,23 @@ type RateLimitConfig struct {
 	LoginPerIPPerMin int `json:"login_per_ip_per_min"`
 }
 
+// WritePathConfig tunes the group-commit write pipeline (flusher): how many
+// messages ride one transaction, and how long a partial batch waits before it
+// is committed. Both are pure performance knobs — they never change the
+// all-or-nothing / dedup semantics of a batch.
+type WritePathConfig struct {
+	// BatchSize is the maximum number of messages committed per transaction.
+	// Default 1000. Range 1..8000: larger batches raise throughput but also
+	// the worst-case commit latency and peak memory, so the ceiling is well
+	// below the point where a single transaction stalls readers.
+	BatchSize int `json:"batch_size"`
+	// FlushIntervalMS is the maximum time a message waits for batch mates
+	// before the partial batch is committed. Default 50ms. Range 5..2000:
+	// smaller is lower latency but more commits; larger amortises fsyncs at
+	// the cost of p50/p95 write ACK latency.
+	FlushIntervalMS int `json:"flush_interval_ms"`
+}
+
 // MaxGroupMembersHardLimit is the absolute ceiling a policy may set for
 // group.max_members. The full CONV_PAYLOAD snapshot costs ~60 bytes per member
 // and the WS frame codec caps a frame at 64KB, so anything above ~1090 members
@@ -95,6 +115,21 @@ type GroupConfig struct {
 	//     sizing against the fan-out budget in docs/known-issues.md.
 	MaxMembers int `json:"max_members"`
 }
+
+// WritePath defaults and validation bounds.
+const (
+	// DefaultWriteBatchSize is the group-commit batch size when policy omits
+	// write_path.batch_size.
+	DefaultWriteBatchSize = 1000
+	// DefaultWriteFlushIntervalMS is the group-commit flush interval when
+	// policy omits write_path.flush_interval_ms.
+	DefaultWriteFlushIntervalMS = 50
+	// Validation bounds for write_path (see Validate).
+	MinWriteBatchSize       = 1
+	MaxWriteBatchSize       = 8000
+	MinWriteFlushIntervalMS = 5
+	MaxWriteFlushIntervalMS = 2000
+)
 
 // Snapshot pairs a Policy with its version, so callers can detect reloads.
 type Snapshot struct {
@@ -125,6 +160,10 @@ func Default() Policy {
 		RateLimit: RateLimitConfig{
 			MsgPerUserPerMin: 60,
 			LoginPerIPPerMin: 10,
+		},
+		WritePath: WritePathConfig{
+			BatchSize:       DefaultWriteBatchSize,
+			FlushIntervalMS: DefaultWriteFlushIntervalMS,
 		},
 		Group: GroupConfig{
 			MaxMembers: 100,

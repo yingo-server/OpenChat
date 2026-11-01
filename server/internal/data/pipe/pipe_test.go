@@ -302,6 +302,72 @@ func TestReadHistory(t *testing.T) {
 	}
 }
 
+// readrouter "older" direction: beforeSeq returns the page strictly older
+// than the cursor, in ASCENDING seq order, excludes the cursor row itself,
+// and reports hasMore honestly. Also re-checks the member gate (403).
+func TestReadHistoryBeforeSeq(t *testing.T) {
+	p, msgs, convs, _ := newTestPipe(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cid, _ := convs.CreateConv(ctx, &store.ConvMeta{CType: 2, CreatedBy: 7, CreatedAt: 1}, 7)
+	for i := 1; i <= 6; i++ {
+		_ = msgs.AppendMessages(ctx, []store.PendingMsg{{MsgID: int64(i), Cid: cid, Seq: int64(i), SenderID: 7,
+			ClientMsgID: "b" + itoa(int64(i)), Content: []byte("m"), SentAt: int64(100 + i)}})
+	}
+
+	// beforeSeq=6 limit=2 → the two rows immediately older (seq 4,5), ASC.
+	p.dispatchReq(ctx, Req{Kind: 920, ConvID: uint64(cid), UserID: 7,
+		Payload: []byte(`{"convId":` + itoa(cid) + `,"beforeSeq":6,"limit":2}`)})
+	e := waitEnv(t, p.Outbound())
+	if e.Kind != 921 {
+		t.Fatalf("want 921, got %d (%s)", e.Kind, e.Payload)
+	}
+	var res wire.ReadHistoryResult
+	if err := wire.Unmarshal(e.Payload, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(res.Messages) != 2 {
+		t.Fatalf("want 2 msgs, got %d (%s)", len(res.Messages), e.Payload)
+	}
+	// ASC order and strictly < beforeSeq (cursor row 6 itself excluded).
+	if res.Messages[0].Seq != 4 || res.Messages[1].Seq != 5 {
+		t.Fatalf("want seq [4 5] ascending, got [%d %d]", res.Messages[0].Seq, res.Messages[1].Seq)
+	}
+	if res.Messages[0].Seq >= 6 || res.Messages[1].Seq >= 6 {
+		t.Fatalf("cursor row (seq=6) must be excluded: %+v", res.Messages)
+	}
+	if !res.HasMore {
+		t.Fatalf("full page (2/2) should report hasMore=true")
+	}
+
+	// beforeSeq=2 limit=10 → only seq 1 remains, short page ⇒ hasMore=false.
+	p.dispatchReq(ctx, Req{Kind: 920, ConvID: uint64(cid), UserID: 7,
+		Payload: []byte(`{"convId":` + itoa(cid) + `,"beforeSeq":2,"limit":10}`)})
+	e = waitEnv(t, p.Outbound())
+	var res2 wire.ReadHistoryResult
+	if err := wire.Unmarshal(e.Payload, &res2); err != nil {
+		t.Fatalf("unmarshal2: %v", err)
+	}
+	if len(res2.Messages) != 1 || res2.Messages[0].Seq != 1 {
+		t.Fatalf("want single seq=1, got %+v", res2.Messages)
+	}
+	if res2.HasMore {
+		t.Fatalf("short page (1/10) should report hasMore=false")
+	}
+
+	// non-member beforeSeq read → 403.
+	p.dispatchReq(ctx, Req{Kind: 920, ConvID: uint64(cid), UserID: 99,
+		Payload: []byte(`{"convId":` + itoa(cid) + `,"beforeSeq":6,"limit":2}`)})
+	e = waitEnv(t, p.Outbound())
+	var er struct {
+		Code uint32 `json:"code,omitempty"`
+	}
+	wire.Unmarshal(e.Payload, &er)
+	if er.Code != 403 {
+		t.Fatalf("non-member beforeSeq read should 403, got %s", e.Payload)
+	}
+}
+
 // flag get/set round trip (970/971 → 972).
 func TestFlagLane(t *testing.T) {
 	p, _, _, sys := newTestPipe(t)

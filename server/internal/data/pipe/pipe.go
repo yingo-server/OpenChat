@@ -120,8 +120,14 @@ type Pipe struct {
 //
 // p := pipe.New(peer, hot, coldDeps, pol, lg); go p.Run(ctx);
 // SIGTERM: p.Drain(ctx) → exit 143.
+//
+// pol carries the write_path tunables (batch_size / flush_interval_ms) into
+// the group-commit flusher; it accepts a policy.Policy, policy.Snapshot or
+// *policy.Store, or nil for the built-in defaults.
 func New(peer transport.Peer, hot *sqlite.DB, cold ColdDeps, pol any, lg *log.Logger) *Pipe {
-	return NewStores(peer, hot, cold, lg)
+	p := NewStores(peer, hot, cold, lg)
+	p.fl.applyWritePolicy(pol)
+	return p
 }
 
 // NewStores is New with the hot store behind the structural interface
@@ -166,6 +172,17 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 // SetTrunkee injects the job plane (kind 980 handler). Assembly calls it after
 // New; a pipe without one answers 980 with state "not_wired".
 func (p *Pipe) SetTrunkee(t Trunkee) { p.trunk = t }
+
+// SetWritePolicy re-applies the write_path tunables (batch size / flush
+// interval) from a policy snapshot. The assembly calls this on SIGHUP so a
+// reloaded policy takes effect on the next batch — the in-flight batch commits
+// with the old values. Safe to call at runtime (guarded by the flusher's
+// config lock).
+func (p *Pipe) SetWritePolicy(pol any) {
+	if p.fl != nil {
+		p.fl.applyWritePolicy(pol)
+	}
+}
 
 // Outbound exposes the outbound env lane (tests/assembly tapping).
 func (p *Pipe) Outbound() <-chan *env { return p.outCh }
@@ -216,9 +233,18 @@ func (p *Pipe) fanSender() {
 }
 
 func (p *Pipe) sendOne(e *env) {
+	fr := p.emit(e)
+	// Fan-out frames carry a shared, immutable pre-encoded body (kind + payload,
+	// WITHOUT the per-member target). Attach it so the user layer can write it
+	// verbatim after appending only the small target field — no re-Encode.
+	if fr != nil && e.base != nil {
+		fr.PreEncoded = e.base
+	}
 	p.sendMu.Lock()
-	err := p.peer.Send(p.emit(e))
+	err := p.peer.Send(fr)
 	p.sendMu.Unlock()
+	// Release this member's reference to the shared body (no-op for replies).
+	e.releaseShared()
 	if err != nil {
 		p.lg.Warn("pipe: peer send failed", "err", err.Error())
 	}

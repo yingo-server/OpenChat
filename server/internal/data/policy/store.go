@@ -101,6 +101,9 @@ func Diff(old, new Policy) []string {
 	if old.RateLimit != new.RateLimit {
 		out = append(out, "rate_limit")
 	}
+	if old.WritePath != new.WritePath {
+		out = append(out, "write_path")
+	}
 	return out
 }
 

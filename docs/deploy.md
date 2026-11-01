@@ -174,6 +174,16 @@ sudo ./deploy/install.sh --prefix /opt/openchat --etc /etc/openchat --state /var
 **不要改**：监听地址改成 `0.0.0.0`（绕过 Caddy 等于裸奔）、`public_origin` 用 http、
 把 `hot_db` 放到 NFS（SQLite WAL 不支持网络文件系统）。
 
+> **热库 PRAGMA 与持久性（perf-spec 模块 3）**：热库连接强制
+> `journal_mode=WAL`、`synchronous=NORMAL`、`busy_timeout=5000`、
+> `foreign_keys=ON`、`cache_size=-8000`（8MB/连接）、`journal_size_limit=64MB`、
+> `wal_autocheckpoint=2000`（约 8MB WAL 触发被动检查点，减少写路径停顿）。
+> **`synchronous=NORMAL`（而非 `OFF`）的持久性权衡**：WAL 模式下进程崩溃不丢已提交
+> 事务；但**操作系统崩溃 / 掉电会丢失最近一次 checkpoint 之后、尚未 fsync 的事务**。
+> 这是吞吐与持久性的显式取舍，**默认值即如此，且不提供改成 `OFF` 的开关**
+> （`OFF` 会在掉电时丢失任意多条已 ACK 消息，不适合作为默认）。对消息不可丢有强
+> 需求的部署，应通过外部机制（写前日志、异地冗余）而非 `synchronous=OFF` 补偿。
+
 > **消费进度**：当前 `chatd` 已读取 `mode/listen/admin_listen/public_origin/hot_db/admin_db/
 > cold_dsn/policy_path/jwt_key_path/pii_hmac_key_path/media_dir/log_level/shutdown_timeout_sec`
 > 与 `[feature_flags]`；`metrics_listen`、`watchdog_interval_sec`、`max_devices_per_user`、
@@ -197,6 +207,15 @@ sudo ./deploy/install.sh --prefix /opt/openchat --etc /etc/openchat --state /var
 | `trim[]` | `sys_rate_limit` 7 天、`identity_login_history` 180 天 | 只允许白名单表；其他值加载即拒绝（防动态 SQL） |
 | `rate_limit.msg_per_user_per_min` | `60` | 用户级消息速率（跨设备聚合） |
 | `rate_limit.login_per_ip_per_min` | `10` | 单 IP 登录尝试速率 |
+| `write_path.batch_size` | `1000` | 写路径组提交批大小（一个事务的消息条数）。调大可提吞吐；上限 `8000`。批越大，单次提交的最坏 ACK 延迟越高 |
+| `write_path.flush_interval_ms` | `50` | 组提交兜底间隔（不足一批时最多等多久提交）。调小延迟更低但提交更频繁。范围 `5`–`2000` |
+
+> **`write_path` 调参建议（perf-spec 模块 3，写路径优化）**：默认
+> `batch_size=1000`、`flush_interval_ms=50` 与 v1.1.1 行为一致（可安全回退）。
+> 压测建议从 `batch_size=2000`、`flush_interval_ms=50` 起步（预期 ~1.5x），
+> 只在 P95 仍达标时继续加。`write_path` 只影响吞吐/延迟，不改变
+> all-or-nothing、去重（`ErrDuplicate`）与崩溃持久性语义；SIGHUP 热载
+> 对**下一批**生效（在途批次按旧参数提交）。
 
 ### 3.3 `/etc/openchat/env`（0600 root:openchat）
 

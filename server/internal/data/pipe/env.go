@@ -15,4 +15,12 @@ type env struct {
 	ConvID    uint64
 	UserID    uint64
 	Payload   []byte
+
+	// base / shared are set only for fan-out frames (perf-spec §2.1). base is
+	// the recipient-independent encoded envelope body (kind + request_id +
+	// payload), serialised ONCE per message and shared by every member's env.
+	// shared reference-counts how many members still hold it. Ordinary reply
+	// envs leave both nil and take the classic per-frame Encode path.
+	base   []byte
+	shared *sharedFrame
 }

@@ -537,6 +537,12 @@ func (a *assembly) reload(ctx context.Context) {
 			a.lg.Warn("policy reload failed; keeping previous snapshot", "err", err.Error())
 		} else {
 			a.lg.Info("policy reloaded", "changed", strings.Join(changed, ","), "version", a.policy.Current().Version)
+			// The write_path tunables are read by the flusher each batch;
+			// re-apply them so a reloaded batch_size / flush_interval takes
+			// effect on the next group commit without a restart.
+			if a.pipe != nil {
+				a.pipe.SetWritePolicy(a.policy.Current().Policy)
+			}
 		}
 	}
 	// The freshly reloaded rate_limit section is pushed into the user

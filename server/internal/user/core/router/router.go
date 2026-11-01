@@ -9,6 +9,7 @@ package router
 
 import (
 	"context"
+	"encoding/binary"
 	"time"
 
 	"github.com/yingo-server/OpenChat/server/internal/pkg/featureflags"
@@ -238,18 +239,27 @@ func (r *Router) HandleDownstream(fr *proto.Frame) {
 		r.executeKicked(env)
 		return
 	}
-	r.deliver(env, connID)
+	r.deliver(env, connID, fr.PreEncoded)
 }
 
 // deliver 定位并投递：显式 user_id 优先（数据面结果/事件按用户投递，
 // 且 bridge 的 conn_id 属于来源层，不能当作 usergw 连接号使用）；
 // 无 user_id 时再按 conn_id 精确定位。
-func (r *Router) deliver(env *chatpb.Envelope, connID uint64) {
+func (r *Router) deliver(env *chatpb.Envelope, connID uint64, preEncoded []byte) {
 	if env.Kind == 401 || env.Kind == 402 {
 	}
-	b, err := frame.Encode(env)
-	if err != nil {
-		return
+	var b []byte
+	if len(preEncoded) > 0 {
+		b = appendEnvelopeTarget(preEncoded, env.GetConvId(), env.GetUserId())
+		if len(b) > frame.MaxFrameBytes {
+			return
+		}
+	} else {
+		var err error
+		b, err = frame.Encode(env)
+		if err != nil {
+			return
+		}
 	}
 	if uid := int64(env.GetUserId()); uid > 0 {
 		if n := r.sess.Broadcast(uid, b); n > 0 {
@@ -371,5 +381,35 @@ func flagString(v any) string {
 		return "false"
 	default:
 		return ""
+	}
+}
+
+// appendEnvelopeTarget materialises a per-recipient frame from the shared,
+// recipient-independent body produced by the data layer fan-out (perf-spec
+// §2.1). It copies the small shared body once and appends ONLY the outer target
+// field (user_id or conv_id, a varint) — never re-serialising the payload.
+//
+// The resulting bytes are decode-identical to frame.Encode(env): protobuf
+// decoders accept fields in any order, so emitting the target AFTER the payload
+// (field 11/10 after field 15) decodes to the same Envelope. The target
+// precedence mirrors installEmit: user_id wins, else conv_id.
+func appendEnvelopeTarget(base []byte, convID, userID uint64) []byte {
+	const (
+		fieldConvID = 10
+		fieldUserID = 11
+	)
+	switch {
+	case userID != 0:
+		out := make([]byte, len(base), len(base)+1+binary.MaxVarintLen64)
+		copy(out, base)
+		out = append(out, byte(fieldUserID<<3|0))
+		return binary.AppendUvarint(out, userID)
+	case convID != 0:
+		out := make([]byte, len(base), len(base)+1+binary.MaxVarintLen64)
+		copy(out, base)
+		out = append(out, byte(fieldConvID<<3|0))
+		return binary.AppendUvarint(out, convID)
+	default:
+		return base
 	}
 }

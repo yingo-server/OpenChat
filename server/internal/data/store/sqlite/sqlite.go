@@ -71,6 +71,10 @@ func (db *DB) MemberPeersOf(ctx context.Context, uid int64) ([]int64, error) {
 //	  VACUUM;` while the service is STOPPED (see docs/deploy.md).
 //	journal_size_limit=64MB — WAL files are truncated instead of growing
 //	  without bound.
+//	wal_autocheckpoint=2000 — a passive checkpoint is attempted every ~2000
+//	  pages (~8MB) of WAL, up from SQLite's 1000-page default, so the hot
+//	  write path spends less time stalling on checkpoints; journal_size_limit
+//	  still bounds the file.
 //	cache_size=-8000 — 8MB page cache per connection (negative = KiB), a
 //	  bound instead of the driver's default.
 //
@@ -103,6 +107,7 @@ func openDriver(driverName, path string) (*DB, error) {
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA synchronous=NORMAL",          // WAL-safe default; durability knobs are deployment policy
 		"PRAGMA journal_size_limit=67108864", // 64MB: truncate the WAL, don't hoard it
+		"PRAGMA wal_autocheckpoint=2000",     // checkpoint every ~8MB of WAL (vs 1000-page/~4MB default): fewer passive-checkpoint stalls on the hot write path; the WAL is capped by journal_size_limit above
 		"PRAGMA cache_size=-8000",            // 8MB page cache per connection
 	} {
 		if _, err := db.Exec(p); err != nil {

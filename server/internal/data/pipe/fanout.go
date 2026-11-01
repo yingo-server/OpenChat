@@ -458,7 +458,8 @@ func (f *fanoutPlane) broadcastLoop(ctx context.Context, jobs <-chan fanoutJob) 
 	}
 }
 
-// broadcast resolves the recipient set and emits one frame per recipient.
+// broadcast resolves the recipient set and emits one frame per recipient, with
+// the recipient-independent body encoded ONCE (perf-spec §2.1).
 //
 // The recipient set comes from the CACHE (member list / peer set), so the
 // worker never blocks the dispatcher on a DB query.
@@ -471,42 +472,49 @@ func (f *fanoutPlane) broadcast(ctx context.Context, job fanoutJob) {
 			f.lg.Warn("fanout: member list failed", "cid", job.cid, "err", err.Error())
 			return
 		}
+		uids := make([]uint64, 0, len(members))
 		for _, m := range members {
 			if uint64(m.UID) == job.excludeUID {
 				continue
 			}
-			f.emit(job.kind, uint64(job.cid), uint64(m.UID), job.payload)
+			uids = append(uids, uint64(m.UID))
 		}
+		f.fanoutTo(job.kind, uint64(job.cid), uids, job.payload)
 		return
 	}
 	// Presence: the peer set of the subject user.
 	peers, err := f.mc.Peers(ctx, int64(job.userID))
-	if job.kind == 401 || job.kind == 402 {
-	}
 	if err != nil {
 		f.lg.Warn("fanout: peer set failed", "uid", job.userID, "err", err.Error())
 		return
 	}
+	uids := make([]uint64, 0, len(peers))
 	for _, peer := range peers {
 		if uint64(peer) == job.excludeUID {
 			continue
 		}
-		f.emit(job.kind, 0, uint64(peer), job.payload)
+		uids = append(uids, uint64(peer))
 	}
+	f.fanoutTo(job.kind, 0, uids, job.payload)
 }
 
-// emit places one frame on the outbound lane. The lane is bounded: a full
-// lane drops the frame and COUNTS it (never a silent drop).
-func (f *fanoutPlane) emit(kind uint32, cid, uid uint64, payload []byte) {
-	if kind == 401 || kind == 402 {
+// fanoutTo delivers job's payload to every uid in uids. The envelope body is
+// encoded exactly ONCE via buildFanoutEnvs and shared by reference across all
+// members; the outbound lane only carries lightweight per-member env values that
+// point at the same immutable bytes. A member whose frame the lane refuses must
+// release its shared reference itself so the reference count still reaches zero.
+func (f *fanoutPlane) fanoutTo(kind uint32, cid uint64, uids []uint64, payload []byte) {
+	envs, _ := buildFanoutEnvs(defaultFanoutEncode, kind, "", payload, cid, uids)
+	for _, e := range envs {
+		if f.put(e) {
+			f.stBroadcasts.Add(1)
+			continue
+		}
+		e.releaseShared()
+		f.stOutboundDrop.Add(1)
+		f.lg.Warn("fanout: outbound lane at bulk high-water; frame dropped",
+			"kind", kinds.KindName(kind), "uid", e.UserID)
 	}
-	if f.put(&env{Kind: kind, ConvID: cid, UserID: uid, Payload: payload}) {
-		f.stBroadcasts.Add(1)
-		return
-	}
-	f.stOutboundDrop.Add(1)
-	f.lg.Warn("fanout: outbound lane at bulk high-water; frame dropped",
-		"kind", kinds.KindName(kind), "uid", uid)
 }
 
 // isTypingKind reports whether kind is the typing signal.

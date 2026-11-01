@@ -67,8 +67,15 @@ type Error struct {
 
 // ReadHistory mirrors chat.v1.ReadHistory (920).
 type ReadHistory struct {
-	ConvID    uint64 `json:"convId,omitempty"`
-	SinceSeq  uint64 `json:"sinceSeq,omitempty"`
+	ConvID   uint64 `json:"convId,omitempty"`
+	SinceSeq uint64 `json:"sinceSeq,omitempty"`
+	// BeforeSeq selects the "older" direction: return messages with seq
+	// strictly less than BeforeSeq (keyset cursor walking backwards into
+	// history). It is additive and opt-in: when it is 0 the legacy SinceSeq
+	// behaviour (kind 8 SYNC catch-up and old clients) is unchanged. When set,
+	// the server replies in ASCENDING seq order so a client can prepend the
+	// page without re-sorting.
+	BeforeSeq uint64 `json:"beforeSeq,omitempty"`
 	Limit     uint32 `json:"limit,omitempty"`
 	ColdMerge bool   `json:"coldMerge,omitempty"`
 }

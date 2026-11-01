@@ -74,12 +74,21 @@ type Conn struct {
 	id         uint64
 	identity   Identity
 	ws         *websocket.Conn
-	send       chan []byte
 	done       chan struct{}
 	closeOnce  sync.Once
 	closeErr   error
 	createdAt  time.Time
 	remoteAddr string
+
+	// q is the bounded per-connection send queue (perf-spec v1.2 §2.3). It holds
+	// inline fan-out frames in a ring (capacity 1024) plus a small high-priority
+	// control lane (RESYNC) that is never blocked by inline traffic.
+	q *sendQueue
+	// notify wakes the write loop when a frame/control is enqueued (cap 1).
+	notify chan struct{}
+	// writer is the injectable sink for prepared WebSocket messages. Production
+	// uses gorillaWriter over ws; tests inject a counting fake (perf-spec §2.2).
+	writer connWriter
 
 	// jsonMode 记录本连接的线格式：浏览器客户端默认发 JSON 文本帧
 	// （apps/client 的 JSON codec），原生客户端发 protobuf 二进制帧。回帧
@@ -113,40 +122,65 @@ func (c *Conn) CreatedAt() time.Time { return c.createdAt }
 func (c *Conn) Dropped() uint64 { return c.dropped.Load() }
 
 // Write 非阻塞写一帧到发送缓冲；缓冲满或已关闭返回 false（不阻塞读循环）。
+//
+// Slow-consumer degradation (perf-spec §2.3): when the ring is full the
+// connection is marked lagging, a RESYNC control frame is queued on the priority
+// lane, and this (and every subsequent inline) frame is dropped — the client is
+// told to pull the gap instead of the group waiting on the slow socket.
 func (c *Conn) Write(b []byte) bool {
-	select {
-	case <-c.done:
-		return false
-	default:
-	}
-	select {
-	case c.send <- b:
-		return true
-	default:
+	enq, resync := c.q.push(b)
+	if resync {
+		c.q.pushCtrl(resyncFrame())
+		c.signal()
 		c.dropped.Add(1)
 		return false
 	}
+	if enq {
+		c.signal()
+		return true
+	}
+	c.dropped.Add(1)
+	return false
 }
 
 // WriteWait 带超时的阻塞写（优雅退出排空用）。
 func (c *Conn) WriteWait(b []byte, timeout time.Duration) bool {
-	t := time.NewTimer(timeout)
-	defer t.Stop()
-	select {
-	case c.send <- b:
-		return true
-	case <-c.done:
-		return false
-	case <-t.C:
-		return false
+	deadline := time.Now().Add(timeout)
+	for {
+		enq, resync := c.q.push(b)
+		if resync {
+			c.q.pushCtrl(resyncFrame())
+			c.signal()
+		}
+		if enq {
+			c.signal()
+			return true
+		}
+		select {
+		case <-c.done:
+			return false
+		default:
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
 // Done 返回关闭信号。
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
-// Send 返回写缓冲（仅供排空观测，勿写入）。
-func (c *Conn) Send() chan []byte { return c.send }
+// Pending 返回发送缓冲中待写帧数（排空观测用）。
+func (c *Conn) Pending() int { return c.q.pending() }
+
+// signal wakes the write loop without blocking (collapses concurrent notifies).
+func (c *Conn) signal() {
+	select {
+	case c.notify <- struct{}{}:
+	default:
+	}
+}
 
 // Close 关闭连接（幂等）。
 func (c *Conn) Close() error {
@@ -171,11 +205,10 @@ func (c *Conn) CloseFlush(last []byte, code int, reason string, budget time.Dura
 	default:
 	}
 	if last != nil {
-		select {
-		case c.send <- last:
-		case <-c.done:
-			return
-		}
+		// The final frame rides the priority lane so it is never blocked by a
+		// full (or lagging) inline queue.
+		c.q.pushCtrl(last)
+		c.signal()
 	}
 	// Give the write loop a bounded window to drain, then force-close.
 	if c.flushed != nil {
@@ -326,12 +359,14 @@ func (a *Acceptor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		id:         a.nextID.Add(1),
 		identity:   *identity,
 		ws:         c,
-		send:       make(chan []byte, a.cfg.WriteChanCap),
+		q:          newSendQueue(a.sendQueueCap()),
+		notify:     make(chan struct{}, 1),
 		done:       make(chan struct{}),
 		flushed:    make(chan struct{}),
 		createdAt:  time.Now(),
 		remoteAddr: r.RemoteAddr,
 	}
+	conn.writer = gorillaWriter{c: c}
 	a.register(conn)
 	if a.OnConnect != nil {
 		a.OnConnect(conn)
@@ -462,38 +497,67 @@ func (a *Acceptor) readLoop(c *Conn) {
 	}
 }
 
-// writeLoop 每连接写协程：chan []byte → WriteMessage；定时 Ping 心跳。
+// writeLoop 每连接写协程。Drains the whole pending queue per wake (idle ⇒ zero
+// latency, under load ⇒ natural batching) and flushes it as ONE writer call
+// (perf-spec §2.2). A 15ms safety tick flushes anything a lost notify could
+// strand; ping rides the same single writer. On close the queue is drained once
+// more, best-effort, then flushed is signalled.
 func (a *Acceptor) writeLoop(c *Conn) {
-	ticker := time.NewTicker(a.cfg.HeartbeatInterval)
-	defer ticker.Stop()
+	ping := time.NewTicker(a.cfg.HeartbeatInterval)
+	safety := time.NewTicker(writeFallbackFlush)
+	defer ping.Stop()
+	defer safety.Stop()
+	defer close(c.flushed)
+	defer c.q.close()
 	for {
 		select {
-		case b := <-c.send:
-			_ = c.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			mt, out := websocket.BinaryMessage, b
-			if c.jsonMode.Load() {
-				// Upper layers always hand us protobuf; a JSON peer gets the
-				// JSON form of the same envelope. A frame that cannot be
-				// re-encoded is a bug — drop it rather than send garbage.
-				if env, err := frame.Decode(b); err == nil {
-					if jb, jerr := frame.EncodeJSON(env); jerr == nil {
-						mt, out = websocket.TextMessage, jb
-					}
-				}
-			}
-			if err := c.ws.WriteMessage(mt, out); err != nil {
+		case <-c.notify:
+			if !flushConn(c) {
 				a.closeConn(c)
 				return
 			}
-		case <-ticker.C:
-			if err := c.ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+		case <-safety.C:
+			if c.q.pending() > 0 && !flushConn(c) {
+				a.closeConn(c)
+				return
+			}
+		case <-ping.C:
+			if err := c.writer.writeControl(websocket.PingMessage, nil); err != nil {
 				a.closeConn(c)
 				return
 			}
 		case <-c.done:
+			_ = flushConn(c) // final best-effort drain
 			return
 		}
 	}
+}
+
+// flushConn drains the queue (control lane first, then inline) and writes the
+// batch through the injectable writer in ONE call. Returns false on a write
+// error (the caller closes the connection).
+func flushConn(c *Conn) bool {
+	ctrl, data := c.q.drain()
+	if len(ctrl) == 0 && len(data) == 0 {
+		return true
+	}
+	msgs := make([]outMsg, 0, len(ctrl)+len(data))
+	for _, b := range ctrl {
+		msgs = append(msgs, outMsg{mt: websocket.BinaryMessage, b: b})
+	}
+	jsonMode := c.jsonMode.Load()
+	for _, b := range data {
+		mt, out := websocket.BinaryMessage, b
+		if jsonMode {
+			if env, err := frame.Decode(b); err == nil {
+				if jb, jerr := frame.EncodeJSON(env); jerr == nil {
+					mt, out = websocket.TextMessage, jb
+				}
+			}
+		}
+		msgs = append(msgs, outMsg{mt: mt, b: out})
+	}
+	return c.writer.writeBatch(msgs) == nil
 }
 
 // closeConn 连接收尾：关闭 socket、注销、回调。

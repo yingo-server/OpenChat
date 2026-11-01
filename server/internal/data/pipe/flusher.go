@@ -4,14 +4,20 @@ package pipe
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
+	"github.com/yingo-server/OpenChat/server/internal/data/policy"
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
 	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
 	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
 )
 
 const (
+	// defaultFlushBatch / defaultFlushEvery are the fallbacks when policy
+	// does not supply write_path.batch_size / flush_interval_ms; they match
+	// policy.DefaultWriteBatchSize / DefaultWriteFlushIntervalMS. The live
+	// values come from policy via applyWritePolicy (not hardcoded here).
 	defaultFlushBatch = 1000
 	defaultFlushEvery = 50 * time.Millisecond
 )
@@ -31,10 +37,15 @@ type flusher struct {
 	putBulk func(*env) bool
 	// putAck places an ACK on the lane with full capacity: the sender is
 	// blocked on it, so it outranks broadcast traffic.
-	putAck    func(*env)
-	lg        *log.Logger
+	putAck func(*env)
+	lg     *log.Logger
+	// batchSize / interval are the group-commit tunables. They are read on
+	// every loop iteration by run(), so they are guarded by cfgMu to allow
+	// live reconfiguration (SIGHUP) without a data race. Tests that set them
+	// directly do so BEFORE run() starts (happens-before via go statement).
 	batchSize int
 	interval  time.Duration
+	cfgMu     sync.RWMutex
 	readyCh   <-chan ReadyMsg
 	dedup     *Dedup
 	// mc is the cached member-list view: the MSG_NEW fan-out resolves the
@@ -63,9 +74,56 @@ func newFlusher(w store.MsgWriter, convs store.ConvStore, out chan<- *env, ready
 // whatever the uplink carried, minus the store-only fields.
 func (f *flusher) setMediaStore(ms store.MediaStore) { f.media = ms }
 
+// applyWritePolicy overrides the group-commit batch size and flush interval
+// from the policy snapshot (write_path section) when one is supplied. The
+// argument is the value pipe.New receives (a policy.Policy, a policy.Snapshot
+// or a *policy.Store); anything else — or a zero field — keeps the built-in
+// defaults (batchSize=1000, interval=50ms), so a missing policy degrades
+// predictably. Safe to call at runtime (SIGHUP): the new values apply to the
+// next batch, the in-flight batch commits with the old ones.
+func (f *flusher) applyWritePolicy(pol any) {
+	var wc policy.WritePathConfig
+	switch v := pol.(type) {
+	case policy.Policy:
+		wc = v.WritePath
+	case policy.Snapshot:
+		wc = v.Policy.WritePath
+	case *policy.Store:
+		if v != nil {
+			wc = v.Current().Policy.WritePath
+		}
+	}
+	var every time.Duration
+	if wc.FlushIntervalMS > 0 {
+		every = time.Duration(wc.FlushIntervalMS) * time.Millisecond
+	}
+	f.setConfig(wc.BatchSize, every)
+}
+
+// setConfig applies the tunables under the config lock; a zero value leaves
+// the current setting untouched (so a partial policy keeps the defaults).
+func (f *flusher) setConfig(batch int, every time.Duration) {
+	f.cfgMu.Lock()
+	defer f.cfgMu.Unlock()
+	if batch > 0 {
+		f.batchSize = batch
+	}
+	if every > 0 {
+		f.interval = every
+	}
+}
+
+// config returns the current (batchSize, interval) pair under the config lock.
+func (f *flusher) config() (int, time.Duration) {
+	f.cfgMu.RLock()
+	defer f.cfgMu.RUnlock()
+	return f.batchSize, f.interval
+}
+
 func (f *flusher) run(ctx context.Context) {
 	defer close(f.done)
-	t := time.NewTimer(f.interval)
+	_, initial := f.config()
+	t := time.NewTimer(initial)
 	defer t.Stop()
 	var buf []ReadyMsg
 	flushNow := func() {
@@ -83,18 +141,20 @@ func (f *flusher) run(ctx context.Context) {
 				return
 			}
 			buf = append(buf, m)
-			if len(buf) >= f.batchSize {
+			batch, every := f.config()
+			if len(buf) >= batch {
 				if !t.Stop() {
 					select {
 					case <-t.C:
 					default:
 					}
 				}
-				t.Reset(f.interval)
+				t.Reset(every)
 				flushNow()
 			}
 		case <-t.C:
-			t.Reset(f.interval)
+			_, every := f.config()
+			t.Reset(every)
 			flushNow()
 		case <-ctx.Done():
 			flushNow()
@@ -206,13 +266,20 @@ func (f *flusher) fanoutNew(m store.PendingMsg, mediaIdx map[string]*store.Media
 		return
 	}
 	payload := buildMsgNewPayloadWithMedia(m, mediaLookupFromIndex(mediaIdx))
+	uids := make([]uint64, 0, len(members))
 	for _, member := range members {
 		if member.UID == m.SenderID {
 			continue
 		}
-		e := &env{Kind: uint32(kinds.KindMsgNew), ConvID: uint64(m.Cid), UserID: uint64(member.UID), Payload: payload}
+		uids = append(uids, uint64(member.UID))
+	}
+	// encode-once (perf-spec §2.1): the MSG_NEW body is serialised a single time
+	// and shared by reference across every member's frame.
+	envs, _ := buildFanoutEnvs(defaultFanoutEncode, uint32(kinds.KindMsgNew), "", payload, uint64(m.Cid), uids)
+	for _, e := range envs {
 		if f.putBulk != nil && !f.putBulk(e) {
-			f.lg.Warn("flusher: outbound lane at bulk high-water; MSG_NEW dropped", "cid", m.Cid, "uid", member.UID)
+			e.releaseShared()
+			f.lg.Warn("flusher: outbound lane at bulk high-water; MSG_NEW dropped", "cid", m.Cid, "uid", e.UserID)
 		}
 	}
 }

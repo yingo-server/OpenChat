@@ -73,6 +73,18 @@ func Validate(p Policy) []error {
 		errs = append(errs, fieldErr("rate_limit.login_per_ip_per_min", "must be >= 1"))
 	}
 
+	// write_path: batch size and flush interval only affect performance, but
+	// out-of-range values must never slip in silently (a 0 batch would stall
+	// every commit; a huge interval would blow up write ACK latency).
+	if p.WritePath.BatchSize < MinWriteBatchSize || p.WritePath.BatchSize > MaxWriteBatchSize {
+		errs = append(errs, fieldErr("write_path.batch_size",
+			fmt.Sprintf("must be within %d..%d", MinWriteBatchSize, MaxWriteBatchSize)))
+	}
+	if p.WritePath.FlushIntervalMS < MinWriteFlushIntervalMS || p.WritePath.FlushIntervalMS > MaxWriteFlushIntervalMS {
+		errs = append(errs, fieldErr("write_path.flush_interval_ms",
+			fmt.Sprintf("must be within %d..%d", MinWriteFlushIntervalMS, MaxWriteFlushIntervalMS)))
+	}
+
 	// group: the member ceiling must stay inside the 64KB frame budget.
 	// The full CONV_PAYLOAD snapshot is ~60 bytes per member; above ~1090
 	// members the frame is rejected by the codec.
