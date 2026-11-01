@@ -81,9 +81,18 @@ const MaxGroupMembersHardLimit = 1000
 
 // GroupConfig holds the group-conversation limits.
 type GroupConfig struct {
-	// MaxMembers is the hard ceiling on a group's member count (default
-	// 500). The value is bounded by the 64KB WS frame limit: the full
-	// CONV_PAYLOAD snapshot is ~60 bytes per member.
+	// MaxMembers is the ceiling on a group's member count (default 100).
+	//
+	// Two independent limits apply:
+	//   - framing: the full CONV_PAYLOAD snapshot is ~60 bytes/member and a
+	//     WS frame is capped at 64KB, so >~1090 members cannot be delivered
+	//     in one frame (see MaxGroupMembersHardLimit).
+	//   - capacity: every message fans out one frame per member, so a group's
+	//     cost is (members x messages/s). Measured on a 2-core box the frame
+	//     ceiling is ~40k frames/s; a 500-member group is therefore NOT usable
+	//     on 2 cores (measured 2.2% delivery). Default 100 keeps a busy
+	//     100-member group inside the 2-core budget; raise it only after
+	//     sizing against the fan-out budget in docs/known-issues.md.
 	MaxMembers int `json:"max_members"`
 }
 
@@ -118,7 +127,7 @@ func Default() Policy {
 			LoginPerIPPerMin: 10,
 		},
 		Group: GroupConfig{
-			MaxMembers: 500,
+			MaxMembers: 100,
 		},
 	}
 }
