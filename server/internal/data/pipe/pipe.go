@@ -69,13 +69,12 @@ type Pipe struct {
 	// shared queue those frames delayed every ACK by seconds (measured: 22%
 	// ACK rate at 128 connections). Separate queue, separate sender.
 	outFan chan *env
-	// 扇出路径不持任何 pipe 级锁（perf-spec 补充模块 B）：peer.Send 的三种
-	// 生产实现均自身并发安全（embedded busPeer/layerPeer：bridge.mu + chan；
-	// remote remotePeer：connWriter.mu 串行化连接写；ReconnectingPeer：mu），
-	// 500 人群一帧扇出 500 次 Send，此前被 sendMu 串行化是纯开销。reply
-	// 路径保留 replySendMu —— ACK 不能排在扇出后面。见 sendOne 注释。
-	replySendMu sync.Mutex
-	fanDone     chan struct{}
+	// sendMu serialises peer.Send across the two sender goroutines.
+	// REVERTED to the v1.1.1 shape after the 500-member stress test showed the
+	// lock-free fan-out + ring-push path was a net regression (73% vs 98%
+	// availability at 512x10; bench +4%/frame from the extra mutex+notify).
+	sendMu  sync.Mutex
+	fanDone chan struct{}
 
 	// emit converts an outbound env into a transport frame. Per instance (see
 	// SetEmit): a package-level global raced between two assemblies.
@@ -220,12 +219,9 @@ func (p *Pipe) Run(ctx context.Context) {
 
 // sender drains outCh into the peer via Emit. Send errors are logged, not
 // fatal (crash-only; acks are recoverable through dedup + DB constraint).
-// Every env from outCh is a reply (ACK/error/result): it is tagged isReply so
-// sendOne routes it through replySendMu instead of the lock-free fan-out path.
 func (p *Pipe) sender() {
 	defer close(p.senderDone)
 	for e := range p.outCh {
-		e.isReply = true
 		p.sendOne(e)
 	}
 }
@@ -263,24 +259,9 @@ func (p *Pipe) fanSender() {
 // ACK 的编码-发送在扇出流水中不被穿插观测（可调试性 > 微秒级开销），且
 // 持锁范围只有一个 Send 调用，不会阻塞扇出侧（扇出根本不碰这把锁）。
 func (p *Pipe) sendOne(e *env) {
-	fr := p.emit(e)
-	// Fan-out frames carry a shared, immutable pre-encoded body (kind + payload,
-	// WITHOUT the per-member target). Attach it so the user layer can write it
-	// verbatim after appending only the small target field — no re-Encode.
-	if fr != nil && e.base != nil {
-		fr.PreEncoded = e.base
-	}
-	// 扇出路径：无 pipe 锁（论证见 sendOne doc comment）。
-	var err error
-	if e.isReply {
-		p.replySendMu.Lock()
-		err = p.peer.Send(fr)
-		p.replySendMu.Unlock()
-	} else {
-		err = p.peer.Send(fr)
-	}
-	// Release this member's reference to the shared body (no-op for replies).
-	e.releaseShared()
+	p.sendMu.Lock()
+	err := p.peer.Send(p.emit(e))
+	p.sendMu.Unlock()
 	if err != nil {
 		p.lg.Warn("pipe: peer send failed", "err", err.Error())
 	}

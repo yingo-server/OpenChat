@@ -48,16 +48,6 @@ type Config struct {
 	ReadTimeout       time.Duration
 	MaxFrameBytes     int
 	WriteChanCap      int
-	// SendQueueCap overrides the per-connection inline send ring capacity
-	// (perf-spec v1.2 §2.3). 0 uses sendRingCap (1024).
-	SendQueueCap int
-	// SendTick 启用写循环的兜底定时 flush（历史默认 15ms）。v1.2 压测发现该
-	// tick 在每连接上以 ~66 次/秒空转唤醒（队列通常为空），已改为可选：
-	// 0（默认）= 不启用 tick，完全依赖 notify 唤醒（push/signal 路径覆盖
-	// 所有入队场景，丢失唤醒的风险由 frame 编码失败等极端路径承担）；>0 =
-	// 以该间隔兜底 flush（可设回 15ms 恢复旧行为）。取舍见
-	// docs/perf-postmortem-v1.2-draft.md。
-	SendTick time.Duration
 	// Upgrade 限流（security-spec E-3/E-4）。零值取 upgradelimit.go 的默认：
 	// UpgradeRatePerMin=10, UpgradeBurst=20, UpgradeFailureThreshold=8,
 	// UpgradeFailureWindow=5min, UpgradeBanFor=15min。可由 policy 覆盖。
@@ -84,21 +74,12 @@ type Conn struct {
 	id         uint64
 	identity   Identity
 	ws         *websocket.Conn
+	send       chan []byte
 	done       chan struct{}
 	closeOnce  sync.Once
 	closeErr   error
 	createdAt  time.Time
 	remoteAddr string
-
-	// q is the bounded per-connection send queue. It holds inline fan-out
-	// frames in a ring (capacity 1024) plus a small high-priority control lane
-	// (protocol-error close) that is never blocked by inline traffic.
-	q *sendQueue
-	// notify wakes the write loop when a frame/control is enqueued (cap 1).
-	notify chan struct{}
-	// writer is the injectable sink for prepared WebSocket messages. Production
-	// uses gorillaWriter over ws; tests inject a counting fake (perf-spec §2.2).
-	writer connWriter
 
 	// jsonMode 记录本连接的线格式：浏览器客户端默认发 JSON 文本帧
 	// （apps/client 的 JSON codec），原生客户端发 protobuf 二进制帧。回帧
@@ -132,50 +113,40 @@ func (c *Conn) CreatedAt() time.Time { return c.createdAt }
 func (c *Conn) Dropped() uint64 { return c.dropped.Load() }
 
 // Write 非阻塞写一帧到发送缓冲；缓冲满或已关闭返回 false（不阻塞读循环）。
-// 环满 = 静默丢弃 + dropped 计数（v1.1.1 语义；v1.2 的 RESYNC 降级已回滚，
-// 见 sendqueue.go 头注释与 docs/perf-postmortem-v1.2-draft.md）。
 func (c *Conn) Write(b []byte) bool {
-	if !c.q.push(b) {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
+	select {
+	case c.send <- b:
+		return true
+	default:
 		c.dropped.Add(1)
 		return false
 	}
-	c.signal()
-	return true
 }
 
 // WriteWait 带超时的阻塞写（优雅退出排空用）。
 func (c *Conn) WriteWait(b []byte, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for {
-		if c.q.push(b) {
-			c.signal()
-			return true
-		}
-		select {
-		case <-c.done:
-			return false
-		default:
-		}
-		if time.Now().After(deadline) {
-			return false
-		}
-		time.Sleep(time.Millisecond)
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case c.send <- b:
+		return true
+	case <-c.done:
+		return false
+	case <-t.C:
+		return false
 	}
 }
 
 // Done 返回关闭信号。
 func (c *Conn) Done() <-chan struct{} { return c.done }
 
-// Pending 返回发送缓冲中待写帧数（排空观测用）。
-func (c *Conn) Pending() int { return c.q.pending() }
-
-// signal wakes the write loop without blocking (collapses concurrent notifies).
-func (c *Conn) signal() {
-	select {
-	case c.notify <- struct{}{}:
-	default:
-	}
-}
+// Send 返回写缓冲（仅供排空观测，勿写入）。
+func (c *Conn) Send() chan []byte { return c.send }
 
 // Close 关闭连接（幂等）。
 func (c *Conn) Close() error {
@@ -200,10 +171,11 @@ func (c *Conn) CloseFlush(last []byte, code int, reason string, budget time.Dura
 	default:
 	}
 	if last != nil {
-		// The final frame rides the priority lane so it is never blocked by a
-		// full inline queue.
-		c.q.pushCtrl(last)
-		c.signal()
+		select {
+		case c.send <- last:
+		case <-c.done:
+			return
+		}
 	}
 	// Give the write loop a bounded window to drain, then force-close.
 	if c.flushed != nil {
@@ -354,14 +326,12 @@ func (a *Acceptor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		id:         a.nextID.Add(1),
 		identity:   *identity,
 		ws:         c,
-		q:          newSendQueue(a.sendQueueCap()),
-		notify:     make(chan struct{}, 1),
+		send:       make(chan []byte, a.cfg.WriteChanCap),
 		done:       make(chan struct{}),
 		flushed:    make(chan struct{}),
 		createdAt:  time.Now(),
 		remoteAddr: r.RemoteAddr,
 	}
-	conn.writer = gorillaWriter{c: c}
 	a.register(conn)
 	if a.OnConnect != nil {
 		a.OnConnect(conn)
@@ -492,82 +462,38 @@ func (a *Acceptor) readLoop(c *Conn) {
 	}
 }
 
-// writeLoop 每连接写协程。Drains the whole pending queue per wake (idle ⇒ zero
-// latency, under load ⇒ natural batching) and flushes it as ONE writer call
-// (perf-spec §2.2). An optional safety tick (Config.SendTick, default off)
-// flushes anything a lost notify could strand; ping rides the same single
-// writer. On close the queue is drained once more, best-effort, then flushed is
-// signalled.
+// writeLoop 每连接写协程：chan []byte → WriteMessage；定时 Ping 心跳。
 func (a *Acceptor) writeLoop(c *Conn) {
-	ping := time.NewTicker(a.cfg.HeartbeatInterval)
-	defer ping.Stop()
-	var safety *time.Ticker
-	var safetyC <-chan time.Time
-	if a.cfg.SendTick > 0 {
-		safety = time.NewTicker(a.cfg.SendTick)
-		defer safety.Stop()
-		safetyC = safety.C
-	}
-	defer close(c.flushed)
-	defer c.q.close()
+	ticker := time.NewTicker(a.cfg.HeartbeatInterval)
+	defer ticker.Stop()
 	for {
 		select {
-		case <-c.notify:
-			if !flushConn(c) {
+		case b := <-c.send:
+			_ = c.ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			mt, out := websocket.BinaryMessage, b
+			if c.jsonMode.Load() {
+				// Upper layers always hand us protobuf; a JSON peer gets the
+				// JSON form of the same envelope. A frame that cannot be
+				// re-encoded is a bug — drop it rather than send garbage.
+				if env, err := frame.Decode(b); err == nil {
+					if jb, jerr := frame.EncodeJSON(env); jerr == nil {
+						mt, out = websocket.TextMessage, jb
+					}
+				}
+			}
+			if err := c.ws.WriteMessage(mt, out); err != nil {
 				a.closeConn(c)
 				return
 			}
-		case <-safetyC:
-			if c.q.pending() > 0 && !flushConn(c) {
-				a.closeConn(c)
-				return
-			}
-		case <-ping.C:
-			if err := c.writer.writeControl(websocket.PingMessage, nil); err != nil {
+		case <-ticker.C:
+			if err := c.ws.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
 				a.closeConn(c)
 				return
 			}
 		case <-c.done:
-			_ = flushConn(c) // final best-effort drain
 			return
 		}
 	}
-}
-
-// flushConn drains the queue (control lane first, then inline) and writes the
-// batch through the injectable writer in ONE call. Returns false on a write
-// error (the caller closes the connection).
-func flushConn(c *Conn) bool {
-	ctrl, data := c.q.drain()
-	if len(ctrl) == 0 && len(data) == 0 {
-		return true
-	}
-	msgs := make([]outMsg, 0, len(ctrl)+len(data))
-	jsonMode := c.jsonMode.Load()
-	// Control frames ride the same wire form as data: a browser connection
-	// speaks JSON, so a protobuf-encoded RESYNC/ERROR must be re-encoded too —
-	// otherwise the client sees a binary frame it cannot parse. Control frames
-	// are never coalesced (run=false): they are one-per-message by definition.
-	// Per-flush JSON cache (perf-spec 补充模块 A): fan-out hands the same
-	// immutable frame bytes to many connections; Decode+EncodeJSON runs once
-	// per distinct frame per flush, not once per JSON connection.
-	var fc frameJSONCache
-	for _, b := range ctrl {
-		mt, out := frameWireMsgCached(jsonMode, b, &fc)
-		msgs = append(msgs, outMsg{mt: mt, b: out})
-	}
-	// Inline data frames are plain Envelope messages. NOTE: they are NOT
-	// concatenated into one WS message — protobuf wire format is not
-	// self-delimiting across Envelope boundaries (fields of adjacent frames
-	// would merge/overwrite, and the trailing remainder is silently dropped).
-	// See docs/perf-postmortem-v1.2-draft.md: the "stream-tolerant decoder"
-	// assumption was falsified by the e2e suite (all E2E tests timed out
-	// waiting for frames that had been merged away).
-	for _, b := range data {
-		mt, out := frameWireMsgCached(jsonMode, b, &fc)
-		msgs = append(msgs, outMsg{mt: mt, b: out})
-	}
-	return c.writer.writeBatch(msgs) == nil
 }
 
 // closeConn 连接收尾：关闭 socket、注销、回调。
@@ -655,71 +581,4 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
-}
-
-// sendQueueCap resolves the per-connection inline send ring capacity.
-func (a *Acceptor) sendQueueCap() int {
-	if a.cfg.SendQueueCap > 0 {
-		return a.cfg.SendQueueCap
-	}
-	return sendRingCap
-}
-
-// frameJSONCache caches the JSON wire form of one prepared protobuf frame for
-// the current flush (perf-spec 补充模块 A). The data-plane fan-out hands the
-// SAME immutable frame bytes to every connection: without the cache a
-// 500-connection flush re-ran frame.Decode + frame.EncodeJSON 500 times on
-// identical bytes. The cache is per drain call (never stored on the Conn), so
-// there is no cross-message staleness: a cache miss falls back to the classic
-// per-frame conversion, and a decode failure still degrades to binary.
-//
-// Concurrency: flushConn runs on the single per-connection write loop, so one
-// cache instance is confined to one flush; a plain struct (no locks) is safe.
-type frameJSONCache struct {
-	src []byte // the binary frame the json form was derived from
-	out []byte // its JSON wire form; nil when not convertible
-	ok  bool   // whether out is valid (EncodeJSON succeeded)
-}
-
-func (fc *frameJSONCache) get(b []byte) (int, []byte, bool) {
-	if len(b) == 0 || len(fc.src) != len(b) || &fc.src[0] != &b[0] {
-		return 0, nil, false
-	}
-	return websocket.TextMessage, fc.out, fc.ok
-}
-
-func (fc *frameJSONCache) put(src, json []byte) {
-	fc.src, fc.out, fc.ok = src, json, true
-}
-
-// frameWireMsgCached is frameWireMsg with a per-flush JSON conversion cache.
-// Identical frame bytes (the fan-out shares one immutable pre-encoded body per
-// message) are converted Decode+EncodeJSON at most ONCE per flush instead of
-// once per JSON connection.
-func frameWireMsgCached(jsonMode bool, b []byte, fc *frameJSONCache) (int, []byte) {
-	if !jsonMode {
-		return websocket.BinaryMessage, b
-	}
-	if mt, out, ok := fc.get(b); ok {
-		if out == nil {
-			return websocket.BinaryMessage, b
-		}
-		return mt, out
-	}
-	if env, err := frame.Decode(b); err == nil {
-		if jb, jerr := frame.EncodeJSON(env); jerr == nil {
-			fc.put(b, jb)
-			return websocket.TextMessage, jb
-		}
-	}
-	// Not convertible: remember the negative result so repeated bad frames do
-	// not re-decode per connection.
-	fc.put(b, nil)
-	return websocket.BinaryMessage, b
-}
-
-// frameWireMsg picks the on-the-wire WebSocket message type for one prepared
-// protobuf frame: JSON text for browser connections, binary otherwise.
-func frameWireMsg(jsonMode bool, b []byte) (int, []byte) {
-	return frameWireMsgCached(jsonMode, b, &frameJSONCache{})
 }

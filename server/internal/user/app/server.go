@@ -80,7 +80,6 @@ func New(cfg Config, authn AuthnFunc, peer transport.Peer) (*Server, error) {
 		ReadTimeout:       cfg.ReadTimeout,
 		MaxFrameBytes:     cfg.MaxFrameBytes,
 		WriteChanCap:      cfg.WriteChanCap,
-		SendTick:          cfg.SendTick,
 		ExtraRoutes:       cfg.ExtraRoutes,
 
 		UpgradeRatePerMin:       upg.UpgradeRatePerMin,
@@ -241,9 +240,6 @@ func (s *Server) Drain(ctx context.Context) error {
 		// 等待写协程把已入队帧写完（Best effort：缓冲为空视为排空）。
 		deadline := time.Now().Add(pol.WriteFlushTimeout)
 		for time.Now().Before(deadline) {
-			if c.Pending() == 0 {
-				break
-			}
 			time.Sleep(10 * time.Millisecond)
 		}
 		_ = c.CloseWith(1001, "server shutdown")
