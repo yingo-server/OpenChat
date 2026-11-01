@@ -80,6 +80,7 @@ func New(cfg Config, authn AuthnFunc, peer transport.Peer) (*Server, error) {
 		ReadTimeout:       cfg.ReadTimeout,
 		MaxFrameBytes:     cfg.MaxFrameBytes,
 		WriteChanCap:      cfg.WriteChanCap,
+		SendTick:          cfg.SendTick,
 		ExtraRoutes:       cfg.ExtraRoutes,
 
 		UpgradeRatePerMin:       upg.UpgradeRatePerMin,

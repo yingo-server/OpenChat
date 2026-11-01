@@ -27,12 +27,9 @@ const (
 	KindKicked       Kind = 11 // 全设备踢下线+断连
 	KindFeatureFlags Kind = 12 // 广播到 sys.> 的策略开关
 	KindRateLimited  Kind = 13
-	// KindResync is a server→client control hint: "you are lagging, pull the
-	// gap yourself". Emitted when a connection's inline send queue overflows
-	// (perf-spec v1.2 §2.3). Carries no payload; the client reacts by issuing a
-	// SYNC (kind 8) for the conversations it tracks. Additive: it changes no
-	// existing kind's semantics.
-	KindResync Kind = 14
+	// 注：kind 14 曾在 v1.2 短暂分配给 KindResync（RESYNC 慢消费者降级提示），
+	// 因客户端未实现对应 handler 已回滚，14 号重新成为未分配号。见
+	// docs/perf-postmortem-v1.2-draft.md。
 )
 
 // -------------------------------------------------------------------
@@ -234,7 +231,7 @@ func init() {
 	register(KindKicked, "KICKED")
 	register(KindFeatureFlags, "FEATURE_FLAGS")
 	register(KindRateLimited, "RATE_LIMITED")
-	register(KindResync, "RESYNC")
+	// "RESYNC"(14) 曾短暂注册，已回滚。
 
 	register(KindMsgSend, "MSG_SEND")
 	register(KindMsgNew, "MSG_NEW")

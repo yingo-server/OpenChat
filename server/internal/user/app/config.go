@@ -37,6 +37,9 @@ type Config struct {
 	WriteChanCap      int
 	MaxConnsPerUser   int
 	DrainTimeout      time.Duration
+	// SendTick 透传给 ws.Config.SendTick：写循环可选兜底 tick。默认 0 =
+	// 不启用（消除每连接 ~66 次/秒的空转唤醒）。
+	SendTick time.Duration
 
 	// Upgrade 限流覆盖（/ws upgrade 按 IP 令牌桶 + 失败熔断，E-3/E-4）。
 	// 零值取 policy 默认（10/min、burst 20、阈值 8、窗口 5min、封禁 15min）。

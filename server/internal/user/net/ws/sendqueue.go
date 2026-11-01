@@ -1,38 +1,42 @@
 package ws
 
-// sendqueue.go: per-connection bounded send queue + write batching + slow-consumer
-// degradation (perf-spec v1.2 §2.2 / §2.3).
+// sendqueue.go: per-connection bounded send queue + write batching
+// (perf-spec v1.2 §2.2 / §2.3).
+//
+// 回滚说明（2025 大群压测回归）：v1.2 曾在此实现「慢消费者降级」——环满时置
+// lagging、向控制通道投递 RESYNC(kind 14)，并丢弃后续 inline 帧，期望客户端
+// 收到 RESYNC 后自行 SYNC 补拉缺口。该方案在 500 人群压测中把可用性从 2.2%
+// 打到 0.9%（p95 4.2s→8.8s）：前端 apps/client 没有任何 RESYNC handler
+// （main.tsx 无注册、kinds.ts 无常量），压测客户端也不发 SYNC，降级退路
+// 完全不存在——连接进入 LAGGING 后所有 inline 帧静默蒸发，压测期间约 6.9 万
+// 个 ACK 因此凭空消失。本回滚删除 lagging/RESYNC 机制，环满恢复 v1.1.1 的
+// 「静默丢弃 + dropped 计数」语义。完整根因分析见 docs/perf-postmortem-v1.2-draft.md；
+// v1.2 大群拉取模式将由客户端先实现补拉 handler 后再另行引入。
+//
+// 保留的优化：
+//   - 环容量 1024（原 4096，省内存；静默丢弃语义与 v1.1.1 一致）；
+//   - drain-then-batch 的写循环结构（当前 writeBatch 仍逐帧写，结构保留给
+//     后续真正的合批）；
+//   - safety tick 改为可选（Config.SendTick，默认 0 = 不启用，消除空转唤醒）；
+//   - 控制帧遵守 jsonMode（frameWireMsg）。
 //
 // Design:
 //   - Inline fan-out frames land in a bounded ring (capacity 1024). A separate
-//     small priority lane carries control frames (RESYNC, protocol-error close)
-//     that must never be blocked behind inline traffic.
+//     small priority lane carries control frames (protocol-error close) that
+//     must never be blocked behind inline traffic.
 //   - The write loop drains the whole queue per wake and hands it to a single
 //     writeBatch call (idle ⇒ one frame in, zero added latency; under load ⇒
-//     many frames coalesced into one loop iteration). A 15ms safety tick flushes
-//     anything a lost wakeup could strand.
-//   - When the ring is full the connection is marked LAGGING: a RESYNC control
-//     frame is queued and every further inline frame is dropped. The client then
-//     pulls the gap (kind 8 SYNC) instead of the whole group paying for one slow
-//     socket. When the queue drains, lagging clears and inline delivery resumes.
+//     many frames coalesced into one loop iteration).
 
 import (
 	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
-	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
-	"github.com/yingo-server/OpenChat/server/internal/user/net/frame"
 )
 
-const (
-	// sendRingCap is the default inline ring capacity (perf-spec §2.3: 1024).
-	sendRingCap = 1024
-	// writeFallbackFlush is the safety-flush interval (perf-spec §2.2: 15ms).
-	writeFallbackFlush = 15 * time.Millisecond
-)
+// sendRingCap is the default inline ring capacity (perf-spec §2.3: 1024).
+const sendRingCap = 1024
 
 // outMsg is one prepared WebSocket message handed to the writer.
 type outMsg struct {
@@ -40,8 +44,8 @@ type outMsg struct {
 	b  []byte
 }
 
-// connWriter abstracts the socket write primitives so write batching and the
-// degradation path are unit-testable without a real websocket.Conn.
+// connWriter abstracts the socket write primitives so write batching is
+// unit-testable without a real websocket.Conn.
 type connWriter interface {
 	// writeBatch writes all prepared messages in one logical call (production:
 	// one write-loop iteration; the fake: one counted call).
@@ -75,12 +79,11 @@ func (w gorillaWriter) writeControl(mt int, data []byte) error {
 // sendQueue is a bounded ring plus a priority control lane. All methods are
 // safe for concurrent use; the write loop is the only consumer.
 type sendQueue struct {
-	mu      sync.Mutex
-	ring    [][]byte
-	ctrl    [][]byte
-	cap     int
-	lagging bool
-	closed  bool
+	mu     sync.Mutex
+	ring   [][]byte
+	ctrl   [][]byte
+	cap    int
+	closed bool
 }
 
 func newSendQueue(cap int) *sendQueue {
@@ -90,30 +93,22 @@ func newSendQueue(cap int) *sendQueue {
 	return &sendQueue{cap: cap}
 }
 
-// push enqueues one inline frame. It returns (enqueued bool, needResync bool):
-//   - (true, false)  frame accepted;
-//   - (false, true)  ring was full → caller must queue a RESYNC control frame
-//     (lagging is now armed, so no further inline frames are accepted);
-//   - (false, false) dropped (already lagging or the connection is closed).
-func (q *sendQueue) push(b []byte) (bool, bool) {
+// push enqueues one inline frame. It returns false when the frame was dropped
+// (ring full → silent drop, matching the v1.1.1 slow-consumer semantics, or
+// the queue is closed). The caller is expected to count drops via
+// Conn.dropped; no signalling to the client is performed.
+func (q *sendQueue) push(b []byte) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed {
-		return false, false
-	}
-	if q.lagging {
-		return false, false
-	}
-	if len(q.ring) >= q.cap {
-		q.lagging = true
-		return false, true
+	if q.closed || len(q.ring) >= q.cap {
+		return false
 	}
 	q.ring = append(q.ring, b)
-	return true, false
+	return true
 }
 
 // pushCtrl enqueues a high-priority control frame (never blocked by inline
-// traffic, exempt from the lagging gate).
+// traffic).
 func (q *sendQueue) pushCtrl(b []byte) {
 	q.mu.Lock()
 	if !q.closed {
@@ -122,15 +117,13 @@ func (q *sendQueue) pushCtrl(b []byte) {
 	q.mu.Unlock()
 }
 
-// drain removes everything and clears lagging (the queue is now empty, so the
-// slow-consumer condition no longer holds and inline delivery may resume).
+// drain removes everything.
 func (q *sendQueue) drain() (ctrl [][]byte, data [][]byte) {
 	q.mu.Lock()
 	ctrl = q.ctrl
 	data = q.ring
 	q.ctrl = nil
 	q.ring = nil
-	q.lagging = false
 	q.mu.Unlock()
 	return ctrl, data
 }
@@ -141,25 +134,8 @@ func (q *sendQueue) pending() int {
 	return len(q.ring) + len(q.ctrl)
 }
 
-func (q *sendQueue) isLagging() bool {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return q.lagging
-}
-
 func (q *sendQueue) close() {
 	q.mu.Lock()
 	q.closed = true
 	q.mu.Unlock()
-}
-
-// resyncFrame builds the RESYNC control frame handed to a lagging connection.
-// Format (additive, perf-spec §2.3): Envelope{kind = KindResync(14), payload =
-// empty}. It carries no seq: the client already knows its own last_seq and
-// reacts by issuing a SYNC/k8 catch-up for the conversations it tracks. It is a
-// server→client control hint; it changes no existing kind's semantics.
-func resyncFrame() []byte {
-	env := &chatpb.Envelope{Kind: uint32(kinds.KindResync)}
-	b, _ := frame.Encode(env)
-	return b
 }

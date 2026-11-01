@@ -51,6 +51,13 @@ type Config struct {
 	// SendQueueCap overrides the per-connection inline send ring capacity
 	// (perf-spec v1.2 §2.3). 0 uses sendRingCap (1024).
 	SendQueueCap int
+	// SendTick 启用写循环的兜底定时 flush（历史默认 15ms）。v1.2 压测发现该
+	// tick 在每连接上以 ~66 次/秒空转唤醒（队列通常为空），已改为可选：
+	// 0（默认）= 不启用 tick，完全依赖 notify 唤醒（push/signal 路径覆盖
+	// 所有入队场景，丢失唤醒的风险由 frame 编码失败等极端路径承担）；>0 =
+	// 以该间隔兜底 flush（可设回 15ms 恢复旧行为）。取舍见
+	// docs/perf-postmortem-v1.2-draft.md。
+	SendTick time.Duration
 	// Upgrade 限流（security-spec E-3/E-4）。零值取 upgradelimit.go 的默认：
 	// UpgradeRatePerMin=10, UpgradeBurst=20, UpgradeFailureThreshold=8,
 	// UpgradeFailureWindow=5min, UpgradeBanFor=15min。可由 policy 覆盖。
@@ -83,9 +90,9 @@ type Conn struct {
 	createdAt  time.Time
 	remoteAddr string
 
-	// q is the bounded per-connection send queue (perf-spec v1.2 §2.3). It holds
-	// inline fan-out frames in a ring (capacity 1024) plus a small high-priority
-	// control lane (RESYNC) that is never blocked by inline traffic.
+	// q is the bounded per-connection send queue. It holds inline fan-out
+	// frames in a ring (capacity 1024) plus a small high-priority control lane
+	// (protocol-error close) that is never blocked by inline traffic.
 	q *sendQueue
 	// notify wakes the write loop when a frame/control is enqueued (cap 1).
 	notify chan struct{}
@@ -125,37 +132,22 @@ func (c *Conn) CreatedAt() time.Time { return c.createdAt }
 func (c *Conn) Dropped() uint64 { return c.dropped.Load() }
 
 // Write 非阻塞写一帧到发送缓冲；缓冲满或已关闭返回 false（不阻塞读循环）。
-//
-// Slow-consumer degradation (perf-spec §2.3): when the ring is full the
-// connection is marked lagging, a RESYNC control frame is queued on the priority
-// lane, and this (and every subsequent inline) frame is dropped — the client is
-// told to pull the gap instead of the group waiting on the slow socket.
+// 环满 = 静默丢弃 + dropped 计数（v1.1.1 语义；v1.2 的 RESYNC 降级已回滚，
+// 见 sendqueue.go 头注释与 docs/perf-postmortem-v1.2-draft.md）。
 func (c *Conn) Write(b []byte) bool {
-	enq, resync := c.q.push(b)
-	if resync {
-		c.q.pushCtrl(resyncFrame())
-		c.signal()
+	if !c.q.push(b) {
 		c.dropped.Add(1)
 		return false
 	}
-	if enq {
-		c.signal()
-		return true
-	}
-	c.dropped.Add(1)
-	return false
+	c.signal()
+	return true
 }
 
 // WriteWait 带超时的阻塞写（优雅退出排空用）。
 func (c *Conn) WriteWait(b []byte, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
-		enq, resync := c.q.push(b)
-		if resync {
-			c.q.pushCtrl(resyncFrame())
-			c.signal()
-		}
-		if enq {
+		if c.q.push(b) {
 			c.signal()
 			return true
 		}
@@ -209,7 +201,7 @@ func (c *Conn) CloseFlush(last []byte, code int, reason string, budget time.Dura
 	}
 	if last != nil {
 		// The final frame rides the priority lane so it is never blocked by a
-		// full (or lagging) inline queue.
+		// full inline queue.
 		c.q.pushCtrl(last)
 		c.signal()
 	}
@@ -502,14 +494,20 @@ func (a *Acceptor) readLoop(c *Conn) {
 
 // writeLoop 每连接写协程。Drains the whole pending queue per wake (idle ⇒ zero
 // latency, under load ⇒ natural batching) and flushes it as ONE writer call
-// (perf-spec §2.2). A 15ms safety tick flushes anything a lost notify could
-// strand; ping rides the same single writer. On close the queue is drained once
-// more, best-effort, then flushed is signalled.
+// (perf-spec §2.2). An optional safety tick (Config.SendTick, default off)
+// flushes anything a lost notify could strand; ping rides the same single
+// writer. On close the queue is drained once more, best-effort, then flushed is
+// signalled.
 func (a *Acceptor) writeLoop(c *Conn) {
 	ping := time.NewTicker(a.cfg.HeartbeatInterval)
-	safety := time.NewTicker(writeFallbackFlush)
 	defer ping.Stop()
-	defer safety.Stop()
+	var safety *time.Ticker
+	var safetyC <-chan time.Time
+	if a.cfg.SendTick > 0 {
+		safety = time.NewTicker(a.cfg.SendTick)
+		defer safety.Stop()
+		safetyC = safety.C
+	}
 	defer close(c.flushed)
 	defer c.q.close()
 	for {
@@ -519,7 +517,7 @@ func (a *Acceptor) writeLoop(c *Conn) {
 				a.closeConn(c)
 				return
 			}
-		case <-safety.C:
+		case <-safetyC:
 			if c.q.pending() > 0 && !flushConn(c) {
 				a.closeConn(c)
 				return
