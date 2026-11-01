@@ -5,6 +5,7 @@
  */
 import { openCache } from '../net/cache/idb';
 import { SyncEngine, type SyncSink } from '../net/sync/engine';
+import { historyLoader } from '../net/sync/history-loader';
 import { Outbox, createLocalStoragePersistence } from '../net/sync/outbox';
 import { createEnvelope } from '../net/proto/codec';
 import { encodeSyncRequest } from '../net/proto/payload';
@@ -93,10 +94,6 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
   );
   await outbox.load();
 
-  useMessageStore.getState().setHistoryLoader((convId, limit, beforeSeq) =>
-    cache.listMessages(convId, limit, beforeSeq),
-  );
-
   // 会话元数据/未读/摘要随 store 变化落库（IndexedDB 为事实源，刷新后立即可渲染）
   useConvStore.subscribe((state, previous) => {
     if (state.convs === previous.convs) return;
@@ -131,6 +128,23 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
   const net = client;
   net.setResumeProvider(() => engine.resumeTickets());
   outbox.attach(net);
+
+  // 上滑历史：三段式（本地 → 网络 920/921 → 超时降级），docs/perf-spec-v1.2.md §1.2。
+  historyLoader.configure({
+    cache: {
+      listMessages: (convId, limit, beforeSeq) => cache.listMessages(convId, limit, beforeSeq),
+      putMessages: (messages) => cache.putMessages(messages),
+    },
+    send: {
+      requestHistory: (convId, beforeSeq, limit) => net.requestHistory(convId, beforeSeq, limit),
+    },
+    timeoutMs: 3000,
+  });
+  useMessageStore.getState().setHistoryLoader((convId, limit, beforeSeq) =>
+    historyLoader
+      .loadOlder(convId, beforeSeq ?? 0, limit)
+      .then((o) => o.messages),
+  );
 
   const sessionPort: SessionPort = {
     get userId() {

@@ -257,8 +257,12 @@ func TestRowsPerStmtRespectsVariableLimit(t *testing.T) {
 	if _, err := db.Prepare(buildMultiInsert(rps)); err != nil {
 		t.Fatalf("prepare %d-row INSERT failed: %v", rps, err)
 	}
-	if _, err := db.Prepare(buildMultiInsert(rps + 1)); err == nil {
-		t.Fatalf("prepare %d-row INSERT succeeded but should exceed the limit", rps+1)
+	// The chunk must stay within the conservative fallback (999 bind params)
+	// even when the linked SQLite reports a larger ceiling. Asserting that
+	// rps+1 rows must FAIL would be wrong: a modern SQLite (32766 vars) happily
+	// prepares it, so the only portable invariant is the conservative bound.
+	if got := rps * insertMsgCols; got > 999 {
+		t.Fatalf("rows/stmt %d uses %d bind params, exceeds the conservative 999 ceiling", rps, got)
 	}
 }
 

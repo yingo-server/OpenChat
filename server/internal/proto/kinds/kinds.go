@@ -27,6 +27,12 @@ const (
 	KindKicked       Kind = 11 // 全设备踢下线+断连
 	KindFeatureFlags Kind = 12 // 广播到 sys.> 的策略开关
 	KindRateLimited  Kind = 13
+	// KindResync is a server→client control hint: "you are lagging, pull the
+	// gap yourself". Emitted when a connection's inline send queue overflows
+	// (perf-spec v1.2 §2.3). Carries no payload; the client reacts by issuing a
+	// SYNC (kind 8) for the conversations it tracks. Additive: it changes no
+	// existing kind's semantics.
+	KindResync Kind = 14
 )
 
 // -------------------------------------------------------------------
@@ -228,6 +234,7 @@ func init() {
 	register(KindKicked, "KICKED")
 	register(KindFeatureFlags, "FEATURE_FLAGS")
 	register(KindRateLimited, "RATE_LIMITED")
+	register(KindResync, "RESYNC")
 
 	register(KindMsgSend, "MSG_SEND")
 	register(KindMsgNew, "MSG_NEW")

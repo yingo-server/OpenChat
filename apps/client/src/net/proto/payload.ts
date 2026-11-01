@@ -353,6 +353,36 @@ export function encodeMessageSend(input: {
   return encodeJsonPayload(encodeContent(input));
 }
 
+/**
+ * 消息字段 → 领域对象的**唯一**映射（MSG_NEW(102) 与 READ_HISTORY_RESULT(921)
+ * 共用，避免两套实现漂移）。入参是已经解出的原始标量 + content 领域对象。
+ *
+ * msg_id / seq 缺失即协议错误（服务端下发的每条消息都必须带它们）。
+ */
+function buildMsgNew(fields: {
+  msgId: number;
+  seq: number;
+  senderId: number;
+  sentAt: number;
+  content: MessageContent;
+  convId?: number;
+  recalled: number;
+}): MsgNewPayload {
+  if (!fields.msgId || !fields.seq) throw new PayloadError('MSG_NEW requires msg_id and seq');
+  return {
+    msgId: fields.msgId,
+    seq: fields.seq,
+    senderId: fields.senderId,
+    sentAt: fields.sentAt,
+    content: fields.content,
+    convId: fields.convId,
+    // Non-zero = the message was recalled at that unix second. The server marks
+    // it in the stored row, so a device that fetches history after a recall
+    // must render the tombstone instead of the original text.
+    recalled: fields.recalled,
+  };
+}
+
 /** 下行 MSG_NEW(102) payload -> 领域对象。 */
 export function decodeMsgNew(bytes: Uint8Array): MsgNewPayload {
   const raw = decodeJsonPayload<{
@@ -364,20 +394,84 @@ export function decodeMsgNew(bytes: Uint8Array): MsgNewPayload {
     conv_id?: unknown;
     recalled?: unknown;
   }>(bytes);
-  const msgId = num(raw.msg_id);
-  const seq = num(raw.seq);
-  if (!msgId || !seq) throw new PayloadError('MSG_NEW requires msg_id and seq');
-  return {
-    msgId,
-    seq,
+  return buildMsgNew({
+    msgId: num(raw.msg_id),
+    seq: num(raw.seq),
     senderId: num(raw.sender_id),
     sentAt: num(raw.sent_at, Date.now()),
     content: mapContent(raw.content),
     convId: raw.conv_id ? num(raw.conv_id) : undefined,
-    // Non-zero = the message was recalled at that unix second. The server marks
-    // it in the stored row, so a device that fetches history after a recall
-    // must render the tombstone instead of the original text.
     recalled: num(raw.recalled) || 0,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// READ_HISTORY(920) / READ_HISTORY_RESULT(921)
+// ---------------------------------------------------------------------------
+
+/**
+ * 上行 READ_HISTORY(920) payload（wire.ReadHistory json tag，camelCase）。
+ * beforeSeq > 0 走「向前翻页」方向（返回 seq < beforeSeq、按 seq 升序）；
+ * beforeSeq = 0 保持 sinceSeq 原语义。
+ */
+export function encodeReadHistory(input: { convId: number; beforeSeq?: number; limit?: number }): Uint8Array {
+  return encodeJsonPayload({
+    convId: input.convId,
+    beforeSeq: input.beforeSeq ?? 0,
+    limit: input.limit ?? 50,
+  });
+}
+
+export interface ReadHistoryResultPayload {
+  convId: number;
+  messages: MsgNewPayload[];
+  fromCold: boolean;
+  hasMore: boolean;
+}
+
+/**
+ * 下行 READ_HISTORY_RESULT(921) payload（wire.ReadHistoryResult，camelCase）。
+ * 每条消息是 wire.MsgNew：字段映射复用 buildMsgNew；content 是**base64 编码的
+ * 存储体 JSON**（[]byte 在 JSON 里就是 base64），解出后按 RawContent 映射，
+ * 与 MSG_NEW(102) 的内容解码完全一致。sentAt 在 921 里是「秒」，用 millis()
+ * 归一为毫秒（MSG_NEW 走 flusher 已乘 1000，decodeMsgNew 不再二次换算）。
+ */
+export function decodeReadHistoryResult(bytes: Uint8Array): ReadHistoryResultPayload {
+  const raw = decodeJsonPayload<{
+    convId?: unknown;
+    messages?: unknown;
+    fromCold?: unknown;
+    hasMore?: unknown;
+  }>(bytes);
+  const convId = num(raw.convId);
+  const rows = Array.isArray(raw.messages) ? (raw.messages as Array<Record<string, unknown>>) : [];
+  const messages = rows.map((row) => {
+    let content: MessageContent = { clientMsgId: '', text: '', media: [], mentions: [] };
+    const rawContent = row.content;
+    if (typeof rawContent === 'string' && rawContent.length > 0) {
+      try {
+        content = mapContent(decodeJsonPayload<RawContent>(base64ToBytes(rawContent)));
+      } catch {
+        // 单条消息的 content 解不出不应拖垮整页：留空内容，其余字段照常。
+      }
+    } else if (rawContent && typeof rawContent === 'object') {
+      content = mapContent(rawContent as RawContent);
+    }
+    return buildMsgNew({
+      msgId: num(row.msgId),
+      seq: num(row.seq),
+      senderId: num(row.senderId),
+      sentAt: millis(row.sentAt),
+      content,
+      convId: convId || undefined,
+      recalled: num(row.recalled) || 0,
+    });
+  });
+  return {
+    convId,
+    messages,
+    fromCold: bool(raw.fromCold),
+    hasMore: bool(raw.hasMore),
   };
 }
 

@@ -19,6 +19,7 @@ import { handleError } from './net/protocol/handlers/error';
 import { handleRateLimited } from './net/protocol/handlers/rate-limited';
 import { handleConvPayload } from './net/protocol/handlers/conv-payload';
 import { handleConvDataResult } from './net/protocol/handlers/conv-result';
+import { handleReadHistoryResult } from './net/protocol/handlers/read-history-result';
 import { handleTyping } from './net/protocol/handlers/typing';
 import { handlePresence, handlePresenceConnect } from './net/protocol/handlers/presence';
 import { handleMemberUpdate } from './net/protocol/handlers/member-update';
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
   registry.register(KINDS.CONV_UPDATE, handleConvPayload);
   registry.register(KINDS.CONV_PAYLOAD, handleConvPayload);
   registry.register(KINDS.CONV_DATA_RESULT, handleConvDataResult);
+  registry.register(KINDS.READ_HISTORY_RESULT, handleReadHistoryResult);
   registry.register(KINDS.TYPING, handleTyping);
   registry.register(KINDS.PRESENCE_UPDATE, handlePresence);
   registry.register(KINDS.PRESENCE_SUBSCRIBE, handlePresenceConnect);

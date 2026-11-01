@@ -23,7 +23,7 @@ import {
   encodeEnvelopeProto,
   type Envelope,
 } from '../proto/codec';
-import { decodePong, encodePing } from '../proto/payload';
+import { decodePong, encodePing, encodeReadHistory } from '../proto/payload';
 import { KINDS } from '../protocol/kinds';
 import type { ConnState, ConnStateMeta, NetClient, ResumeTicket, StateListener } from './types';
 
@@ -223,6 +223,20 @@ export class WsClient implements NetClient {
       requestId: 'feature-flags',
     });
     this.send(env);
+  }
+
+  /**
+   * 上滑历史：发 920 (READ_HISTORY)。离线返回 false（loader 走超时路径）。
+   * 服务端按 beforeSeq>0 走"更早"方向，按 seq 升序回 921。
+   */
+  requestHistory(convId: number, beforeSeq: number, limit: number): boolean {
+    if (this._state !== 'online') return false;
+    const env = createEnvelope({
+      kind: KINDS.READ_HISTORY,
+      convId,
+      payload: encodeReadHistory({ convId, beforeSeq, limit }),
+    });
+    return this.send(env);
   }
 
   private startHeartbeat(): void {

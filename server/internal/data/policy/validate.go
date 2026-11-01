@@ -76,11 +76,16 @@ func Validate(p Policy) []error {
 	// write_path: batch size and flush interval only affect performance, but
 	// out-of-range values must never slip in silently (a 0 batch would stall
 	// every commit; a huge interval would blow up write ACK latency).
-	if p.WritePath.BatchSize < MinWriteBatchSize || p.WritePath.BatchSize > MaxWriteBatchSize {
+	// 0 means "unset → use Default()" (Load merges the document onto defaults),
+	// so only an explicit out-of-range value is an error. Without this a bare
+	// Policy literal (e.g. constructed in tests) would fail validation.
+	if p.WritePath.BatchSize != 0 &&
+		(p.WritePath.BatchSize < MinWriteBatchSize || p.WritePath.BatchSize > MaxWriteBatchSize) {
 		errs = append(errs, fieldErr("write_path.batch_size",
 			fmt.Sprintf("must be within %d..%d", MinWriteBatchSize, MaxWriteBatchSize)))
 	}
-	if p.WritePath.FlushIntervalMS < MinWriteFlushIntervalMS || p.WritePath.FlushIntervalMS > MaxWriteFlushIntervalMS {
+	if p.WritePath.FlushIntervalMS != 0 &&
+		(p.WritePath.FlushIntervalMS < MinWriteFlushIntervalMS || p.WritePath.FlushIntervalMS > MaxWriteFlushIntervalMS) {
 		errs = append(errs, fieldErr("write_path.flush_interval_ms",
 			fmt.Sprintf("must be within %d..%d", MinWriteFlushIntervalMS, MaxWriteFlushIntervalMS)))
 	}

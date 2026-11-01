@@ -149,6 +149,11 @@ export class MockBridge implements NetClient {
     return () => this.stateListeners.delete(listener);
   }
 
+  requestHistory(convId: number, beforeSeq: number, limit: number): boolean {
+    void convId; void beforeSeq; void limit;
+    return false; // mock：历史全在本地，直接走 loader 的本地路径
+  }
+
   setResumeProvider(provider: () => ResumeTicket[]): void {
     this.resumeProvider = provider;
   }

@@ -48,6 +48,9 @@ type Config struct {
 	ReadTimeout       time.Duration
 	MaxFrameBytes     int
 	WriteChanCap      int
+	// SendQueueCap overrides the per-connection inline send ring capacity
+	// (perf-spec v1.2 §2.3). 0 uses sendRingCap (1024).
+	SendQueueCap int
 	// Upgrade 限流（security-spec E-3/E-4）。零值取 upgradelimit.go 的默认：
 	// UpgradeRatePerMin=10, UpgradeBurst=20, UpgradeFailureThreshold=8,
 	// UpgradeFailureWindow=5min, UpgradeBanFor=15min。可由 policy 覆盖。
@@ -542,19 +545,16 @@ func flushConn(c *Conn) bool {
 		return true
 	}
 	msgs := make([]outMsg, 0, len(ctrl)+len(data))
-	for _, b := range ctrl {
-		msgs = append(msgs, outMsg{mt: websocket.BinaryMessage, b: b})
-	}
 	jsonMode := c.jsonMode.Load()
+	// Control frames ride the same wire form as data: a browser connection
+	// speaks JSON, so a protobuf-encoded RESYNC/ERROR must be re-encoded too —
+	// otherwise the client sees a binary frame it cannot parse.
+	for _, b := range ctrl {
+		mt, out := frameWireMsg(jsonMode, b)
+		msgs = append(msgs, outMsg{mt: mt, b: out})
+	}
 	for _, b := range data {
-		mt, out := websocket.BinaryMessage, b
-		if jsonMode {
-			if env, err := frame.Decode(b); err == nil {
-				if jb, jerr := frame.EncodeJSON(env); jerr == nil {
-					mt, out = websocket.TextMessage, jb
-				}
-			}
-		}
+		mt, out := frameWireMsg(jsonMode, b)
 		msgs = append(msgs, outMsg{mt: mt, b: out})
 	}
 	return c.writer.writeBatch(msgs) == nil
@@ -645,4 +645,26 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// sendQueueCap resolves the per-connection inline send ring capacity.
+func (a *Acceptor) sendQueueCap() int {
+	if a.cfg.SendQueueCap > 0 {
+		return a.cfg.SendQueueCap
+	}
+	return sendRingCap
+}
+
+// frameWireMsg picks the on-the-wire WebSocket message type for one prepared
+// protobuf frame: JSON text for browser connections, binary otherwise.
+func frameWireMsg(jsonMode bool, b []byte) (int, []byte) {
+	if !jsonMode {
+		return websocket.BinaryMessage, b
+	}
+	if env, err := frame.Decode(b); err == nil {
+		if jb, jerr := frame.EncodeJSON(env); jerr == nil {
+			return websocket.TextMessage, jb
+		}
+	}
+	return websocket.BinaryMessage, b
 }

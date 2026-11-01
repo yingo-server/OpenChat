@@ -35,4 +35,6 @@ export interface NetClient {
   onState(listener: StateListener): () => void;
   /** 同步引擎把每个会话的 last_seq 提供给它，重连时逐会话 RESUME */
   setResumeProvider(provider: () => ResumeTicket[]): void;
+  /** 上滑历史：发 920；未在线返回 false（loader 走超时降级） */
+  requestHistory(convId: number, beforeSeq: number, limit: number): boolean;
 }

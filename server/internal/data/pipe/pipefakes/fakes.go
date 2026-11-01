@@ -62,7 +62,13 @@ func (f *FakeMsgStore) ReadHot(ctx context.Context, cid int64, beforeSeq int64, 
 			continue
 		}
 		if beforeSeq > 0 {
-			if asc == (m.Seq <= beforeSeq) {
+			// cursor semantics: asc (newer direction) keeps seq > beforeSeq;
+			// desc (older direction) keeps seq < beforeSeq. The cursor row
+			// itself is excluded in both directions.
+			if asc && m.Seq <= beforeSeq {
+				continue
+			}
+			if !asc && m.Seq >= beforeSeq {
 				continue
 			}
 		}

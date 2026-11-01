@@ -235,7 +235,10 @@ func (p *Pipe) fanoutConvUnmerged(ctx context.Context, cid int64, kind uint32, e
 // asynchronous; the per-user debounce collapses repeated transitions.
 func (p *Pipe) fanoutPeers(ctx context.Context, uid int64, kind uint32, payload []byte) {
 	p.fanout.Enqueue(fanoutJob{
-		kind: kind, cid: 0, excludeUID: 0, userID: uint64(uid),
+		// excludeUID is the subject: a user must not be told about their own
+		// presence transition. The doc comment says "every OTHER user"; this
+		// field is what makes that true.
+		kind: kind, cid: 0, excludeUID: uint64(uid), userID: uint64(uid),
 		payload: payload, class: dropBestEffort,
 		windowKey: "p" + strconv.FormatInt(uid, 10),
 	})

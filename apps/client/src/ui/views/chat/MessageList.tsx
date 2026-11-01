@@ -13,6 +13,8 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import { computeLoadThreshold, computeScrollCompensation } from './scroll-math';
+import { historyLoader } from '../../../net/sync/history-loader';
 import { useMessageStore } from '../../../core/stores/message-store';
 import { useConvStore } from '../../../core/stores/conv-store';
 import { useSessionStore } from '../../../core/stores/session-store';
@@ -67,6 +69,11 @@ export function MessageList({ convId, onReply, scrollSignal = 0 }: MessageListPr
   const prevLast = useRef<string | undefined>(undefined);
   const initialized = useRef(false);
   const anchorId = useRef<string | null>(null);
+  // 锚定补偿：记录插入前 scrollHeight/scrollTop（perf-spec §1.3）
+  const anchorHeight = useRef(0);
+  const anchorTop = useRef(0);
+  // 滚动速度采样：px（上次 scrollTop）/ t（上次时间戳）/ last（再上次，用于判断方向）
+  const scrollVel = useRef({ px: 0, t: 0, last: 0 });
 
   useEffect(() => {
     atBottomRef.current = atBottom;
@@ -138,12 +145,29 @@ export function MessageList({ convId, onReply, scrollSignal = 0 }: MessageListPr
 
   const loadOlder = useCallback(() => {
     if (loadingHistory) return;
+    if (historyLoader.isExhausted(convId)) return; // 已到底：不再请求
+    const element = scrollRef.current;
     const state = useMessageStore.getState();
     const first = state.byId[ids[0]] as ChatMessage | undefined;
     const firstSeq = first?.seq ?? 0;
     if (!firstSeq || firstSeq <= 1) return;
+    // 锚定：插入更早消息后 scrollHeight 变大；恢复"距底距离"使视口内容不位移
+    if (anchorHeight.current > 0) {
+      requestAnimationFrame(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+        el.scrollTop = computeScrollCompensation(
+          anchorHeight.current,
+          anchorTop.current,
+          el.scrollHeight,
+        );
+      });
+      anchorHeight.current = 0;
+    }
     const firstVisible = virtualizer.getVirtualItems()[0];
     anchorId.current = firstVisible ? ids[firstVisible.index] ?? null : ids[0] ?? null;
+    anchorHeight.current = element?.scrollHeight ?? 0;
+    anchorTop.current = element?.scrollTop ?? 0;
     void state.loadOlder(convId, firstSeq);
   }, [convId, ids, loadingHistory, virtualizer]);
 
@@ -154,7 +178,13 @@ export function MessageList({ convId, onReply, scrollSignal = 0 }: MessageListPr
     const bottom = distance < 120;
     setAtBottom(bottom);
     if (bottom) setNewCount(0);
-    if (element.scrollTop < 200) loadOlder();
+    // 动态阈值：慢速 200px，快速上滑放大到 800px（perf-spec §1.3 预取）
+    const now = performance.now();
+    const velocity = scrollVel.current.px / Math.max(1, now - scrollVel.current.t);
+    scrollVel.current = { px: element.scrollTop, t: now, last: scrollVel.current.last };
+    const rising = element.scrollTop < scrollVel.current.last; // 上滑
+    const threshold = rising ? computeLoadThreshold(Math.abs(velocity)) : 200;
+    if (element.scrollTop < threshold) loadOlder();
   }, [loadOlder]);
 
   const openMenu = useCallback((messageId: string) => {
