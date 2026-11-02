@@ -14,7 +14,7 @@ import { t } from '../../i18n';
 import { Avatar } from '../../components/Avatar';
 import { NetworkBar } from '../../components/NetworkBar';
 import { ChatSkeleton } from '../../components/Skeleton';
-import { BackIcon, MoreIcon, PhoneIcon, SpinnerIcon, VideoIcon } from '../../components/icons';
+import { BackIcon, MuteIcon, MoreIcon, PhoneIcon, PinIcon, SpinnerIcon, VideoIcon } from '../../components/icons';
 import { toast } from '../../components/Toast';
 import { navigate } from '../../router';
 import { MessageList } from './MessageList';
@@ -133,14 +133,11 @@ function ChatSession({ convId }: { convId: number }) {
           />
         ) : null}
 
-        <button
-          type="button"
-          onClick={() => toast.info(t('common.comingSoon'))}
-          aria-label={t('common.more')}
-          className="inline-flex h-10 w-10 items-center justify-center rounded-full text-ink-secondary hover:bg-surface-2"
-        >
-          <MoreIcon size={20} />
-        </button>
+        <MoreMenu
+          convId={convId}
+          pinned={Boolean(conv.pinned)}
+          muted={Boolean(conv.muted)}
+        />
       </header>
 
       <NetworkBar />
@@ -207,6 +204,58 @@ function CallButtons({
 function senderNameOf(conv: ConvRecord, userId: number, selfId: number): string {
   if (userId === selfId) return t('common.me');
   return conv.members.find((member) => member.userId === userId)?.name ?? t('common.unknownUser', { id: userId });
+}
+
+
+/** 聊天窗「更多」下拉：置顶/静音快捷开关（conv-store 既有本地能力）。 */
+function MoreMenu({ convId, pinned, muted }: { convId: number; pinned: boolean; muted: boolean }) {
+  const [open, setOpen] = useState(false);
+  const toggle = (action: () => void) => {
+    action();
+    setOpen(false);
+  };
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-label={t('common.more')}
+        aria-expanded={open}
+        className="inline-flex h-10 w-10 items-center justify-center rounded-full text-ink-secondary hover:bg-surface-2"
+      >
+        <MoreIcon size={20} />
+      </button>
+      {open ? (
+        <>
+          <div className="fixed inset-0 z-menu" onClick={() => setOpen(false)} />
+          <div
+            role="menu"
+            aria-label={t('common.more')}
+            className="absolute end-0 top-11 z-menu w-40 animate-scale-in overflow-hidden rounded-md border border-line bg-elevated py-1 shadow-md"
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => toggle(() => useConvStore.getState().togglePin(convId))}
+              className="flex h-10 w-full items-center gap-2.5 px-3 text-start text-body-sm text-ink transition-colors duration-micro hover:bg-surface-2"
+            >
+              <PinIcon size={18} />
+              {pinned ? t('conv.unpin') : t('conv.pin')}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => toggle(() => useConvStore.getState().toggleMute(convId))}
+              className="flex h-10 w-full items-center gap-2.5 px-3 text-start text-body-sm text-ink transition-colors duration-micro hover:bg-surface-2"
+            >
+              <MuteIcon size={18} />
+              {muted ? t('conv.unmute') : t('conv.mute')}
+            </button>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 export function ChatPlaceholder() {

@@ -3,6 +3,11 @@
  * 依赖方向：ui → net（类型），不反向。
  */
 import { createHttpAuthApi, type AuthApi, type AuthSession } from '../../net/auth/provider';
+import { createEnvelope } from '../../net/proto/codec';
+import { encodeMsgRecall, type Media } from '../../net/proto/payload';
+import { KINDS } from '../../net/protocol/kinds';
+import { useMessageStore } from '../../core/stores/message-store';
+import type { ChatMessage } from '../../core/types';
 import type { Outbox } from '../../net/sync/outbox';
 import type { SyncCache } from '../../net/cache/idb';
 import type { SyncEngine } from '../../net/sync/engine';
@@ -49,3 +54,67 @@ export function retrySend(localId: string): void {
 export function discardSend(localId: string): void {
   current.outbox?.discard(localId);
 }
+
+/**
+ * 撤回：上行 MSG_RECALL(108) {msg_id, conv_id}（服务端 onRecall 已实现），
+ * 同时本地乐观置 tombstone——成功后服务端广播的 108 会幂等地再打一次。
+ */
+export function recallMessage(message: ChatMessage): boolean {
+  if (!message.msgId || !message.convId) return false;
+  const { client, engine } = current;
+  if (!client) return false;
+  const sent = client.send(
+    createEnvelope({
+      kind: KINDS.MSG_RECALL,
+      convId: message.convId,
+      payload: encodeMsgRecall({ msgId: message.msgId, convId: message.convId }),
+    }),
+  );
+  if (!sent) return false;
+  // 乐观：立即折叠气泡；广播 108 到达后 sync.applyTombstone 幂等重放。
+  void engine?.applyTombstone(message.convId, message.msgId, 'recall');
+  useMessageStore.getState().applyTombstone(
+    message.convId,
+    message.msgId,
+    message.seq,
+    'recall',
+  );
+  return true;
+}
+
+/**
+ * 转发构造（纯函数，可单测）：
+ *  - 文本消息 → "[转发] " + 原文；
+ *  - 媒体消息 → media 数组原样携带（media_id 引用同一文件），text 置空；
+ *  - 混合 → 前缀文本 + media 原样。
+ * system / 已撤回消息不可转发（返回 null）。
+ */
+export function buildForwardContent(message: ChatMessage): {
+  text?: string;
+  media?: Media[];
+} | null {
+  if (message.deleted || message.type === 'system') return null;
+  const text = typeof message.payload.text === 'string' ? message.payload.text : '';
+  const media = Array.isArray(message.payload.media) ? message.payload.media : [];
+  if (media.length > 0) {
+    return { text: text ? `${FORWARD_PREFIX}${text}` : '', media };
+  }
+  if (text) return { text: `${FORWARD_PREFIX}${text}` };
+  return null;
+}
+
+/** 转发到目标会话：复用 outbox 乐观上屏 + MSG_ACK 语义。 */
+export async function forwardMessages(message: ChatMessage, targetConvId: number): Promise<boolean> {
+  const content = buildForwardContent(message);
+  const { outbox } = current;
+  if (!content || !outbox) return false;
+  await outbox.enqueue({
+    convId: targetConvId,
+    text: content.text || undefined,
+    media: content.media,
+    mentions: [],
+  });
+  return true;
+}
+
+export const FORWARD_PREFIX = '[转发] ';

@@ -27,6 +27,7 @@ import {
   encodeFeatureFlags,
   encodeMsgAck,
   encodeMsgNew,
+  encodeMsgRecall,
   encodePong,
   encodePresence,
   encodeReceipt,
@@ -131,6 +132,9 @@ export class MockBridge implements NetClient {
         return true;
       case KINDS.CONV_CREATE:
         this.handleConvCreate(env);
+        return true;
+      case KINDS.MSG_RECALL:
+        this.handleRecall(env);
         return true;
       case KINDS.MSG_READ:
         return true;
@@ -396,6 +400,37 @@ export class MockBridge implements NetClient {
     }, 900);
 
     this.scheduleBotReply(conv, content.text ?? '');
+  }
+
+  /**
+   * MSG_RECALL(108) 上行回环（对齐服务端 onRecall 语义）：
+   * 定位消息 → 标记撤回 → 向"全员"（含发送者）广播 108 {msg_id, conv_id}，
+   * 客户端 msg-mutation handler 映射为 recall tombstone。
+   */
+  private handleRecall(env: Envelope): void {
+    let msgId = 0;
+    let convId = env.convId ?? 0;
+    try {
+      const raw = JSON.parse(new TextDecoder().decode(env.payload)) as Record<string, unknown>;
+      msgId = Number(raw.msg_id) || 0;
+      if (!convId) convId = Number(raw.conv_id) || 0;
+    } catch {
+      /* bad payload: 忽略 */
+    }
+    if (!msgId || !convId) return;
+    const conv = this.convs.find((candidate) => candidate.convId === convId);
+    const message = conv?.messages.find((candidate) => candidate.msgId === msgId);
+    if (!conv || !message) return;
+    if (message.senderId !== MOCK_SELF_ID) return; // 简化：mock 中本人非管理员
+    if (Date.now() - message.sentAt > 120_000) return; // 2 分钟撤回窗口
+    message.recalled = Math.floor(Date.now() / 1000);
+    this.persist();
+    this.later(() => {
+      this.emit(KINDS.MSG_RECALL, {
+        convId,
+        payload: encodeMsgRecall({ msgId, convId }),
+      });
+    }, 60);
   }
 
   private scheduleBotReply(conv: MockConv, text: string): void {

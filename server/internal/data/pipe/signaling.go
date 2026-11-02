@@ -299,7 +299,18 @@ func (p *Pipe) onRecall(ctx context.Context, req Req) {
 	}
 	if _, err := p.hot.MarkRecalled(ctx, cid, row.MsgID, row.SenderID, nowSec()); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			p.reply(buildErrEnv(req, 404, "no such message"))
+			// Idempotent replay, NOT a missing message: findMsg above already
+			// located the row, so ErrNotFound here means MarkRecalled's
+			// `WHERE recalled=0` matched nothing — the message was recalled
+			// before. That is a success for the client: ACK with already=true
+			// instead of a misleading 404. No re-broadcast, no second audit
+			// event (the tombstone is already on every client).
+			pl, _ := wire.Marshal(struct {
+				MsgID   uint64 `json:"msg_id"`
+				ConvID  uint64 `json:"conv_id"`
+				Already bool   `json:"already"`
+			}{uint64(row.MsgID), uint64(cid), true})
+			p.reply(buildResultEnv(req, uint32(kinds.KindMsgRecall), pl))
 			return
 		}
 		p.reply(buildErrEnv(req, 500, "recall failed"))

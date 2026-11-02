@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -245,4 +246,98 @@ func TestAuditSkippedWithoutCold(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].Recalled == 0 {
 		t.Fatalf("recall with nil audit: err=%v rows=%d", err, len(rows))
 	}
+}
+
+// TestRecallIdempotentSecondAttempt: recalling the SAME message twice must
+// NOT surface as 404 on the retry — findMsg located the row, so MarkRecalled's
+// ErrNotFound means "already recalled". The second request gets a success
+// reply on the MSG_RECALL kind with already=true (and no re-broadcast).
+func TestRecallIdempotentSecondAttempt(t *testing.T) {
+	fa := &FakeAudit{}
+	p, msgs, convs, _ := newAuditPipe(t, fa)
+	ctx := context.Background()
+	cid, _ := convs.CreateConv(ctx, &store.ConvMeta{CType: 2, CreatedBy: 7, CreatedAt: 1}, 7)
+	if err := msgs.AppendMessages(ctx, []store.PendingMsg{{
+		MsgID: 77, Cid: cid, Seq: 1, SenderID: 7, ClientMsgID: "m-idem",
+		Content: []byte("x"), SentAt: nowSec(),
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	req := mkReq(uint32(kinds.KindMsgRecall), cid, 7,
+		`{"msg_id":77,"conv_id":`+itoa(cid)+`}`)
+
+	// First recall: row soft-deleted; the tombstone is enqueued on the fan-out
+	// plane (not started here — the unit tests drive dispatch directly).
+	p.dispatchReq(ctx, req)
+	rows, err := msgs.ReadHot(ctx, cid, 0, 10, false)
+	if err != nil || len(rows) != 1 || rows[0].Recalled == 0 {
+		t.Fatalf("first recall did not soft-delete: err=%v rows=%v", err, rows)
+	}
+
+	// Second recall of the same msg_id with a store whose MarkRecalled refuses
+	// already-recalled rows (the real sqlite/pg semantics: `WHERE recalled=0`
+	// misses → ErrNotFound).
+	strict := &strictRecallStore{HotStores: p.hot, rows: msgs}
+	prev := p.hot
+	p.hot = strict
+	defer func() { p.hot = prev }()
+
+	p.dispatchReq(ctx, req)
+	second := waitEnv(t, p.Outbound())
+	if second.Kind != uint32(kinds.KindMsgRecall) {
+		t.Fatalf("second recall reply kind = %d, want %d (got error? payload=%s)",
+			second.Kind, kinds.KindMsgRecall, second.Payload)
+	}
+	var res struct {
+		MsgID   uint64 `json:"msg_id"`
+		ConvID  uint64 `json:"conv_id"`
+		Already bool   `json:"already"`
+	}
+	if err := wire.Unmarshal(second.Payload, &res); err != nil {
+		t.Fatalf("already-payload decode: %v (%s)", err, second.Payload)
+	}
+	if !res.Already || res.MsgID != 77 {
+		t.Fatalf("second recall payload = %+v, want already=true msg_id=77", res)
+	}
+
+	// Exactly ONE message.recall audit event total (no duplicate audit on the
+	// idempotent replay).
+	n := 0
+	for _, ev := range fa.snapshot() {
+		if ev.Action == "message.recall" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("message.recall audit events = %d, want 1", n)
+	}
+	// No second tombstone broadcast.
+	select {
+	case extra := <-p.OutboundFan():
+		t.Fatalf("unexpected second tombstone broadcast: kind=%d", extra.Kind)
+	default:
+	}
+}
+
+// strictRecallStore mirrors the real store semantics: MarkRecalled returns
+// ErrNotFound when `WHERE recalled=0` matches nothing (already recalled).
+type strictRecallStore struct {
+	HotStores
+	rows *pipefakes.FakeMsgStore
+}
+
+func (s *strictRecallStore) MarkRecalled(ctx context.Context, cid, msgID, senderID, at int64) (*store.HotMsg, error) {
+	rows, err := s.rows.ReadHot(ctx, cid, 0, 100, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, m := range rows {
+		if m.MsgID == msgID && m.SenderID == senderID {
+			if m.Recalled != 0 {
+				return nil, fmt.Errorf("strict: msg %d: %w", msgID, store.ErrNotFound)
+			}
+			return s.rows.MarkRecalled(ctx, cid, msgID, senderID, at)
+		}
+	}
+	return nil, fmt.Errorf("strict: msg %d: %w", msgID, store.ErrNotFound)
 }

@@ -26,7 +26,7 @@ import { Avatar } from '../../components/Avatar';
 import { SpinnerIcon, AlertIcon, CopyIcon, FlagIcon, ForwardIcon, ReplyIcon, SelectIcon, TrashIcon } from '../../components/icons';
 import { t } from '../../i18n';
 import { formatDayDivider, formatTime } from '../../utils/format';
-import { discardSend, retrySend } from '../../services/app-services';
+import { discardSend, retrySend, recallMessage, forwardMessages } from '../../services/app-services';
 import { toast } from '../../components/Toast';
 
 const EMPTY_IDS: string[] = [];
@@ -55,6 +55,40 @@ export function MessageList({ convId, onReply, scrollSignal = 0 }: MessageListPr
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
   const [unreadIndex, setUnreadIndex] = useState<number | null>(null);
+  // 多选态：组件本地 state（不进全局 store），selectedIdSet 与会话无关
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [forwardTarget, setForwardTarget] = useState<ChatMessage[] | null>(null);
+
+  const enterSelectMode = useCallback((message: ChatMessage) => {
+    setSelectMode(true);
+    setSelectedIds(new Set([message.id]));
+  }, []);
+
+  const toggleSelected = useCallback((id: string) => {
+    setSelectedIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const exitSelectMode = useCallback(() => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  }, []);
+
+  const openForwardPanel = useCallback(
+    (messages: ChatMessage[]) => {
+      if (messages.length === 0) {
+        toast.info(t('chat.select.empty'));
+        return;
+      }
+      setForwardTarget(messages);
+    },
+    [],
+  );
 
   const virtualizer = useVirtualizer({
     count: ids.length,
@@ -248,6 +282,9 @@ export function MessageList({ convId, onReply, scrollSignal = 0 }: MessageListPr
                   isUnreadStart={unreadIndex === item.index}
                   onOpenMenu={openMenu}
                   onReply={onReply}
+                  selectMode={selectMode}
+                  selected={selectedIds.has(id)}
+                  onToggleSelect={toggleSelected}
                 />
               </div>
             );
@@ -285,9 +322,135 @@ export function MessageList({ convId, onReply, scrollSignal = 0 }: MessageListPr
             onReply(message);
             setMenu(null);
           }}
+          onForward={(message) => {
+            setMenu(null);
+            openForwardPanel([message]);
+          }}
+          onSelect={(message) => {
+            setMenu(null);
+            enterSelectMode(message);
+          }}
+        />
+      ) : null}
+
+      {selectMode ? (
+        <SelectBar
+          count={selectedIds.size}
+          onForward={() => {
+            const messages = [...selectedIds]
+              .map((id) => useMessageStore.getState().byId[id])
+              .filter((message): message is ChatMessage => Boolean(message));
+            openForwardPanel(messages);
+          }}
+          onCancel={exitSelectMode}
+        />
+      ) : null}
+
+      {forwardTarget ? (
+        <ForwardPanel
+          messages={forwardTarget}
+          onClose={() => setForwardTarget(null)}
         />
       ) : null}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 多选底栏（最小可用）：已选数 + 转发 / 取消
+// ---------------------------------------------------------------------------
+function SelectBar({
+  count,
+  onForward,
+  onCancel,
+}: {
+  count: number;
+  onForward: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div
+      className="flex h-14 shrink-0 items-center justify-between border-t border-line bg-elevated px-4"
+      role="toolbar"
+      aria-label={t('chat.selectMode.title', { count })}
+    >
+      <button
+        type="button"
+        onClick={onCancel}
+        className="h-9 rounded-sm px-4 text-body-sm text-ink-secondary hover:bg-surface-2"
+      >
+        {t('chat.select.cancel')}
+      </button>
+      <span className="text-body-sm text-ink-tertiary">
+        {t('chat.selectMode.title', { count })}
+      </span>
+      <button
+        type="button"
+        onClick={onForward}
+        disabled={count === 0}
+        className="h-9 rounded-sm bg-primary-500 px-4 text-body-sm text-ink-inverse disabled:opacity-40"
+      >
+        {t('chat.select.forward')}
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 转发面板：会话选择列表（useConvStore.convs），选定后走 outbox 发送
+// ---------------------------------------------------------------------------
+function ForwardPanel({
+  messages,
+  onClose,
+}: {
+  messages: ChatMessage[];
+  onClose: () => void;
+}) {
+  const order = useConvStore((state) => state.order);
+  const convs = useConvStore((state) => state.convs);
+  const [sending, setSending] = useState(false);
+
+  const forward = async (convId: number) => {
+    if (sending) return;
+    setSending(true);
+    let ok = 0;
+    for (const message of messages) {
+      if (await forwardMessages(message, convId)) ok += 1;
+    }
+    setSending(false);
+    onClose();
+    if (ok === messages.length) toast.success(t('chat.forward.done', { count: ok }));
+    else toast.danger(t('chat.forward.failed'));
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-menu flex items-end justify-center sm:items-center" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-label={t('chat.forward.title')}
+        className="max-h-[60vh] w-80 overflow-y-auto rounded-t-md border border-line bg-elevated py-1 shadow-md sm:rounded-md"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="px-3 py-2 text-caption text-ink-tertiary">{t('chat.forward.title')}</p>
+        {order.map((convId) => {
+          const conv = convs[convId];
+          if (!conv) return null;
+          return (
+            <button
+              key={convId}
+              type="button"
+              onClick={() => void forward(convId)}
+              disabled={sending}
+              className="flex h-12 w-full items-center gap-3 px-3 text-start transition-colors duration-micro hover:bg-surface-2 disabled:opacity-50"
+            >
+              <Avatar name={conv.title} size="sm" />
+              <span className="min-w-0 flex-1 truncate text-body-sm text-ink">{conv.title}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -297,9 +460,21 @@ interface RowProps {
   isUnreadStart: boolean;
   onOpenMenu: (messageId: string) => void;
   onReply: (message: ChatMessage) => void;
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
-const MessageRow = memo(function MessageRow({ id, prevId, isUnreadStart, onOpenMenu, onReply }: RowProps) {
+const MessageRow = memo(function MessageRow({
+  id,
+  prevId,
+  isUnreadStart,
+  onOpenMenu,
+  onReply,
+  selectMode = false,
+  selected = false,
+  onToggleSelect,
+}: RowProps) {
   const message = useMessageStore((state) => state.byId[id]);
   const prev = useMessageStore((state) => (prevId ? state.byId[prevId] : undefined));
   const conv = useConvStore((state) => state.convs[message?.convId ?? 0]);
@@ -322,7 +497,24 @@ const MessageRow = memo(function MessageRow({ id, prevId, isUnreadStart, onOpenM
       {showDate ? <DayDivider timestamp={message.sentAt} /> : null}
       {isUnreadStart ? <UnreadDivider /> : null}
 
-      {!Renderer ? null : plain ? (
+      <div className="flex items-center">
+        {selectMode ? (
+          <button
+            type="button"
+            role="checkbox"
+            aria-checked={selected}
+            aria-label={t('chat.select')}
+            onClick={() => onToggleSelect?.(id)}
+            className={[
+              'ms-2 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border transition-colors duration-micro',
+              selected ? 'border-primary-500 bg-primary-500 text-ink-inverse' : 'border-line bg-surface text-ink-tertiary',
+            ].join(' ')}
+          >
+            {selected ? '✓' : ''}
+          </button>
+        ) : null}
+
+        {!Renderer ? null : plain ? (
         <Renderer message={message} />
       ) : (
         <Bubble
@@ -347,6 +539,7 @@ const MessageRow = memo(function MessageRow({ id, prevId, isUnreadStart, onOpenM
           <Renderer message={message} />
         </Bubble>
       )}
+      </div>
     </div>
   );
 });
@@ -403,10 +596,14 @@ function MessageMenu({
   state,
   onClose,
   onReply,
+  onForward,
+  onSelect,
 }: {
   state: MenuState;
   onClose: () => void;
   onReply: (message: ChatMessage) => void;
+  onForward: (message: ChatMessage) => void;
+  onSelect: (message: ChatMessage) => void;
 }) {
   const message = useMessageStore((store) => store.byId[state.messageId]);
   const userId = useSessionStore((store) => store.userId);
@@ -475,24 +672,20 @@ function MessageMenu({
         key: 'forward',
         label: t('chat.forward'),
         icon: <ForwardIcon size={18} />,
-        action: () => {
-          toast.info(t('common.comingSoon'));
-          onClose();
-        },
+        action: () => onForward(message),
       },
       {
         key: 'select',
         label: t('chat.select'),
         icon: <SelectIcon size={18} />,
-        action: () => {
-          toast.info(t('common.comingSoon'));
-          onClose();
-        },
+        action: () => onSelect(message),
       },
       {
         key: 'report',
         label: t('chat.report'),
         icon: <FlagIcon size={18} />,
+        // 服务端尚无用户举报上行链路（453 REPORT 未在 pipe.dispatch 路由），
+        // 保留占位，用户举报入口排期 v1.2。
         action: () => {
           toast.info(t('common.comingSoon'));
           onClose();
@@ -506,7 +699,7 @@ function MessageMenu({
         icon: <TrashIcon size={18} />,
         danger: true,
         action: () => {
-          toast.info(t('common.comingSoon'));
+          if (!recallMessage(message)) toast.danger(t('chat.recallFailed'));
           onClose();
         },
       });

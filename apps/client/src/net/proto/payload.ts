@@ -537,6 +537,15 @@ export function encodeReceipt(payload: ReceiptPayload): Uint8Array {
   });
 }
 
+/**
+ * 上行 MSG_RECALL(108) payload（server wire.MsgMutation，flat snake_case）。
+ * 服务端 onRecall 校验发送者/窗口后向全员广播同形 108；
+ * 客户端 handlers/msg-mutation.ts 将其映射为 'recall' tombstone。
+ */
+export function encodeMsgRecall(input: { msgId: number; convId: number }): Uint8Array {
+  return encodeJsonPayload({ msg_id: input.msgId, conv_id: input.convId });
+}
+
 export function decodeMsgMutation(bytes: Uint8Array): { msgId: number; convId?: number; text?: string; forEveryone?: boolean } {
   const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
   return {
