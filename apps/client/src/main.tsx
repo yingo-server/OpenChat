@@ -17,6 +17,7 @@ import { handleFeatureFlags } from './net/protocol/handlers/feature-flags';
 import { handleKicked } from './net/protocol/handlers/kicked';
 import { handleError } from './net/protocol/handlers/error';
 import { handleRateLimited } from './net/protocol/handlers/rate-limited';
+import { handleWatermark } from './net/protocol/handlers/watermark';
 import { handleConvPayload } from './net/protocol/handlers/conv-payload';
 import { handleConvDataResult } from './net/protocol/handlers/conv-result';
 import { handleReadHistoryResult } from './net/protocol/handlers/read-history-result';
@@ -56,6 +57,7 @@ async function main(): Promise<void> {
   registry.register(KINDS.KICKED, handleKicked);
   registry.register(KINDS.ERROR, handleError);
   registry.register(KINDS.RATE_LIMITED, handleRateLimited);
+  registry.register(KINDS.WATERMARK, handleWatermark); // 拉取模式水位线（spec v1.2 §2.3 接线点）
   registry.register(KINDS.CONV_CREATE, handleConvPayload);
   registry.register(KINDS.CONV_UPDATE, handleConvPayload);
   registry.register(KINDS.CONV_PAYLOAD, handleConvPayload);

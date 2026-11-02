@@ -19,6 +19,7 @@ export const KINDS = {
   KICKED: 11,
   FEATURE_FLAGS: 12,
   RATE_LIMITED: 13,
+  WATERMARK: 14, // 拉取模式：服务端 → 客户端会话最新 seq 通知（spec v1.2 §1.1；kinds.go 注释确认 14 空闲）
 
   // 100-199 消息层
   MSG_SEND: 101,

@@ -6,6 +6,7 @@
 import { openCache } from '../net/cache/idb';
 import { SyncEngine, type SyncSink } from '../net/sync/engine';
 import { historyLoader } from '../net/sync/history-loader';
+import { configurePullScheduler, pullScheduler, type PullSchedulerDeps } from '../net/sync/pull-scheduler';
 import { Outbox, createLocalStoragePersistence } from '../net/sync/outbox';
 import { createEnvelope } from '../net/proto/codec';
 import { encodeSyncRequest } from '../net/proto/payload';
@@ -80,6 +81,29 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
 
   const engine = new SyncEngine(cache, sink);
   await engine.hydrate();
+
+  // 拉取模式调度器（spec v1.2 §2）：只产生 8 SYNC 请求，结果经既有 102 帧路径进 ingest。
+  const pullSchedulerDeps: PullSchedulerDeps = {
+    getLastSeq: (convId) => engine.lastSeq(convId),
+    isConvLoaded: (convId) => useConvStore.getState().convs[convId] !== undefined,
+    sendSync: (convId, sinceSeq, limit) =>
+      net.send(
+        createEnvelope({
+          kind: KINDS.SYNC_REQUEST,
+          convId,
+          payload: encodeSyncRequest({ convId, sinceSeq, limit }),
+        }),
+      ),
+  };
+  configurePullScheduler(pullSchedulerDeps);
+  // 会话 hydrate：conv-store 有会话落位后消费 pendingWatermark（spec §2.1 第 1 步的兑现）
+  useConvStore.subscribe((state, previous) => {
+    if (state.convs === previous.convs) return;
+    for (const convId of Object.keys(state.convs)) {
+      const id = Number(convId);
+      if (previous.convs[id] === undefined) pullScheduler.consumePending(id);
+    }
+  });
 
   const outbox = new Outbox(
     {
@@ -254,6 +278,7 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
     (window as Window & { __openchatMock?: unknown }).__openchatMock = {
       goOffline: () => mock.simulateOffline(),
       goOnline: () => mock.simulateOnline(),
+      sendWatermark: (convId: number, latestSeq?: number) => mock.sendWatermark(convId, latestSeq),
     };
   }
 

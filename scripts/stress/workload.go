@@ -98,6 +98,13 @@ type worker struct {
 	cmidCounter atomic.Uint64
 	dead        atomic.Bool
 	ops         map[string]*opLocal
+	// pull-mode (§4.4): nil unless --pull-mode. Counters are per-connection
+	// and merged into levelResult by the runner; lastSeq is per-conv cursor.
+	pull       *pullTracker
+	downWM     atomic.Int64 // watermark frames received
+	downMsgNew atomic.Int64 // MSG_NEW frames received (live + catch-up replay)
+	downCtrl   atomic.Int64 // every other downstream frame (ack/receipt/typing/presence/error/...)
+	syncQPS    atomic.Int64 // kind 8 uplink requests sent
 }
 
 var opNames = []string{"msg_send", "typing", "receipt", "presence"}
@@ -127,6 +134,7 @@ func (w *worker) readLoop(peer *peerRecorder) {
 		}
 		switch env.Kind {
 		case kindMsgAck:
+			w.downCtrl.Add(1)
 			var a msgAckPayload
 			if json.Unmarshal(env.Payload, &a) == nil && a.ClientMsgID != "" {
 				if rtt, found := w.ops["msg_send"].settleAck(a.ClientMsgID); found {
@@ -139,17 +147,70 @@ func (w *worker) readLoop(peer *peerRecorder) {
 				}
 			}
 		case kindRateLimited, kindError:
+			w.downCtrl.Add(1)
 			w.serverDrop.Add(1)
 		case kindMsgNew:
+			w.downMsgNew.Add(1)
 			var m msgNewPayload
 			if json.Unmarshal(env.Payload, &m) == nil && len(m.Content) > 0 {
 				var c msgNewContent
 				if json.Unmarshal(m.Content, &c) == nil && c.ClientMsgID != "" {
-					peer.recv(c.ClientMsgID)
+					if peer != nil {
+						peer.recv(c.ClientMsgID)
+					}
+				}
+				if w.pull != nil && m.Seq > 0 {
+					// Catch-up replay frames carry seq but usually a client_msg_id
+					// we do not own; ingest the seq regardless so lastSeq advances.
+					w.pull.onMsgNew(w.conv, m.Seq, time.Now())
 				}
 			}
+		case kindWatermark:
+			// §4.4 item 1. Without --pull-mode this branch is unreachable in a
+			// correct deployment (the server only sends 14 to pull-mode convs),
+			// but if the flag is mis-set we count it as a control frame so the
+			// report exposes the mismatch instead of silently dropping it.
+			if w.pull == nil {
+				w.downCtrl.Add(1)
+				break
+			}
+			var wm watermarkPayload
+			if json.Unmarshal(env.Payload, &wm) != nil {
+				w.downCtrl.Add(1)
+				break
+			}
+			w.downWM.Add(1)
+			conv := wm.ConvID
+			if conv == 0 {
+				conv = env.ConvID
+			}
+			if req := w.pull.onWatermark(conv, wm.LatestSeq, time.Now()); req != nil {
+				w.sendSync(req)
+			}
+		default:
+			w.downCtrl.Add(1)
 		}
 	}
+}
+
+// sendSync writes one kind 8 SYNC request (the uplink pull). Counted for the
+// client-side 8/920 QPS statistic. A write error marks the worker dead (the
+// read loop will exit on the broken socket anyway).
+func (w *worker) sendSync(req *syncRequestPayload) {
+	pl, err := encodeSyncRequest(req)
+	if err != nil {
+		return
+	}
+	env := &envelope{Kind: kindSyncRequest, ConvID: req.ConvID, Payload: pl}
+	b, err := encodeEnvelope(env)
+	if err != nil {
+		return
+	}
+	if err := w.conn.WriteMessage(websocket.TextMessage, b); err != nil {
+		w.dead.Store(true)
+		return
+	}
+	w.syncQPS.Add(1)
 }
 
 // run is the send loop: pick an op per the mixer, write one frame, pace.

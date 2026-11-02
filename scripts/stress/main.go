@@ -229,6 +229,22 @@ type levelResult struct {
 	PeerSamples []time.Duration
 	WindowSecs  float64
 	RampTimeout bool
+	// pull-mode statistics (§4.4 item 2). All zero in push-mode runs.
+	PullMode        bool
+	DownWatermarks  int64           // watermark frames/s denominator: DownWatermarks/WindowSecs
+	DownMsgNew      int64           // msg_new frames (live fanout + catch-up replay)
+	DownCtrl        int64           // every other downstream frame (ack/typing/presence/error/...)
+	SyncRequests    int64           // uplink kind 8 pulls (client QPS numerator)
+	Convergence     []time.Duration // watermark latestSeq → lastSeq caught-up samples
+	ConvergenceOpen int64           // watermarks still unsettled at window end
+}
+
+// perSec guards division for the per-second frame rates.
+func perSec(n int64, secs float64) float64 {
+	if secs <= 0 {
+		return 0
+	}
+	return float64(n) / secs
 }
 
 type levelPlan struct {
@@ -241,6 +257,7 @@ type levelPlan struct {
 	interval    time.Duration
 	mix         *mixer
 	rampBudget  time.Duration
+	pullMode    bool
 }
 
 func runLevel(p levelPlan) *levelResult {
@@ -284,7 +301,11 @@ func runLevel(p levelPlan) *levelResult {
 				return
 			}
 			mu.Lock()
-			workers = append(workers, newWorker(id, tok, p.pool[id].uid, conv, conn))
+			w := newWorker(id, tok, p.pool[id].uid, conv, conn)
+			if p.pullMode {
+				w.pull = newPullTracker()
+			}
+			workers = append(workers, w)
 			mu.Unlock()
 		}(i)
 	}
@@ -344,6 +365,25 @@ func runLevel(p levelPlan) *levelResult {
 	res.Ops["msg_send"].Acked = res.Ops["msg_send"].OK
 	res.PeerSamples = peer.snapshot()
 	res.WindowSecs = p.duration.Seconds()
+	res.PullMode = p.pullMode
+	if p.pullMode {
+		var conv [][]time.Duration
+		for _, w := range workers {
+			res.DownWatermarks += w.downWM.Load()
+			res.DownMsgNew += w.downMsgNew.Load()
+			res.DownCtrl += w.downCtrl.Load()
+			res.SyncRequests += w.syncQPS.Load()
+			if w.pull != nil {
+				conv = append(conv, w.pull.convergence())
+			}
+		}
+		res.Convergence = mergeSamples(conv)
+		for _, w := range workers {
+			if w.pull != nil {
+				res.ConvergenceOpen += int64(w.pull.outstanding())
+			}
+		}
+	}
 
 	for _, w := range workers {
 		w.conn.Close()
@@ -373,10 +413,16 @@ func main() {
 		typingR  = flag.Int("typing-ratio", 15, "mixed mode: % of TYPING")
 		receiptR = flag.Int("receipt-ratio", 10, "mixed mode: % of RECEIPT")
 		presR    = flag.Int("presence-ratio", 5, "mixed mode: % of PRESENCE")
+		pullMode = flag.Bool("pull-mode", false, "enable pull-mode client behaviour: handle kind 14 WATERMARK, reply with 8 SYNC pulls (spec pull-mode-spec §4.4); default false = push-mode, byte-identical to pre-§4.4 behaviour")
 	)
 	flag.Parse()
 
 	rateLimit := !*noRL
+
+	if *mode == "restart-storm" {
+		runRestartStorm(*base, *conns, *convMem, *secs, *interval, rateLimit, *skipBoot, *out)
+		return
+	}
 
 	mkMixer := func() *mixer {
 		if *mode == "mixed" || *mode == "both" || *mode == "ws" {
@@ -468,9 +514,11 @@ func main() {
 			conns: *conns, convMembers: convMembers, convIDs: convIDs, pool: pool,
 			base: *base, duration: time.Duration(*secs) * time.Second,
 			interval: *interval, mix: mkMixer(), rampBudget: 120 * time.Second,
+			pullMode: *pullMode,
 		})
 		fmt.Printf("\nws handshakes: %d / %d\n", res.Handshakes, *conns)
 		printLevelDetail(res, convMembers, rateLimit)
+		printPullStats(res)
 		writeJSON(*out, false, []*levelResult{res}, len(pool), rateLimit, convMembers)
 		fmt.Println("wrote", *out)
 
@@ -491,6 +539,20 @@ func main() {
 			}
 		}
 	}
+}
+
+// osExit is an indirection for os.Exit so testable files (storm.go) can call
+// it without making the whole package exit during tests.
+func osExit(code int) { os.Exit(code) }
+
+// dbPathFromEnv returns the hot.db path for -no-boot runs (empty otherwise).
+func dbPathFromEnv() string { return os.Getenv("CHATD_DB") }
+
+// writeJSONAny writes an arbitrary JSON document (used by the S-5 subcommand;
+// the ladder/mixed modes use writeJSON with their level-row schema).
+func writeJSONAny(path string, v any) {
+	blob, _ := json.MarshalIndent(v, "", "  ")
+	os.WriteFile(path, blob, 0o644)
 }
 
 func parseLadder(s string) (start, maxConns int) {

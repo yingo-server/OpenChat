@@ -163,6 +163,24 @@ func fmtLat3(samples []time.Duration) string {
 		fmtDur(percentile(samples, 0.95)), fmtDur(percentile(samples, 0.99)))
 }
 
+// printPullStats renders the §4.4 item-2 pull-mode statistic block. Called
+// only for --pull-mode runs (all counters are zero in push mode).
+func printPullStats(r *levelResult) {
+	if !r.PullMode {
+		return
+	}
+	fmt.Printf("\npull-mode (§4.4): down frames/s: watermark=%.1f msg_new=%.1f ctrl=%.1f\n",
+		perSec(r.DownWatermarks, r.WindowSecs),
+		perSec(r.DownMsgNew, r.WindowSecs),
+		perSec(r.DownCtrl, r.WindowSecs))
+	fmt.Printf("client kind-8 SYNC QPS: %.1f (requests=%d)\n",
+		perSec(r.SyncRequests, r.WindowSecs), r.SyncRequests)
+	conv := r.Convergence
+	fmt.Printf("convergence (watermark latestSeq → lastSeq caught up): p50=%s p95=%s samples=%d unsettled=%d\n",
+		fmtDur(percentile(conv, 0.50)), fmtDur(percentile(conv, 0.95)),
+		len(conv), r.ConvergenceOpen)
+}
+
 // heading helpers ------------------------------------------------------------
 
 func rule(ch string, n int) string { return strings.Repeat(ch, n) }

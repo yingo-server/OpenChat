@@ -123,7 +123,9 @@ func decodeEnvelope(b []byte) (*envelope, error) {
 // import server/internal/proto/kinds (Go internal-package rule); these values
 // are copied verbatim from that file, the single source of truth.
 const (
+	kindSyncRequest = uint32(8)   // SYNC_REQUEST (uplink gap pull; reply is 102 frames)
 	kindRateLimited = uint32(13)  // RATE_LIMITED
+	kindWatermark   = uint32(14)  // WATERMARK (pull-mode conv high-water notice)
 	kindError       = uint32(10)  // ERROR (server-side NACK)
 	kindMsgSend     = uint32(101) // MSG_SEND
 	kindMsgNew      = uint32(102) // MSG_NEW
@@ -132,3 +134,50 @@ const (
 	kindTyping      = uint32(230) // TYPING
 	kindPresence    = uint32(400) // PRESENCE_UPDATE
 )
+
+// watermarkPayload is the WATERMARK(14) body (spec §1.1/§4.4: camelCase JSON,
+// the same wire convention as the conv payloads). reason/memberCount are
+// diagnostic-only: client logic (and this tool) must never branch on them.
+type watermarkPayload struct {
+	ConvID      uint64 `json:"convId,omitempty"`
+	LatestSeq   uint64 `json:"latestSeq,omitempty"`
+	Reason      uint32 `json:"reason,omitempty"`
+	MemberCount uint32 `json:"memberCount,omitempty"`
+}
+
+// syncRequestPayload is the uplink SYNC(8) body. The server decodes it as
+// wire.ReadHistory ({convId, sinceSeq, limit} — pipe.go onSyncRequest) and
+// replays every missed message as plain MSG_NEW(102) frames, ascending seq.
+type syncRequestPayload struct {
+	ConvID   uint64 `json:"convId,omitempty"`
+	SinceSeq uint64 `json:"sinceSeq,omitempty"`
+	Limit    uint32 `json:"limit,omitempty"`
+}
+
+// encodeWatermark / decodeWatermark marshal the 14 body. Kept as named helpers
+// so the round-trip test can pin the exact wire contract (camelCase keys).
+func encodeWatermark(w *watermarkPayload) ([]byte, error) { return json.Marshal(w) }
+
+func decodeWatermark(b []byte) (*watermarkPayload, error) {
+	var w watermarkPayload
+	if err := json.Unmarshal(b, &w); err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+// encodeSyncRequest marshals the 8 body (same shape as the 920 ReadHistory).
+func encodeSyncRequest(s *syncRequestPayload) ([]byte, error) { return json.Marshal(s) }
+
+func decodeSyncRequest(b []byte) (*syncRequestPayload, error) {
+	var s syncRequestPayload
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// syncPullLimit is the per-SYNC page size the tool asks for. It mirrors the
+// client's single-page limit (spec §2.2: 单次 8 limit=200) and the server's
+// catch-up page bound (readrouter.catchup clamps limit to 200).
+const syncPullLimit = uint32(200)

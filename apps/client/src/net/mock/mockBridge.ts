@@ -33,6 +33,7 @@ import {
   encodeReceipt,
   encodeResumeResult,
   encodeTyping,
+  encodeWatermark,
   type ConvMember,
   type ConvPayload,
   type Media,
@@ -184,6 +185,21 @@ export class MockBridge implements NetClient {
   /** mock 媒体读取（`media/{id}` 语义的内存版）。 */
   mediaBlob(mediaId: string): Blob | null {
     return this.mediaBlobs.get(mediaId) ?? null;
+  }
+
+  /**
+   * 模拟服务端推 WATERMARK(14)（spec v1.2 §2.3 mock 注入点，供单测与演示）。
+   * latestSeq 缺省取该会话当前 serverSeq。经 emit 走真实 dispatch → handler 链路。
+   */
+  sendWatermark(convId: number, latestSeq?: number, reason = 0): boolean {
+    const conv = this.convs.find((candidate) => candidate.convId === convId);
+    if (!conv) return false;
+    const seq = latestSeq ?? conv.serverSeq;
+    this.emit(KINDS.WATERMARK, {
+      convId,
+      payload: encodeWatermark({ convId, latestSeq: seq, reason, memberCount: conv.members.length }),
+    });
+    return true;
   }
 
   /**

@@ -186,7 +186,7 @@ export function decodeJsonPayload<T>(bytes: Uint8Array): T {
   return parsed as T;
 }
 
-function num(value: unknown, fallback = 0): number {
+export function num(value: unknown, fallback = 0): number {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value !== '' && Number.isFinite(Number(value))) return Number(value);
   return fallback;
@@ -892,6 +892,9 @@ export function decodeResumeRequest(bytes: Uint8Array): { sessionId: string; con
     lastSeq: num(raw.last_seq),
   };
 }
+
+/** 水位线（spec v1.2 §1.1）：mockBridge / 压测端注入用。 */
+export { encodeWatermark, type WatermarkPayload } from '../protocol/handlers/watermark';
 
 export function encodeSyncRequest(input: { convId: number; sinceSeq: number; limit?: number }): Uint8Array {
   return encodeJsonPayload({
