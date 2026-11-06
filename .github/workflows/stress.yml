@@ -24,6 +24,9 @@ on:
       no_ratelimit:
         description: "DISABLE rate limiting for raw-ceiling mode (true/false)"
         default: "true"
+      pull_mode:
+        description: "enable pull-mode client (kind 14 WATERMARK → SYNC(8))"
+        default: "false"
   push:
     tags: ['v*']
 
@@ -81,6 +84,7 @@ jobs:
           DURATION: ${{ github.event.inputs.duration || '10' }}
           CONV_MEMBERS: ${{ github.event.inputs.conv_members || '10' }}
           NO_RATELIMIT: ${{ github.event.inputs.no_ratelimit || 'true' }}
+          PULL_MODE: ${{ github.event.inputs.pull_mode || 'false' }}
         run: |
           set -e
           EXTRA=""
@@ -88,6 +92,9 @@ jobs:
           if [ "$NO_RATELIMIT" = "true" ]; then
             EXTRA="--no-ratelimit"
             RL_STATE="DISABLED (raw-ceiling mode — NOT production limits)"
+          fi
+          if [ "$PULL_MODE" = "true" ]; then
+            EXTRA="$EXTRA --pull-mode"
           fi
           echo "rate limiting: $RL_STATE" | tee stress.log
           /tmp/stressd -ladder "$LADDER" -duration "$DURATION" \
