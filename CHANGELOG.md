@@ -2,6 +2,23 @@
 
 本文件记录 OpenChat 的版本变更。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
+## [1.2.0] - 2026-11-02
+
+大群拉取模式（Pull Mode）。**单阶段启用，无灰度**。
+
+### Added
+- kind 14 `WATERMARK`：>100 人群不再逐成员推送 MSG_NEW，改为 batch=50 / 2s
+  兜底的水位线通知；客户端收到后按 `lastSeq+1` 发 SYNC(8) 批量补拉。
+  500 人群的下行帧需求从 ~1M/s 降到 ~2k/s。
+- 客户端 `pull-scheduler`：singleflight + 2s jitter + 1s min_interval + 10s
+  兜底，500 人同时收到水位线不会惊群；结果只经 sync 引擎单一写入口。
+- 压测工具 `--pull-mode` 与 `-mode restart-storm`（S-5 拉取风暴验收）。
+- 202 全量成员快照对大群改为 `members_omitted`，消除 64KB 帧上限风险。
+
+### Safety
+- 客户端 handler 先行落地后才启用服务端（RESYNC 事故教训制度化）。
+- 99 人群逐字节回归（T-SV-1）；热回滚只需 `pull_mode_threshold=0`。
+
 ## [1.1.2] - 2026-11-02
 
 性能实验回滚 + 前端功能补齐 + 语义修复。**无破坏性变更**，可直接升级。

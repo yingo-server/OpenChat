@@ -20,7 +20,7 @@ const (
 
 	// 拉取模式（docs/pull-mode-spec-v1.2.md §3.3）。
 	//
-	// KeyPullModeThreshold 的默认值 MUST 是 0：中间态要求服务端代码在位但行为
+	// KeyPullModeThreshold 默认 100：单阶段直接启用（v1.2 定调）。
 	// 与主干逐字节一致（规范 §6.4）。0 = 全量 inline，回滚即改此值。
 	KeyPullModeThreshold = "pull_mode_threshold"
 	// KeyWatermarkBatch 是水位线的推进阈值：最新 seq 与上次水位线相差
@@ -42,7 +42,7 @@ func Defaults() map[string]any {
 		KeyReadonly:     false,
 		KeyCallEnabled:  false,
 
-		KeyPullModeThreshold:   0, // 0 = 禁用（拉取模式不启用，行为与主干一致）
+		KeyPullModeThreshold:   100, // >100 成员走水位线拉取；<=100 保持 inline
 		KeyWatermarkBatch:      50,
 		KeyWatermarkIntervalMS: 2000,
 		KeyWatermarkJitterMS:   2000,
