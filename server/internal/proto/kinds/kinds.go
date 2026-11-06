@@ -27,9 +27,12 @@ const (
 	KindKicked       Kind = 11 // 全设备踢下线+断连
 	KindFeatureFlags Kind = 12 // 广播到 sys.> 的策略开关
 	KindRateLimited  Kind = 13
-	// 注：kind 14 曾在 v1.2 短暂分配给 KindResync（RESYNC 慢消费者降级提示），
-	// 因客户端未实现对应 handler 已回滚，14 号重新成为未分配号。见
-	// docs/perf-postmortem-v1.2-draft.md。
+	// 14 = WATERMARK（拉取模式水位线，v1.2；docs/pull-mode-spec-v1.2.md §1.1）。
+	// 注：14 号曾在 v1.2 短暂分配给 KindResync（RESYNC 慢消费者降级提示），
+	// 因客户端未实现对应 handler 已回滚；本次复用前客户端 handler（P1）已合入
+	// 并有单测（T-CL-1…T-CL-8），事故根因 #2 的前置条件已满足。
+	// 见 docs/perf-postmortem-v1.2-draft.md。
+	KindWatermark Kind = 14
 )
 
 // -------------------------------------------------------------------
@@ -231,7 +234,7 @@ func init() {
 	register(KindKicked, "KICKED")
 	register(KindFeatureFlags, "FEATURE_FLAGS")
 	register(KindRateLimited, "RATE_LIMITED")
-	// "RESYNC"(14) 曾短暂注册，已回滚。
+	register(KindWatermark, "WATERMARK")
 
 	register(KindMsgSend, "MSG_SEND")
 	register(KindMsgNew, "MSG_NEW")

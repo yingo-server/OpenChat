@@ -238,6 +238,10 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	}
 
 	p := pipe.New(a.dataPeer, hot, pipe.ColdDeps{Cold: coldDB, Audit: coldDB}, a.policy, log.For("data"))
+	// 拉取模式（v1.2 §3.3）：pipe 读 pull_mode_threshold / watermark_* 三个
+	// flag。共享同一个 *featureflags.Flags，SIGHUP 热重载原地生效；默认
+	// threshold=0 时行为与主干逐字节一致。
+	p.SetFeatureFlags(a.flags)
 	p.FrameSource = newFrameSource(func(connID uint64) int64 {
 		// Late binding: the gateway exists only after step 9.
 		if a.user == nil {

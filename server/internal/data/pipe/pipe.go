@@ -10,6 +10,7 @@ import (
 	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
 	"github.com/yingo-server/OpenChat/server/internal/data/store/sqlite"
+	"github.com/yingo-server/OpenChat/server/internal/pkg/featureflags"
 	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
 	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
 	"github.com/yingo-server/OpenChat/server/internal/transport"
@@ -166,6 +167,7 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 	p.conv = &convDomain{conv: hot, id: hot, cache: p.cache, members: p.mc}
 	p.emit = DefaultEmit
 	p.fanout = newFanoutPlane(p.mc, p.sendFanout, lg)
+	p.fl.fanout = p.fanout
 	p.ident = identity.New(hot, p.cache)
 	p.sys = &sysDomain{sys: hot}
 	p.calls = newCallRegistry()
@@ -175,6 +177,23 @@ func NewStores(peer transport.Peer, hot HotStores, cold ColdDeps, lg *log.Logger
 // SetTrunkee injects the job plane (kind 980 handler). Assembly calls it after
 // New; a pipe without one answers 980 with state "not_wired".
 func (p *Pipe) SetTrunkee(t Trunkee) { p.trunk = t }
+
+// SetFeatureFlags injects the process-wide feature flag store (the same
+// *featureflags.Flags the 911 FEATURE_FLAGS broadcaster writes). Pull-mode
+// dispatch reads pull_mode_threshold / watermark_batch /
+// watermark_interval_ms from it; a hot change (SIGHUP / 911) is visible on the
+// next message because Flags.Apply swaps the immutable snapshot in place.
+//
+// Not calling this leaves the pipe at the compiled defaults, i.e.
+// pull_mode_threshold = 0 → the pre-v1.2 inline behaviour, byte for byte.
+func (p *Pipe) SetFeatureFlags(flags *featureflags.Flags) {
+	if p.fanout != nil {
+		p.fanout.setFlags(flags)
+	}
+	if p.conv != nil {
+		p.conv.flags = flags
+	}
+}
 
 // SetWritePolicy re-applies the write_path tunables (batch size / flush
 // interval) from a policy snapshot. The assembly calls this on SIGHUP so a

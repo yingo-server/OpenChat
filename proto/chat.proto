@@ -233,7 +233,21 @@ message ConvPayload { // CONV 系列通用应答体
   fixed64 created_at = 4;
   repeated Member members = 5;
   uint32 version = 6;
-  reserved 7 to 9;
+  // 拉取模式（docs/pull-mode-spec-v1.2.md §1.4）：大群不再推全量成员快照。
+  // members_omitted=true 时 members 为空，成员数由 member_count 给出，成员列表
+  // 由客户端按需走 930/931 拉取。旧客户端忽略未知字段 → 等同"成员列表为空"，
+  // 不构成回退（原先大群快照会因超 64KB 被拒）。
+  bool members_omitted = 7;
+  uint32 member_count = 8;
+  reserved 9;
+}
+
+message Watermark { // 14 WATERMARK，服务端 → 客户端，拉取模式会话的最新 seq 通知
+  uint64 conv_id      = 1; // 会话 ID
+  uint64 latest_seq   = 2; // 该会话当前已分配的最大 seq（落库后必已可拉）
+  uint32 reason       = 3; // 0=周期(批次推进) 1=重连/首次 2=flag 切换回 inline 前最后一次
+  uint32 member_count = 4; // 发送时会话成员数（客户端展示与诊断用，不参与逻辑）
+  reserved 5 to 9;
 }
 
 message ConvCreate {

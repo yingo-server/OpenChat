@@ -3214,12 +3214,14 @@ func (m *Member) ProtoMessage() {}
 
 // ConvPayload mirrors chat.v1.ConvPayload (proto3).
 type ConvPayload struct {
-	ConvId    uint64
-	Title     string
-	ConvType  uint32
-	CreatedAt uint64
-	Members   []*Member
-	Version   uint32
+	ConvId         uint64
+	Title          string
+	ConvType       uint32
+	CreatedAt      uint64
+	Members        []*Member
+	Version        uint32
+	MembersOmitted bool
+	MemberCount    uint32
 }
 
 func (m *ConvPayload) GetConvId() uint64 {
@@ -3264,6 +3266,20 @@ func (m *ConvPayload) GetVersion() uint32 {
 	return 0
 }
 
+func (m *ConvPayload) GetMembersOmitted() bool {
+	if m != nil {
+		return m.MembersOmitted
+	}
+	return false
+}
+
+func (m *ConvPayload) GetMemberCount() uint32 {
+	if m != nil {
+		return m.MemberCount
+	}
+	return 0
+}
+
 func (m *ConvPayload) sizeHint() int {
 	if m == nil {
 		return 0
@@ -3284,6 +3300,12 @@ func (m *ConvPayload) sizeHint() int {
 	}
 	if m.Version != 0 {
 		n += 1 + pbVarintLen(uint64(m.Version))
+	}
+	if m.MembersOmitted {
+		n += 2
+	}
+	if m.MemberCount != 0 {
+		n += 1 + pbVarintLen(uint64(m.MemberCount))
 	}
 	return n
 }
@@ -3307,6 +3329,12 @@ func (m *ConvPayload) Marshal() ([]byte, error) {
 	}
 	if m.Version != 0 {
 		b = pbAppendVarint(b, 6, uint64(m.Version))
+	}
+	if m.MembersOmitted {
+		b = pbAppendVarint(b, 7, 1)
+	}
+	if m.MemberCount != 0 {
+		b = pbAppendVarint(b, 8, uint64(m.MemberCount))
 	}
 	return b, nil
 }
@@ -3365,6 +3393,20 @@ func (m *ConvPayload) Unmarshal(b []byte) error {
 			}
 			b = r
 			m.Version = uint32(v)
+		case 7:
+			v, r, ok := pbReadVarint(b)
+			if !ok {
+				return ErrBadWire
+			}
+			b = r
+			m.MembersOmitted = v != 0
+		case 8:
+			v, r, ok := pbReadVarint(b)
+			if !ok {
+				return ErrBadWire
+			}
+			b = r
+			m.MemberCount = uint32(v)
 		default:
 			r, ok := pbSkip(b, wire)
 			if !ok {
@@ -3381,6 +3423,132 @@ func (m *ConvPayload) Reset() { *m = ConvPayload{} }
 func (m *ConvPayload) String() string { return "ConvPayload" }
 
 func (m *ConvPayload) ProtoMessage() {}
+
+// Watermark mirrors chat.v1.Watermark (proto3).
+type Watermark struct {
+	ConvId      uint64
+	LatestSeq   uint64
+	Reason      uint32
+	MemberCount uint32
+}
+
+func (m *Watermark) GetConvId() uint64 {
+	if m != nil {
+		return m.ConvId
+	}
+	return 0
+}
+
+func (m *Watermark) GetLatestSeq() uint64 {
+	if m != nil {
+		return m.LatestSeq
+	}
+	return 0
+}
+
+func (m *Watermark) GetReason() uint32 {
+	if m != nil {
+		return m.Reason
+	}
+	return 0
+}
+
+func (m *Watermark) GetMemberCount() uint32 {
+	if m != nil {
+		return m.MemberCount
+	}
+	return 0
+}
+
+func (m *Watermark) sizeHint() int {
+	if m == nil {
+		return 0
+	}
+	var n int
+	if m.ConvId != 0 {
+		n += 1 + pbVarintLen(uint64(m.ConvId))
+	}
+	if m.LatestSeq != 0 {
+		n += 1 + pbVarintLen(uint64(m.LatestSeq))
+	}
+	if m.Reason != 0 {
+		n += 1 + pbVarintLen(uint64(m.Reason))
+	}
+	if m.MemberCount != 0 {
+		n += 1 + pbVarintLen(uint64(m.MemberCount))
+	}
+	return n
+}
+
+func (m *Watermark) Marshal() ([]byte, error) {
+	b := make([]byte, 0, m.sizeHint())
+	if m.ConvId != 0 {
+		b = pbAppendVarint(b, 1, uint64(m.ConvId))
+	}
+	if m.LatestSeq != 0 {
+		b = pbAppendVarint(b, 2, uint64(m.LatestSeq))
+	}
+	if m.Reason != 0 {
+		b = pbAppendVarint(b, 3, uint64(m.Reason))
+	}
+	if m.MemberCount != 0 {
+		b = pbAppendVarint(b, 4, uint64(m.MemberCount))
+	}
+	return b, nil
+}
+
+func (m *Watermark) Unmarshal(b []byte) error {
+	for len(b) > 0 {
+		tag, wire, rest, ok := pbReadTag(b)
+		if !ok {
+			return ErrBadWire
+		}
+		b = rest
+		switch tag {
+		case 1:
+			v, r, ok := pbReadVarint(b)
+			if !ok {
+				return ErrBadWire
+			}
+			b = r
+			m.ConvId = v
+		case 2:
+			v, r, ok := pbReadVarint(b)
+			if !ok {
+				return ErrBadWire
+			}
+			b = r
+			m.LatestSeq = v
+		case 3:
+			v, r, ok := pbReadVarint(b)
+			if !ok {
+				return ErrBadWire
+			}
+			b = r
+			m.Reason = uint32(v)
+		case 4:
+			v, r, ok := pbReadVarint(b)
+			if !ok {
+				return ErrBadWire
+			}
+			b = r
+			m.MemberCount = uint32(v)
+		default:
+			r, ok := pbSkip(b, wire)
+			if !ok {
+				return ErrBadWire
+			}
+			b = r
+		}
+	}
+	return nil
+}
+
+func (m *Watermark) Reset() { *m = Watermark{} }
+
+func (m *Watermark) String() string { return "Watermark" }
+
+func (m *Watermark) ProtoMessage() {}
 
 // ConvCreate mirrors chat.v1.ConvCreate (proto3).
 type ConvCreate struct {

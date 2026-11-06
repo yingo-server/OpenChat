@@ -51,6 +51,10 @@ type flusher struct {
 	// mc is the cached member-list view: the MSG_NEW fan-out resolves the
 	// recipient set from the cache instead of querying the DB per message.
 	mc *memberCache
+	// fanout owns the MSG_NEW delivery DECISION (inline 102 vs pull-mode
+	// watermark, §3.1/§3.2) and the per-conv watermark throttle. nil falls back
+	// to the plain inline loop (assemblies that build a flusher directly).
+	fanout *fanoutPlane
 
 	// done closes when run() returns (final flush complete) — Drain waits on it.
 	done chan struct{}
@@ -266,6 +270,13 @@ func (f *flusher) fanoutNew(m store.PendingMsg, mediaIdx map[string]*store.Media
 		return
 	}
 	payload := buildMsgNewPayloadWithMedia(m, mediaLookupFromIndex(mediaIdx))
+	// 拉取模式分流（§3.1/§3.2）：只有 len(members) > pull_mode_threshold 时才
+	// 改走水位线。threshold 默认 0（禁用），此时整段判定为假，下面仍是 v1.1.1
+	// 的逐成员 102 循环 —— 逐字节一致，连丢帧日志与计数都不变。
+	if f.fanout != nil && f.fanout.pullModeActive(len(members)) {
+		f.fanout.emitWatermark(uint64(m.Cid), uint64(m.SenderID), uint64(m.Seq), members, f.putBulk)
+		return
+	}
 	uids := make([]uint64, 0, len(members))
 	for _, member := range members {
 		if member.UID == m.SenderID {

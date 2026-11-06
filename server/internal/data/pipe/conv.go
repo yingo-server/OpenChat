@@ -20,6 +20,7 @@ import (
 	"github.com/yingo-server/OpenChat/server/internal/data/cache"
 	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
 	"github.com/yingo-server/OpenChat/server/internal/data/store"
+	"github.com/yingo-server/OpenChat/server/internal/pkg/featureflags"
 	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
 )
 
@@ -62,6 +63,9 @@ type convDomain struct {
 	// maxMembers is the group member ceiling (0 = default). Enforced on
 	// addMember so a group can never grow past the frame-size bound.
 	maxMembers int
+	// flags carries pull_mode_threshold for the 202 snapshot substitution
+	// (§1.4/§3.4). nil = disabled (threshold 0) → full snapshots as before.
+	flags *featureflags.Flags
 }
 
 type convEvent struct {
@@ -125,7 +129,7 @@ func (d *convDomain) create(ctx context.Context, actor int64, body []byte) convR
 				return convResult{Op: convOpCreate, Error: err.Error()}
 			}
 			return convResult{Op: convOpCreate, OK: true, Cid: existing, Payload: pl,
-				Events: convEvents(existing, members, pl)}
+				Events: d.convEvents(existing, members, pl)}
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return convResult{Op: convOpCreate, Error: err.Error()}
 		}
@@ -149,7 +153,7 @@ func (d *convDomain) create(ctx context.Context, actor int64, body []byte) convR
 			return convResult{Op: convOpCreate, Error: err.Error()}
 		}
 		return convResult{Op: convOpCreate, OK: true, Cid: newCid, Payload: pl,
-			Events: convEvents(newCid, members, pl)}
+			Events: d.convEvents(newCid, members, pl)}
 	}
 
 	// Group chat: title is mandatory and at most 30 runes; creator becomes
@@ -194,7 +198,7 @@ func (d *convDomain) create(ctx context.Context, actor int64, body []byte) convR
 		return convResult{Op: convOpCreate, Error: err.Error()}
 	}
 	return convResult{Op: convOpCreate, OK: true, Cid: newCid, Payload: pl,
-		Events: convEvents(newCid, members, pl)}
+		Events: d.convEvents(newCid, members, pl)}
 }
 
 func (d *convDomain) addMember(ctx context.Context, actor int64, cid uint64, body []byte) convResult {
@@ -233,11 +237,11 @@ func (d *convDomain) addMember(ctx context.Context, actor int64, cid uint64, bod
 	if err != nil {
 		return convResult{Op: convOpAddMember, Error: err.Error()}
 	}
-	evs := convEvents(int64(cid), members, pl)
+	evs := d.convEvents(int64(cid), members, pl)
 	for _, rawUID := range p.UserIDs {
 		uid := int64(rawUID)
 		if m, ok := memberRow(members, uid); ok {
-			evs = append(evs, memberUpdateEvents(int64(cid), "add", *m, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
+			evs = append(evs, d.memberUpdateEvents(int64(cid), "add", *m, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
 		}
 	}
 	return convResult{Op: convOpAddMember, OK: true, Cid: int64(cid), Payload: pl, Events: evs}
@@ -270,10 +274,10 @@ func (d *convDomain) removeMember(ctx context.Context, actor int64, cid uint64, 
 	if err != nil {
 		return convResult{Op: convOpRemoveMember, Error: err.Error()}
 	}
-	evs := convEvents(int64(cid), members, pl)
+	evs := d.convEvents(int64(cid), members, pl)
 	for _, rawUID := range p.UserIDs {
 		removed := store.Member{Cid: int64(cid), UID: int64(rawUID)}
-		evs = append(evs, memberUpdateEvents(int64(cid), "remove", removed, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
+		evs = append(evs, d.memberUpdateEvents(int64(cid), "remove", removed, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
 	}
 	return convResult{Op: convOpRemoveMember, OK: true, Cid: int64(cid), Payload: pl, Events: evs}
 }
@@ -307,7 +311,7 @@ func (d *convDomain) setRole(ctx context.Context, actor int64, cid uint64, body 
 	var evs []convEvent
 	for _, rawUID := range p.UserIDs {
 		m := store.Member{Cid: int64(cid), UID: int64(rawUID), Role: int(p.Role)}
-		evs = append(evs, memberUpdateEvents(int64(cid), "role", m, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
+		evs = append(evs, d.memberUpdateEvents(int64(cid), "role", m, actor, members, d.lastSeqFor(ctx, int64(cid)))...)
 	}
 	return convResult{Op: convOpSetRole, OK: true, Cid: int64(cid), Events: evs}
 }
@@ -425,7 +429,7 @@ func (d *convDomain) memberLimit() int {
 // plus one full 202 snapshot, for op-driven member-change events. lastSeq is
 // the conversation watermark the 202 snapshot must carry (so a member that was
 // offline during the change still gets the correct high-water mark).
-func memberUpdateEvents(cid int64, op string, target store.Member, byUID int64, members []store.Member, lastSeq uint64) []convEvent {
+func (d *convDomain) memberUpdateEvents(cid int64, op string, target store.Member, byUID int64, members []store.Member, lastSeq uint64) []convEvent {
 	body, err := wire.Marshal(wire.MemberUpdate{
 		ConvID: uint64(cid), Op: op, ByUserID: uint64(byUID),
 		Member: &wire.Member{
@@ -440,6 +444,9 @@ func memberUpdateEvents(cid int64, op string, target store.Member, byUID int64, 
 	// 202 CONV_PAYLOAD (the full-snapshot refresh every client already
 	// handles). Delivering both keeps old and new consumers in sync.
 	full, ferr := wire.Marshal(fullConvPayloadForEvents(cid, members, lastSeq))
+	if ferr == nil {
+		full = d.eventPayload(members, full)
+	}
 	evs := make([]convEvent, 0, 2*len(members))
 	for _, m := range members {
 		evs = append(evs, convEvent{
@@ -470,7 +477,48 @@ func fullConvPayloadForEvents(cid int64, members []store.Member, lastSeq uint64)
 	return out
 }
 
-func convEvents(cid int64, members []store.Member, payload []byte) []convEvent {
+// pullThreshold returns the compiled/effective pull_mode_threshold
+// (0 = disabled → full snapshots, the pre-v1.2 behaviour).
+func (d *convDomain) pullThreshold() int {
+	if d.flags == nil {
+		return 0
+	}
+	return d.flags.Int(featureflags.KeyPullModeThreshold, 0)
+}
+
+// pullSnapshot reports whether a conversation with n members must not receive
+// full member snapshots in its 202 events (§1.4/§3.4).
+func (d *convDomain) pullSnapshot(n int) bool {
+	th := d.pullThreshold()
+	return th > 0 && n > th
+}
+
+// eventPayload applies the §1.4 snapshot substitution to a 202 CONV_PAYLOAD
+// body: pull-mode conversations carry members_omitted=true + member_count
+// instead of the full member list (500 members ≈ 60–80 KB JSON, over the
+// 64 KB frame cap). Every other field (version/lastSeq) is preserved, and the
+// 931 convOpListMembers path is untouched — clients pull the member list on
+// demand.
+func (d *convDomain) eventPayload(members []store.Member, full []byte) []byte {
+	if !d.pullSnapshot(len(members)) {
+		return full
+	}
+	var p wire.ConvPayload
+	if err := wire.Unmarshal(full, &p); err != nil {
+		return full
+	}
+	p.Members = nil
+	p.MembersOmitted = true
+	p.MemberCount = uint32(len(members))
+	out, err := wire.Marshal(p)
+	if err != nil {
+		return full
+	}
+	return out
+}
+
+func (d *convDomain) convEvents(cid int64, members []store.Member, payload []byte) []convEvent {
+	payload = d.eventPayload(members, payload)
 	evs := make([]convEvent, 0, len(members))
 	for _, m := range members {
 		evs = append(evs, convEvent{

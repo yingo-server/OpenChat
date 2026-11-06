@@ -578,6 +578,10 @@ func buildRoutes() map[uint32][]router.Target {
 	rt[kinds.KindConvDataResult] = toUser("sys.data.result")
 	// Membership-change events: one frame per member, addressed by user_id.
 	rt[kinds.KindConvPayload] = toUser("sys.conv.payload")
+	// 14 WATERMARK（v1.2 拉取模式）：数据层生成、按 user_id 逐成员下发的水位线。
+	// 它落在 0-99 系统层，默认路由表不会把它送到 user 层，必须显式登记，
+	// 否则帧在 bridge 里被判 "no route" 静默丢弃（事故根因 #2 同类）。
+	rt[kinds.KindWatermark] = toUser("sys.watermark")
 	rt[kinds.KindIdentityResult] = toUser("sys.data.result")
 	rt[kinds.KindFlagResult] = toUser("sys.data.result")
 	rt[kinds.KindJobStatus] = toData("data.981")
@@ -623,6 +627,9 @@ func buildRoutesFromData() map[uint32][]router.Target {
 		kinds.KindPresenceUpdate:  toUser("sys.presence"),
 		kinds.KindPresenceOnline:  toUser("sys.presence"),
 		kinds.KindPresenceOffline: toUser("sys.presence"),
+		// 14 WATERMARK 只由数据层产生（客户端上行不可能出现），显式登记让
+		// 数据源层覆盖表也一致地指向 user 层，避免将来新增 14 号上行时回环。
+		kinds.KindWatermark: toUser("sys.watermark"),
 	}
 }
 

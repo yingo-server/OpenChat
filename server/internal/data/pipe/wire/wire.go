@@ -265,6 +265,25 @@ type ConvPayload struct {
 	Version   uint64   `json:"version,omitempty"`
 	LastSeq   uint64   `json:"lastSeq,omitempty"`
 	Unread    uint64   `json:"unread,omitempty"`
+	// MembersOmitted / MemberCount 是 proto 的字段 7/8（v1.2 拉取模式，§1.4）：
+	// 大群不再推全量成员快照，members 为空、成员数由 MemberCount 给出，成员
+	// 列表由客户端按需走 930/931 拉取。旧客户端忽略未知字段，等同于"成员
+	// 列表为空"，不会解析失败。
+	MembersOmitted bool   `json:"membersOmitted,omitempty"`
+	MemberCount    uint32 `json:"memberCount,omitempty"`
+}
+
+// Watermark mirrors chat.v1.Watermark (kind 14, 拉取模式水位线).
+//
+// latest_seq 只引用已经完成 seq 分配且已落库（可被 920/8 读到）的值；客户端
+// 拉取 [lastSeq+1, latest_seq] 必有数据。reason 仅用于诊断与测试断言，
+// 客户端逻辑不得依赖其取值（§1.1）。因此 reason 不用 omitempty：0 也是一个
+// 有意义的取值，必须在帧里显式出现。
+type Watermark struct {
+	ConvID      uint64 `json:"convId,omitempty"`
+	LatestSeq   uint64 `json:"latestSeq,omitempty"`
+	Reason      uint32 `json:"reason"`
+	MemberCount uint32 `json:"memberCount,omitempty"`
 }
 
 // MemberOp mirrors chat.v1.MemberOp (generic member ops inside ConvData).

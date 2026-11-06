@@ -20,6 +20,9 @@ func defaultCaps() map[string][]kinds.Kind {
 			// 数据层回程：提交后的 ack / 错误 / 读结果必须能上行到 bridge，
 			// 否则 101 的 ack 会被 Verifier 以「能力外」丢弃。
 			kinds.KindMsgAck, kinds.KindMsgNew, kinds.KindError,
+			// 14 WATERMARK 是数据层生成的下行控制帧（拉取模式，v1.2 §1.1）：
+			// 不在能力表里会被 Verifier 以「能力外」丢弃，客户端永远收不到。
+			kinds.KindWatermark,
 			kinds.KindReadHistoryResult, kinds.KindConvDataResult, kinds.KindConvPayload,
 			kinds.KindIdentityResult, kinds.KindFlagResult, kinds.KindJobStatus,
 			// 回执/输入中/presence/撤回：上行请求与下行事件共用这些 kind
@@ -47,6 +50,8 @@ func defaultCaps() map[string][]kinds.Kind {
 func allUserKinds() []kinds.Kind {
 	return []kinds.Kind{
 		kinds.KindMsgSend, kinds.KindSyncRequest, kinds.KindMsgNew, kinds.KindMsgAck, kinds.KindMsgRead, kinds.KindMsgDelivered,
+		// 14 WATERMARK：数据层 → 用户层 → 客户端的水位线下行（v1.2 §1.1）。
+		kinds.KindWatermark,
 		kinds.KindMsgEdit, kinds.KindMsgDelete, kinds.KindMsgRecall, kinds.KindMsgForward, kinds.KindMsgSync, kinds.KindMsgSearch,
 		kinds.KindConvCreate, kinds.KindConvUpdate, kinds.KindConvPayload, kinds.KindMemberAdd, kinds.KindMemberRemove,
 		kinds.KindMemberUpdate, kinds.KindRoleSet, kinds.KindMute, kinds.KindPin, kinds.KindTyping, kinds.KindDraft,

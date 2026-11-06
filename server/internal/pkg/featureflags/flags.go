@@ -4,6 +4,8 @@
 package featureflags
 
 import (
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -15,6 +17,20 @@ const (
 	KeyRegistration = "registration"
 	KeyReadonly     = "readonly"
 	KeyCallEnabled  = "call_enabled"
+
+	// 拉取模式（docs/pull-mode-spec-v1.2.md §3.3）。
+	//
+	// KeyPullModeThreshold 的默认值 MUST 是 0：中间态要求服务端代码在位但行为
+	// 与主干逐字节一致（规范 §6.4）。0 = 全量 inline，回滚即改此值。
+	KeyPullModeThreshold = "pull_mode_threshold"
+	// KeyWatermarkBatch 是水位线的推进阈值：最新 seq 与上次水位线相差
+	// >= 该条数即发（§1.3）。
+	KeyWatermarkBatch = "watermark_batch"
+	// KeyWatermarkIntervalMS 是水位线的时间兜底间隔（毫秒，§1.3）。
+	KeyWatermarkIntervalMS = "watermark_interval_ms"
+	// KeyWatermarkJitterMS 是客户端抖动上界（毫秒）。服务端不参与逻辑，
+	// 仅随 911 FEATURE_FLAGS 下发供压测/诊断读取（§1.3/§2.2）。
+	KeyWatermarkJitterMS = "watermark_jitter_ms"
 )
 
 // Defaults 返回默认 flag 集合的副本。
@@ -25,6 +41,11 @@ func Defaults() map[string]any {
 		KeyRegistration: true,
 		KeyReadonly:     false,
 		KeyCallEnabled:  false,
+
+		KeyPullModeThreshold:   0, // 0 = 禁用（拉取模式不启用，行为与主干一致）
+		KeyWatermarkBatch:      50,
+		KeyWatermarkIntervalMS: 2000,
+		KeyWatermarkJitterMS:   2000,
 	}
 }
 
@@ -101,7 +122,60 @@ func (f *Flags) Get(key string) (any, bool) {
 	return v, ok
 }
 
-// Bool 便捷读取布尔 flag，不存在或类型不符返回 def。
+// Int 便捷读取整数 flag：不存在或类型不符返回 def。
+//
+// flag 值的来源不统一（Go 默认值是 int，JSON/DB 装载是 float64，911 下发
+// 是字符串），这里统一归一化，避免每个调用方各写一份类型断言。
+func (f *Flags) Int(key string, def int) int {
+	if v, ok := f.Get(key); ok {
+		if n, ok := ToInt(v); ok {
+			return n
+		}
+	}
+	return def
+}
+
+// ToInt 把 flag 值归一化为 int。支持 bool（true=1）与数字字符串。
+func ToInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case uint:
+		return int(n), true
+	case uint8:
+		return int(n), true
+	case uint16:
+		return int(n), true
+	case uint32:
+		return int(n), true
+	case uint64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case bool:
+		if n {
+			return 1, true
+		}
+		return 0, true
+	case string:
+		i, err := strconv.Atoi(strings.TrimSpace(n))
+		if err != nil {
+			return 0, false
+		}
+		return i, true
+	}
+	return 0, false
+}
 func (f *Flags) Bool(key string, def bool) bool {
 	if v, ok := f.Get(key); ok {
 		if b, isB := v.(bool); isB {
