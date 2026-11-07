@@ -35,3 +35,15 @@
 - [x] kinds CI 一致性检查（本文件 §2 + `scripts/kinds-consistency.sh`）
 - [x] mailbox 迁移骨架（本文件 §3）
 - [x] `go build ./...` / `go test ./internal/pkg/featureflags/ ./internal/data/store/migrate/` 全绿
+
+## 5. P3b 中间态 —— v3Plane 已构造、未接线
+
+- 新增 `server/cmd/opendiscord/v3.go`（包 `opendiscord`）：`NewWireV3(db, flagsFn, cfg)` 按
+  `mailbox.NewStore(hot.DB) → mailbox.NewHub(store, flagsFn, HubConfig{}) → delivery.NewPlane(store, hub.Ack 适配 AckFn, cfg)` 构造 v3 投递栈，导出 `WireV3{Hub, Plane, Enabled, InBucket}`：
+  - `Enabled() = v3_bus_enabled && v3_bus_percent>0`，每次调用读最新 flag 快照（热改即刻生效）；
+  - `InBucket(uid) = featureflags.InV3Bucket(flagsFn(), uid)`（FNV-1a uid 哈希稳定分桶，T-SV-7）。
+- **当前只构造、未接线**：`WireV3` 未挂进任何下行 fanout 路径，`v3_bus_enabled` 默认
+  false 时 `Hub.Offer` 本身也是 no-op（hub 层兜底）——旧路径（pipe 直投）行为**逐字节不变**，符合 §9 中间态铁律。
+- 测试 `server/cmd/opendiscord/v3_test.go`：T-SV-5（关→开热切换）、灰度 uid 稳定分桶、
+  S-5 重启恢复（新 Hub 实例 Restore 后 Cursor/Head 不回退）；临时真 SQLite，DDL 内嵌同形于 `store/migrations/hot/mailbox/0001`。
+- **P3c 计划**：把 v3 plane 接进下行 fanout（按 `InBucket` 双路径分流）、做旧路径瘦身与背压传播（`Bus.PausedConns`/`Bus.BackpressureDepth` 经 §5.5 暴露），届时才改变主干行为。
