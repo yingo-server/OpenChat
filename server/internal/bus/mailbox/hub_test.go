@@ -178,12 +178,13 @@ func TestT_SV_6_CompactionBoundaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	ms := func(v int64) sql.NullInt64 { return sql.NullInt64{Int64: v, Valid: true} }
 	na := sql.NullInt64{}
-	insert(StateAcked, now-25*hour, sql.NullInt64{Int64: now - day - hour, Valid: true}) // a
-	insert(StateAcked, now-2*hour, sql.NullInt64{Int64: now - hour, Valid: true})        // b
-	insert(StatePending, now-8*day, na)                                                  // c
-	insert(StatePending, now-hour, na)                                                   // d
-	insert(StateInflight, now-8*day, na)                                                 // e
+	insert(StateAcked, ms(now-25*hour), sql.NullInt64{Int64: now - day - hour, Valid: true}) // a
+	insert(StateAcked, ms(now-2*hour), sql.NullInt64{Int64: now - hour, Valid: true})        // b
+	insert(StatePending, ms(now-8*day), na)                                                  // c
+	insert(StatePending, ms(now-hour), na)                                                   // d
+	insert(StateInflight, ms(now-8*day), na)                                                 // e
 
 	ackedBefore := now - day     // acked 24h 边界
 	unackedBefore := now - 7*day // unacked 7d 边界
@@ -333,8 +334,14 @@ func TestStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := h.Stats()
-	if st.Users != 2 || st.Heads != 4 || st.Cursors != 1 {
-		t.Fatalf("stats = %+v, want users=2 heads=4 cursors=1", st)
+	// mailbox_seq 是全局自增（P0 迁移语义），故 heads 是各 uid 全局 head 之和，
+	// 不是 per-uid 计数之和；用 Head() 聚合值锁定 Stats 的口径。
+	wantHeads := h.Head(1) + h.Head(2)
+	if st.Users != 2 || st.Heads != wantHeads || st.Cursors != 1 {
+		t.Fatalf("stats = %+v, want users=2 heads=%d cursors=1", st, wantHeads)
+	}
+	if h.Head(2) <= h.Head(1) {
+		t.Fatalf("global seq must be monotonic across uids: head1=%d head2=%d", h.Head(1), h.Head(2))
 	}
 }
 
