@@ -290,7 +290,7 @@ func (p *Plane) OnAck(ctx context.Context, c *Conn, cursor int64, n int) error {
 	c.mu.Unlock()
 
 	if advanced && p.ack != nil {
-		return p.ack(ctx, c.uid, cursor)
+		p.ack(ctx, c.uid, cursor)
 	}
 	return nil
 }
