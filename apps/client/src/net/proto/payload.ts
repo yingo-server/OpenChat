@@ -937,3 +937,67 @@ export function encodeResumeResult(payload: ResumeResultPayload): Uint8Array {
 export function encodePong(clientMs: number, serverMs: number): Uint8Array {
   return encodeJsonPayload({ client_ms: clientMs, server_ms: serverMs });
 }
+
+// ---------------------------------------------------------------------------
+// v3 消息总线 mailbox 帧（docs/v3-bus-design.md §4.1/§4.2）
+// ---------------------------------------------------------------------------
+
+/**
+ * MAILBOX_ACK(15) C→S：累积 ACK —— 确认已消费到 mailbox_seq=cursor（TCP 式）。
+ * wire 形态 camelCase：{cursor, ackedCount?}（proto MailboxAck 字段 1/2；3-9 保留）。
+ */
+export interface MailboxAckPayload {
+  cursor: number;
+  /** 本次批量 ACK 的条数（credit 批量推进提示；缺省 0 = 服务端按 max 语义自算） */
+  ackedCount?: number;
+}
+
+export function encodeMailboxAck(cursor: number, ackedCount?: number): Uint8Array {
+  const body: Record<string, number> = { cursor: Math.max(0, Math.floor(cursor)) };
+  if (ackedCount !== undefined) body.ackedCount = Math.max(0, Math.floor(ackedCount));
+  return encodeJsonPayload(body);
+}
+
+export function decodeMailboxAck(bytes: Uint8Array): MailboxAckPayload {
+  const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
+  return {
+    cursor: num(raw.cursor),
+    ackedCount: raw.ackedCount === undefined ? undefined : num(raw.ackedCount),
+  };
+}
+
+/**
+ * MAILBOX_PAUSE(16) S→C：仅诊断用（正常暂停靠 credit==0 停发，不发帧）。
+ * camelCase：{resumeAtMs?}（proto 字段 1；2-9 保留）。
+ */
+export interface MailboxPausePayload {
+  resumeAtMs?: number;
+}
+
+export function decodeMailboxPause(bytes: Uint8Array): MailboxPausePayload {
+  const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
+  return { resumeAtMs: raw.resumeAtMs === undefined ? undefined : num(raw.resumeAtMs) };
+}
+
+/**
+ * MAILBOX_RESUME(17) C→S：重连/续传请求 —— 语义 = RESUME(6) 的 mailbox 形态。
+ * camelCase：{cursor, limit?}（proto MailboxResume 字段 1/2；3-9 保留）。
+ */
+export interface MailboxResumePayload {
+  cursor: number;
+  limit?: number;
+}
+
+export function encodeMailboxResume(cursor: number, limit?: number): Uint8Array {
+  const body: Record<string, number> = { cursor: Math.max(0, Math.floor(cursor)) };
+  if (limit !== undefined) body.limit = Math.max(0, Math.floor(limit));
+  return encodeJsonPayload(body);
+}
+
+export function decodeMailboxResume(bytes: Uint8Array): MailboxResumePayload {
+  const raw = decodeJsonPayload<Record<string, unknown>>(bytes);
+  return {
+    cursor: num(raw.cursor),
+    limit: raw.limit === undefined ? undefined : num(raw.limit),
+  };
+}

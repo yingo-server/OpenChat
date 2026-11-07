@@ -55,6 +55,11 @@ lint:
 		echo "gofmt 需要格式化的文件:"; echo "$$fmt_out"; exit 1; \
 	fi
 	@bash scripts/importlint.sh
+	@bash scripts/kinds-consistency.sh
+
+# kinds: T-CL-3 双端 kind 常量一致性（v3-bus-design §9 P0）
+kinds:
+	@bash scripts/kinds-consistency.sh
 
 # ---------------------------------------------------------------------------
 # 前端产物 → server/web/{client,admin}

@@ -31,6 +31,14 @@ const (
 	// KeyWatermarkJitterMS 是客户端抖动上界（毫秒）。服务端不参与逻辑，
 	// 仅随 911 FEATURE_FLAGS 下发供压测/诊断读取（§1.3/§2.2）。
 	KeyWatermarkJitterMS = "watermark_jitter_ms"
+
+	// v3 消息总线灰度（docs/v3-bus-design.md §6）。
+	//
+	// KeyV3BusEnabled 默认 false：主干合入时旧路径为唯一投递路径（§9 中间态铁律），
+	// T-SV-5 常驻锁定旧路径行为逐字节同主干。热回滚 = SIGHUP 改此 flag。
+	KeyV3BusEnabled = "v3_bus_enabled"
+	// KeyV3BusPercent 是 v3 灰度百分比（0-100，按 uid 哈希分桶，非按连接随机，§7.3 T-SV-7）。
+	KeyV3BusPercent = "v3_bus_percent"
 )
 
 // Defaults 返回默认 flag 集合的副本。
@@ -46,6 +54,9 @@ func Defaults() map[string]any {
 		KeyWatermarkBatch:      50,
 		KeyWatermarkIntervalMS: 2000,
 		KeyWatermarkJitterMS:   2000,
+
+		KeyV3BusEnabled: false, // v3 总线：主干合入默认关（v3-bus-design §6/§9）
+		KeyV3BusPercent: 0,     // 灰度百分比：P4 阶段 5% 起步
 	}
 }
 

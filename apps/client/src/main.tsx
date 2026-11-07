@@ -30,6 +30,11 @@ import { handleCallAnswer } from './net/protocol/handlers/call-answer';
 import { handleCallCandidate } from './net/protocol/handlers/call-candidate';
 import { handleCallBusy } from './net/protocol/handlers/call-busy';
 import { handleCallHangup } from './net/protocol/handlers/call-hangup';
+import {
+  handleMailboxAck,
+  handleMailboxPause,
+  handleMailboxResume,
+} from './net/protocol/handlers/mailbox';
 
 import { registerRenderer } from './ui/renderers/registry';
 import { TextMessage } from './ui/renderers/text';
@@ -74,6 +79,11 @@ async function main(): Promise<void> {
   registry.register(KINDS.CALL_CANDIDATE, handleCallCandidate);
   registry.register(KINDS.CALL_BUSY, handleCallBusy);
   registry.register(KINDS.CALL_HANGUP, handleCallHangup);
+  // v3 消息总线（docs/v3-bus-design.md §4，P1 客户端先行）：
+  // 15/17 是 C→S 方向，注册防御 handler 保证 mock 回环/灰度误投不炸（T-CL-4）。
+  registry.register(KINDS.MAILBOX_ACK, handleMailboxAck);
+  registry.register(KINDS.MAILBOX_PAUSE, handleMailboxPause);
+  registry.register(KINDS.MAILBOX_RESUME, handleMailboxResume);
 
   registerRenderer('text', TextMessage);
   registerRenderer('image', ImageMessage);

@@ -33,6 +33,12 @@ const (
 	// 并有单测（T-CL-1…T-CL-8），事故根因 #2 的前置条件已满足。
 	// 见 docs/perf-postmortem-v1.2-draft.md。
 	KindWatermark Kind = 14
+
+	// v3 消息总线（docs/v3-bus-design.md §4.1；15-19 为 0-99 系统层新增号段）。
+	// 客户端 handler（P1）与常量同 PR 合入（铁律 2：双端同 PR）。
+	KindMailboxAck    Kind = 15 // C→S 累积 ACK {cursor}
+	KindMailboxPause  Kind = 16 // S→C 仅诊断
+	KindMailboxResume Kind = 17 // C→S 续传 {cursor, limit?}
 )
 
 // -------------------------------------------------------------------
@@ -235,6 +241,9 @@ func init() {
 	register(KindFeatureFlags, "FEATURE_FLAGS")
 	register(KindRateLimited, "RATE_LIMITED")
 	register(KindWatermark, "WATERMARK")
+	register(KindMailboxAck, "MAILBOX_ACK")
+	register(KindMailboxPause, "MAILBOX_PAUSE")
+	register(KindMailboxResume, "MAILBOX_RESUME")
 
 	register(KindMsgSend, "MSG_SEND")
 	register(KindMsgNew, "MSG_NEW")

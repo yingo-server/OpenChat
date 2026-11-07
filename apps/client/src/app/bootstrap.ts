@@ -7,6 +7,7 @@ import { openCache } from '../net/cache/idb';
 import { SyncEngine, type SyncSink } from '../net/sync/engine';
 import { historyLoader } from '../net/sync/history-loader';
 import { configurePullScheduler, pullScheduler, type PullSchedulerDeps } from '../net/sync/pull-scheduler';
+import { configureMailboxSync, mailboxSync } from '../net/sync/mailbox';
 import { Outbox, createLocalStoragePersistence } from '../net/sync/outbox';
 import { createEnvelope } from '../net/proto/codec';
 import { encodeSyncRequest } from '../net/proto/payload';
@@ -153,6 +154,19 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
   net.setResumeProvider(() => engine.resumeTickets());
   outbox.attach(net);
 
+  // v3 mailbox 游标状态机（docs/v3-bus-design.md §2/§4）：ACK(15)/RESUME(17) 上行依赖注入。
+  // ingest 收敛路径（handleMsgNew → engine.ingest 成功）负责调用 mailboxSync.ingest；
+  // 本模块只做游标与发送决策，不写缓存。重连（online）→ 发 kind 17 续传。
+  configureMailboxSync({
+    send: (kind, payload) => net.send(createEnvelope({ kind, payload })),
+    engineLastSeq: (convId) => engine.lastSeq(convId),
+  });
+  useConnStore.subscribe((state, previous) => {
+    if (state.state === previous.state) return;
+    if (state.state === 'online') mailboxSync.onConnState('online');
+    else if (state.state === 'offline') mailboxSync.onConnState('offline');
+  });
+
   // 上滑历史：三段式（本地 → 网络 920/921 → 超时降级），docs/perf-spec-v1.2.md §1.2。
   historyLoader.configure({
     cache: {
@@ -279,6 +293,8 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
       goOffline: () => mock.simulateOffline(),
       goOnline: () => mock.simulateOnline(),
       sendWatermark: (convId: number, latestSeq?: number) => mock.sendWatermark(convId, latestSeq),
+      sendMailboxWatermark: (convId: number, mailboxSeq?: number) =>
+        mock.sendMailboxWatermark(convId, mailboxSeq),
     };
   }
 

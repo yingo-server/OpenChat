@@ -21,6 +21,11 @@ export const KINDS = {
   RATE_LIMITED: 13,
   WATERMARK: 14, // 拉取模式：服务端 → 客户端会话最新 seq 通知（spec v1.2 §1.1；kinds.go 注释确认 14 空闲）
 
+  // v3 消息总线（docs/v3-bus-design.md §4.1，0-99 系统层新增号段 15-19）
+  MAILBOX_ACK: 15, // C→S 累积 ACK：{cursor} 确认已消费到 mailbox_seq=cursor
+  MAILBOX_PAUSE: 16, // S→C 仅诊断：正常暂停靠 credit==0 停发，不发帧
+  MAILBOX_RESUME: 17, // C→S 续传：{cursor}，语义 = RESUME(6) 的 mailbox 形态
+
   // 100-199 消息层
   MSG_SEND: 101,
   MSG_NEW: 102,

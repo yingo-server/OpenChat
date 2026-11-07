@@ -71,6 +71,8 @@ export class MockBridge implements NetClient {
   private readonly _latencyMs = 12;
   private started = false;
   private frameSeq = 0;
+  /** v3 mailbox_seq 分配器（mock 端单写者递增，envelope.id 承载） */
+  private mailboxSeq = 0;
   private convs: MockConv[] = [];
   /** mock 媒体仓库：media_id → blob（`media/{id}` 语义的内存版） */
   private mediaBlobs = new Map<string, Blob>();
@@ -198,6 +200,30 @@ export class MockBridge implements NetClient {
     this.emit(KINDS.WATERMARK, {
       convId,
       payload: encodeWatermark({ convId, latestSeq: seq, reason, memberCount: conv.members.length }),
+    });
+    return true;
+  }
+
+  /**
+   * v3 mailbox 水线注入（docs/v3-bus-design.md §2/§4，mock 端到端用）。
+   * v3 语义下服务端下行帧的 envelope.id 即 mailbox_seq（单写者递增）；本方法
+   * 以自增 mailboxSeq 发 WATERMARK(14) 指针帧（大群水位线形态），走真实
+   * dispatch → handler 链路，供 MailboxSync 游标/ACK 状态机的 mock 验证。
+   */
+  sendMailboxWatermark(convId: number, mailboxSeq?: number): boolean {
+    const conv = this.convs.find((candidate) => candidate.convId === convId);
+    if (!conv) return false;
+    if (mailboxSeq === undefined) this.mailboxSeq += 1;
+    else this.mailboxSeq = Math.max(this.mailboxSeq, mailboxSeq);
+    this.emit(KINDS.WATERMARK, {
+      id: this.mailboxSeq,
+      convId,
+      payload: encodeWatermark({
+        convId,
+        latestSeq: conv.serverSeq,
+        reason: 0,
+        memberCount: conv.members.length,
+      }),
     });
     return true;
   }
@@ -542,11 +568,11 @@ export class MockBridge implements NetClient {
 
   private emit(
     kind: number,
-    options: { convId?: number; userId?: number; payload: Uint8Array; requestId?: string },
+    options: { id?: number; convId?: number; userId?: number; payload: Uint8Array; requestId?: string },
   ): void {
     if (this._state !== 'online') return;
     const env = createEnvelope({
-      id: ++this.frameSeq,
+      id: options.id ?? ++this.frameSeq,
       kind,
       requestId: options.requestId,
       convId: options.convId,
