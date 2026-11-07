@@ -36,6 +36,7 @@ import (
 	"github.com/yingo-server/OpenDiscord/server/internal/authsvc"
 	"github.com/yingo-server/OpenDiscord/server/internal/bridge"
 	"github.com/yingo-server/OpenDiscord/server/internal/bridge/adminapi"
+	"github.com/yingo-server/OpenDiscord/server/internal/bus/delivery"
 	"github.com/yingo-server/OpenDiscord/server/internal/data/pipe"
 	"github.com/yingo-server/OpenDiscord/server/internal/data/policy"
 	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
@@ -78,6 +79,7 @@ type assembly struct {
 	adminREST *admin.Server
 	jobs      *jobPlane
 	adminKey  []byte
+	v3        *WireV3 // P3c：v3 总线句柄（构造但不接线，§9 中间态）
 
 	started time.Time
 }
@@ -335,6 +337,17 @@ func newAssembly(cfg *config, lg *log.Logger) (*assembly, error) {
 	p.SetTrunkee(a.jobs)
 	if coldDB == nil {
 		lg.Info("job plane wired in degraded mode (no cold store): archive dry-run only, real runs fail with a clear error")
+	}
+
+	// 13. v3 bus wire (P3c): construct the mailbox hub + delivery plane on the
+	// same hot DB. Bypass-only: nothing in fanout/user/pipe references it, so
+	// flag-off behavior is byte-identical to the pre-P3c binary (§9). A nil
+	// result never blocks startup — log loudly and continue on the old
+	// delivery path, which remains the only delivery path until P3d.
+	if w := newV3Wire(hot.DB, a.flags.Snapshot, delivery.Config{}); w != nil {
+		a.v3 = w
+	} else {
+		lg.Warn("v3 bus wire unavailable; continuing on legacy delivery path (P3d split pending)")
 	}
 	return a, nil
 }
