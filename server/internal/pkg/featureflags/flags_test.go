@@ -17,15 +17,14 @@ func TestDefaults(t *testing.T) {
 	}
 }
 
-// TestPullModeThresholdDefaultsToZero 锁定规范 §6.4 的中间态铁律：
-// 服务端代码合入时 pull_mode_threshold 必须默认 0（禁用），因此合并后行为
-// 与主干逐字节一致；启用是后续单独的一次 flag 变更。
-func TestPullModeThresholdDefaultsToZero(t *testing.T) {
-	if got := New().Int(KeyPullModeThreshold, -1); got != 0 {
-		t.Fatalf("pull_mode_threshold default = %d, want 0 (disabled)", got)
+// TestPullModeThresholdDefaultEnabled 锁定单阶段定调（2026-11-02）：
+// 客户端先行落地后服务端默认直接启用，阈值 100；热回滚 = 改 flag 回 0。
+func TestPullModeThresholdDefaultEnabled(t *testing.T) {
+	if got := New().Int(KeyPullModeThreshold, -1); got != 100 {
+		t.Fatalf("pull_mode_threshold default = %d, want 100 (single-stage enabled)", got)
 	}
-	if got, ok := Defaults()[KeyPullModeThreshold]; !ok || got != 0 {
-		t.Fatalf("Defaults()[%s] = %v (present=%v), want 0", KeyPullModeThreshold, got, ok)
+	if got, ok := Defaults()[KeyPullModeThreshold]; !ok || got != 100 {
+		t.Fatalf("Defaults()[%s] = %v (present=%v), want 100", KeyPullModeThreshold, got, ok)
 	}
 }
 
