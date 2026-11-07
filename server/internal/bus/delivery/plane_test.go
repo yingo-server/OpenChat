@@ -173,10 +173,12 @@ func TestTSV2CreditFlowControl(t *testing.T) {
 		t.Fatalf("dropped = %d, want 0", sender.dropped)
 	}
 
-	// ACK 批量推进（mailbox_ack_window=128 语义，§6）：推进 credit 继续发。
+	// ACK 批量推进（mailbox_ack_window=128 语义，§6）：对已发出的 cursor 确认并
+	// 归还 credit（+128），Pump 从真实 cursor 续发 —— 不得预支未发送的游标，
+	// 否则 OnAck 会把 cursor 跳过未发条目造成丢失。
 	for c.Cursor() < head {
 		cur := c.Cursor()
-		if err := p.OnAck(ctx, c, cur+128, 128); err != nil {
+		if err := p.OnAck(ctx, c, cur, 128); err != nil {
 			t.Fatalf("OnAck: %v", err)
 		}
 		if res := p.Pump(ctx, c); res.Err != nil {
@@ -229,23 +231,29 @@ func TestTSV3BackpressurePropagation(t *testing.T) {
 		t.Fatalf("total cursor = %d, want 16; stranded = %d", total, 20-total)
 	}
 
-	// 恢复：批量 ACK 推进 credit → 全量收敛（20/20 发出）。
+	// 恢复：对已发 cursor 确认并归还 credit（+4）→ 全量收敛（20/20 发出）。
+	// 不预支游标（cursor+n 会让 Pump 跳过未发条目）。
 	for c1.Cursor() < 20 || c2.Cursor() < 20 {
 		if c1.Cursor() < 20 {
-			_ = p.OnAck(ctx, c1, c1.Cursor()+4, 4)
+			_ = p.OnAck(ctx, c1, c1.Cursor(), 4)
 			if r := p.Pump(ctx, c1); r.Err != nil {
 				t.Fatalf("c1 pump: %v", r.Err)
 			}
 		}
 		if c2.Cursor() < 20 {
-			_ = p.OnAck(ctx, c2, c2.Cursor()+4, 4)
+			_ = p.OnAck(ctx, c2, c2.Cursor(), 4)
 			if r := p.Pump(ctx, c2); r.Err != nil {
 				t.Fatalf("c2 pump: %v", r.Err)
 			}
 		}
 	}
-	if s1.count()+s2.count() != 20 {
-		t.Fatalf("total sent = %d, want 20", s1.count()+s2.count())
+	if s1.count()+s2.count() != 40 {
+		t.Fatalf("total sent = %d, want 40 (each of 2 devices receives full stream, §3.4)", s1.count()+s2.count())
+	}
+	// 全部 cursor 追上 head 后，两 conn 不再 PAUSED → uid 不再 BACKPRESSURED。
+	if c1.Credit() == 0 || c2.Credit() == 0 {
+		_ = p.OnAck(ctx, c1, 20, 4)
+		_ = p.OnAck(ctx, c2, 20, 4)
 	}
 	st = p.Stats()
 	if st.Backpressured != 0 {
@@ -347,18 +355,19 @@ func TestMultiDeviceIndependence(t *testing.T) {
 	if cs.Cursor() != 4 || cf.Cursor() != 4 {
 		t.Fatalf("cursors: slow=%d fast=%d, want 4/4 (independent)", cs.Cursor(), cf.Cursor())
 	}
+	// ACK 只推进一个 conn 的 credit，互不串扰：cf 确认 4 条归还 credit。
+	_ = p.OnAck(ctx, cf, 4, 4)
 	st := p.Stats()
 	if st.PausedConns != 1 || st.Backpressured != 0 {
 		t.Fatalf("stats: paused=%d backpressured=%d, want 1/0 (one paused conn, uid not fully blocked)",
 			st.PausedConns, st.Backpressured)
 	}
-	// ACK 只推进一个 conn 的 credit，互不串扰。
-	_ = p.OnAck(ctx, cf, 4, 4)
-	if r := p.Pump(ctx, cf); r.Err != nil || r.Sent != 4 {
-		t.Fatalf("fast repump: sent=%d err=%v", r.Sent, r.Err)
-	}
 	if cs.Credit() != 0 {
 		t.Fatalf("slow conn credit = %d, want 0 (independent)", cs.Credit())
+	}
+	// cf 用归还的 credit 续发（每设备收全量流，§3.4）。
+	if r := p.Pump(ctx, cf); r.Err != nil || r.Sent != 4 {
+		t.Fatalf("fast repump: sent=%d err=%v", r.Sent, r.Err)
 	}
 }
 
