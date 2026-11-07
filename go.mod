@@ -1,4 +1,4 @@
-module github.com/yingo-server/OpenChat
+module github.com/yingo-server/OpenDiscord
 
 go 1.22
 

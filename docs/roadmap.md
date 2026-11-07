@@ -1,4 +1,4 @@
-# OpenChat 路线图
+# OpenDiscord 路线图
 
 > 状态以代码与 `docs/lts-checklist.md` 为准。本文件只列方向与判据，不承诺日期。
 
@@ -29,7 +29,7 @@
 **怎么做**：把 pgx 驱动注册进装配（`server/cmd/chatd`），冷库不可用时按
 `require_audit_store` 显式拒启（已有开关，只是驱动没接）。
 
-**判据**：配好 `cold_dsn` 后 `openchatctl doctor` 的 `audit_store` 为 OK；
+**判据**：配好 `cold_dsn` 后 `opendiscordctl doctor` 的 `audit_store` 为 OK；
 撤回/成员变更/通话的审计事件能在冷库 `sys.audit_log` 里按 since_id 翻到；
 `GET /api/v1/audit` 返回真实数据而非降级日志。
 

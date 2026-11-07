@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/yingo-server/OpenChat/server/internal/admin"
-	"github.com/yingo-server/OpenChat/server/internal/admin/bridgeproxy"
-	adminstore "github.com/yingo-server/OpenChat/server/internal/admin/store"
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/admin"
+	"github.com/yingo-server/OpenDiscord/server/internal/admin/bridgeproxy"
+	adminstore "github.com/yingo-server/OpenDiscord/server/internal/admin/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
 )
 
 type nopJournal struct{}

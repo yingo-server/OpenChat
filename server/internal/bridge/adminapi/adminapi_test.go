@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/yingo-server/OpenChat/server/internal/proto"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto"
 )
 
 type fakeBus struct {

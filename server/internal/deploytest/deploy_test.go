@@ -32,9 +32,9 @@ func runScript(t *testing.T, script string, args ...string) (string, int) {
 	t.Helper()
 	cmd := exec.Command("bash", append([]string{script}, args...)...)
 	cmd.Env = append(os.Environ(),
-		"OPENCHAT_PREFIX="+t.TempDir(),
-		"OPENCHAT_ETC="+t.TempDir(),
-		"OPENCHAT_STATE="+t.TempDir(),
+		"OPENDISCORD_PREFIX="+t.TempDir(),
+		"OPENDISCORD_ETC="+t.TempDir(),
+		"OPENDISCORD_STATE="+t.TempDir(),
 	)
 	out, err := cmd.CombinedOutput()
 	code := 0

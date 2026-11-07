@@ -1,19 +1,19 @@
 package pipe
 
 import (
-	"github.com/yingo-server/OpenChat/server/internal/data/domain/identity"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/domain/identity"
 
 	"context"
 	"sync"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/cache"
-	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
-	"github.com/yingo-server/OpenChat/server/internal/data/store/sqlite"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/featureflags"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
-	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
-	"github.com/yingo-server/OpenChat/server/internal/transport"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/cache"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/pipe/wire"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store/sqlite"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/featureflags"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenDiscord/server/internal/transport"
 )
 
 // ColdDeps bundles the optional cold-store dependencies of the pipe. Any nil
@@ -281,6 +281,9 @@ func (p *Pipe) sendOne(e *env) {
 	p.sendMu.Lock()
 	err := p.peer.Send(p.emit(e))
 	p.sendMu.Unlock()
+	// sharedFrame 引用计数：成功路径也要释放（b5b63d2 的 revert 误删了这一行，
+	// 导致成功投递的扇出帧 refs 永不归零——审计 2026-11-07 #2）。
+	e.releaseShared()
 	if err != nil {
 		p.lg.Warn("pipe: peer send failed", "err", err.Error())
 	}

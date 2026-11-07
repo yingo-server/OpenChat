@@ -1,4 +1,4 @@
-# OpenChat API 参考（1.0）
+# OpenDiscord API 参考（1.0）
 
 > 本文档只描述**代码中真实存在且经 `go test ./server/cmd/chatd -run TestAPIContract` 实测**的接口。
 > 所有字段名、路径、错误码均取自源码（见每节"源码"行）。凡代码未实现的能力一律标注 **⚠️ 未实现**。
@@ -9,7 +9,7 @@
 
 ## 1. 概览
 
-OpenChat 有 **两个 HTTP 面 + 一个 WebSocket 面**，全部由同一个 `chatd` 进程内的真实组件提供。
+OpenDiscord 有 **两个 HTTP 面 + 一个 WebSocket 面**，全部由同一个 `chatd` 进程内的真实组件提供。
 
 | 面 | 监听配置项 | 默认地址 | 作用 |
 |----|-----------|---------|------|

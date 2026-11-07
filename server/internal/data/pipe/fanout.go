@@ -37,11 +37,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/featureflags"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
-	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/pipe/wire"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/featureflags"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/kinds"
 )
 
 // Fan-out tuning. These are MECHANISM constants (buffer sizes, window

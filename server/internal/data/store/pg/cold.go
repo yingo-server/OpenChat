@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
 )
 
 // ColdDB is the cold store handle. Implements:

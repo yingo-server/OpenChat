@@ -16,11 +16,11 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
-	"github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
-	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
-	"github.com/yingo-server/OpenChat/server/internal/user/net/frame"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/pipe/wire"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/gen/chatpb"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenDiscord/server/internal/user/net/frame"
 )
 
 func writeCallFrame(t *testing.T, conn *websocket.Conn, id uint64, kind uint32, cid int64, sig wire.CallSignal) {

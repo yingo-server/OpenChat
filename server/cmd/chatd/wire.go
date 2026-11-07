@@ -25,14 +25,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yingo-server/OpenChat/server/internal/bridge/router"
-	"github.com/yingo-server/OpenChat/server/internal/data/pipe"
-	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
-	"github.com/yingo-server/OpenChat/server/internal/proto"
-	"github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
-	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
-	"github.com/yingo-server/OpenChat/server/internal/user/net/frame"
+	"github.com/yingo-server/OpenDiscord/server/internal/bridge/router"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/pipe"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/pipe/wire"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/gen/chatpb"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenDiscord/server/internal/user/net/frame"
 )
 
 // uidResolver maps an entry connection id back to its authenticated uid.

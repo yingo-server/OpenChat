@@ -95,7 +95,7 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  console.error('[openchat] bootstrap failed', error);
+  console.error('[opendiscord] bootstrap failed', error);
   const container = document.getElementById('root');
   if (container) {
     container.innerHTML =

@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/yingo-server/OpenChat/server/internal/admin/auditshim"
-	"github.com/yingo-server/OpenChat/server/internal/admin/middleware"
-	"github.com/yingo-server/OpenChat/server/internal/admin/service"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/admin/auditshim"
+	"github.com/yingo-server/OpenDiscord/server/internal/admin/middleware"
+	"github.com/yingo-server/OpenDiscord/server/internal/admin/service"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
 )
 
 // Config controls cookies and proxy trust for the admin HTTP surface.

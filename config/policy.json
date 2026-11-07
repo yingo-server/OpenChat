@@ -8,7 +8,7 @@
   },
   "backup": {
     "cron": "30 5 * * *",
-    "dir": "/var/lib/openchat/backup",
+    "dir": "/var/lib/opendiscord/backup",
     "keep_days": 14
   },
   "trim": [

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/kinds"
 )
 
 // TestTypingPayloadCapEnforced: the four "0 B / no payload" kinds (TYPING and

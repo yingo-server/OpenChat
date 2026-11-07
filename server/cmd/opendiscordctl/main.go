@@ -70,10 +70,10 @@ func run(args []string, e *environment) int {
 	return exitOK
 }
 
-const usageText = `openchatctl — OpenChat 系统级运维 CLI（直连本机 systemd/信号/热库；不新增网络端口）
+const usageText = `opendiscordctl — OpenDiscord 系统级运维 CLI（直连本机 systemd/信号/热库；不新增网络端口）
 
 用法:
-  openchatctl [全局选项] <命令> [参数]
+  opendiscordctl [全局选项] <命令> [参数]
 
 命令:
   status    [--unit NAME] [--hot-db PATH] [--signal usr1|usr2|none] [--no-journal]
@@ -96,16 +96,16 @@ const usageText = `openchatctl — OpenChat 系统级运维 CLI（直连本机 s
 
 全局选项:
   --json                    统一 JSON 输出（ok/command/data 信封）
-  --admin-url URL           管理 API 地址（env OPENCHAT_ADMIN_URL）
-  --token TOKEN             管理令牌（env OPENCHAT_ADMIN_TOKEN）
-  --csrf-token TOKEN        CSRF 令牌（env OPENCHAT_ADMIN_CSRF）
+  --admin-url URL           管理 API 地址（env OPENDISCORD_ADMIN_URL）
+  --token TOKEN             管理令牌（env OPENDISCORD_ADMIN_TOKEN）
+  --csrf-token TOKEN        CSRF 令牌（env OPENDISCORD_ADMIN_CSRF）
   --timeout DURATION        总超时（默认 20s）
 
 环境变量:
-  OPENCHAT_HOT_DB           热库路径（默认 /var/lib/openchat/hot.db）
-  OPENCHAT_COLD_DSN         冷库 DSN（doctor 只做 TCP 连通检查）
-  OPENCHAT_BACKUP_SCRIPT    自定义备份脚本
-  OPENCHAT_ADMIN_CREDENTIALS adminctl 凭据文件路径（默认 ~/.config/openchat/adminctl.json）
+  OPENDISCORD_HOT_DB           热库路径（默认 /var/lib/opendiscord/hot.db）
+  OPENDISCORD_COLD_DSN         冷库 DSN（doctor 只做 TCP 连通检查）
+  OPENDISCORD_BACKUP_SCRIPT    自定义备份脚本
+  OPENDISCORD_ADMIN_CREDENTIALS adminctl 凭据文件路径（默认 ~/.config/opendiscord/adminctl.json）
 
 退出码: 0 成功 / 1 错误（doctor 有 FAIL）/ 64 语法 / 65 目标不存在 / 77 未授权或未登录
 未配置管理令牌时：先运行 adminctl login。

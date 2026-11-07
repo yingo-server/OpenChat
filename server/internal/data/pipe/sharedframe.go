@@ -26,7 +26,7 @@ package pipe
 import (
 	"sync/atomic"
 
-	"github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/gen/chatpb"
 )
 
 // encodeFunc serialises a recipient-independent Envelope body. It is injectable

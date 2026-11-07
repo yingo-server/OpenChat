@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/pipe/pipefakes"
-	"github.com/yingo-server/OpenChat/server/internal/data/pipe/wire"
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/featureflags"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
-	"github.com/yingo-server/OpenChat/server/internal/proto/gen/chatpb"
-	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/pipe/pipefakes"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/pipe/wire"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/featureflags"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/gen/chatpb"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/kinds"
 )
 
 // ---------------------------------------------------------------------------

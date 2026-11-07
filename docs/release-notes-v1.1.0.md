@@ -1,4 +1,4 @@
-# OpenChat v1.1.0 发布说明
+# OpenDiscord v1.1.0 发布说明
 
 > 面向从 v1.0.0 升级的运维与集成方。
 > 版本：v1.1.0（2026-11-05）｜上一版本：v1.0.0
@@ -23,7 +23,7 @@
 
 ## 2. 升级步骤
 
-> 以下命令按默认安装位置（`/etc/openchat`、`/var/lib/openchat`、systemd 单元 `openchat`）书写，请按实际部署调整路径。
+> 以下命令按默认安装位置（`/etc/opendiscord`、`/var/lib/opendiscord`、systemd 单元 `opendiscord`）书写，请按实际部署调整路径。
 > **升级前务必先停机备份**，升级不可逆（见第 6 节回滚）。
 
 **① 备份数据与配置**
@@ -32,26 +32,26 @@
 # 停机前先跑一次一致性备份（热库 + 管理库 + 配置）
 sudo bash deploy/backup.sh
 # 或直接用运维 CLI：
-sudo openchatctl backup
+sudo opendiscordctl backup
 
 # 额外留一份配置与数据目录快照，便于回滚
-sudo cp -a /etc/openchat /etc/openchat.bak-$(date +%F)
-sudo cp -a /var/lib/openchat /var/lib/openchat.bak-$(date +%F)
+sudo cp -a /etc/opendiscord /etc/opendiscord.bak-$(date +%F)
+sudo cp -a /var/lib/opendiscord /var/lib/opendiscord.bak-$(date +%F)
 ```
 
 **② 停止服务**
 
 ```sh
-sudo systemctl stop openchat
+sudo systemctl stop opendiscord
 ```
 
 **③ 替换二进制**
 
 ```sh
 # 方式 A：解压官方发布包，覆盖二进制
-tar -xzf openchat-v1.1.0-linux-$(uname -m | sed 's/x86_64/x86_64/').tar.gz -C /tmp/openchat-new
-sudo install -m 0755 /tmp/openchat-new/chatd          /usr/local/bin/chatd
-sudo install -m 0755 /tmp/openchat-new/openchatctl     /usr/local/bin/openchatctl
+tar -xzf opendiscord-v1.1.0-linux-$(uname -m | sed 's/x86_64/x86_64/').tar.gz -C /tmp/opendiscord-new
+sudo install -m 0755 /tmp/opendiscord-new/chatd          /usr/local/bin/chatd
+sudo install -m 0755 /tmp/opendiscord-new/opendiscordctl     /usr/local/bin/opendiscordctl
 
 # 方式 B：直接重跑安装器（会自动装好二进制、单元、目录权限、管理员）
 sudo bash deploy/install.sh \
@@ -68,22 +68,22 @@ sudo bash deploy/install.sh \
 - 若要开放通话，把 feature flag `call_enabled` 置为 `true`（默认 false）。
 
 ```sh
-sudo systemctl reload openchat   # SIGHUP：重读 policy.json 与白名单
+sudo systemctl reload opendiscord   # SIGHUP：重读 policy.json 与白名单
 ```
 
 **⑤ 启动并验证**
 
 ```sh
-sudo systemctl restart openchat
-sudo systemctl status openchat --no-pager
+sudo systemctl restart opendiscord
+sudo systemctl status opendiscord --no-pager
 
 # 健康检查
 curl -fsS http://127.0.0.1:8080/healthz && echo OK
 # 版本与会诊
-openchatctl version
-openchatctl doctor
+opendiscordctl version
+opendiscordctl doctor
 # 查看当前 feature flags（确认 call_enabled 等符合预期）
-openchatctl flags list
+opendiscordctl flags list
 ```
 
 ---
@@ -113,8 +113,8 @@ openchatctl flags list
 | 参数 | 对应落地 | 说明 |
 |---|---|---|
 | `--domain URL` | 写入 `public_origin` | 必须带 scheme；v1.1 修复了此前参数被丢弃的 bug。 |
-| `--admin-user U` / `--admin-pass-file PATH` | 首启管理员引导（写入 `/etc/openchat/env`，0600） | 不使用命令行明文密码。 |
-| `--cold-dsn DSN` | 写入 env（`OPENCHAT_COLD_DSN`） | 可选。 |
+| `--admin-user U` / `--admin-pass-file PATH` | 首启管理员引导（写入 `/etc/opendiscord/env`，0600） | 不使用命令行明文密码。 |
+| `--cold-dsn DSN` | 写入 env（`OPENDISCORD_COLD_DSN`） | 可选。 |
 | `--turn-server U` | 写入配置注释（`deploy/coturn` 模板） | 通话需自备 TURN，未配凭据前不生效。 |
 | `--lang zh\|en` | 输出语言 | 默认跟随 `LANG`/`LC_ALL`。 |
 
@@ -149,21 +149,21 @@ openchatctl flags list
 
 ```sh
 # 1) 停服
-sudo systemctl stop openchat
+sudo systemctl stop opendiscord
 
 # 2) 还原二进制
 sudo install -m 0755 /path/to/v1.0.0/chatd        /usr/local/bin/chatd
-sudo install -m 0755 /path/to/v1.0.0/openchatctl   /usr/local/bin/openchatctl
+sudo install -m 0755 /path/to/v1.0.0/opendiscordctl   /usr/local/bin/opendiscordctl
 
 # 3) 还原配置与数据（使用第 2 步制作的快照）
-sudo rm -rf /etc/openchat /var/lib/openchat
-sudo cp -a /etc/openchat.bak-YYYY-MM-DD   /etc/openchat
-sudo cp -a /var/lib/openchat.bak-YYYY-MM-DD /var/lib/openchat
+sudo rm -rf /etc/opendiscord /var/lib/opendiscord
+sudo cp -a /etc/opendiscord.bak-YYYY-MM-DD   /etc/opendiscord
+sudo cp -a /var/lib/opendiscord.bak-YYYY-MM-DD /var/lib/opendiscord
 
 # 4) 起服并验证
-sudo systemctl start openchat
-openchatctl version   # 应显示 v1.0.0
+sudo systemctl start opendiscord
+opendiscordctl version   # 应显示 v1.0.0
 curl -fsS http://127.0.0.1:8080/healthz && echo OK
 ```
 
-> 提示：回滚前先用 `openchatctl backup` / `deploy/backup.sh` 再抓一份当前状态，避免丢失升级后产生的新数据。
+> 提示：回滚前先用 `opendiscordctl backup` / `deploy/backup.sh` 再抓一份当前状态，避免丢失升级后产生的新数据。

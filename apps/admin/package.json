@@ -1,8 +1,8 @@
 {
-  "name": "@openchat/admin",
+  "name": "@opendiscord/admin",
   "private": true,
   "version": "0.1.0",
-  "description": "OpenChat 管理后台 (ops console)",
+  "description": "OpenDiscord 管理后台 (ops console)",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

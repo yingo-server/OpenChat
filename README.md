@@ -1,4 +1,4 @@
-# OpenChat
+# OpenDiscord
 
 自托管的即时通讯服务：单聊、群聊、图片/语音/文件、语音视频通话、多设备同步。
 数据在你自己的服务器上，不经过任何第三方。
@@ -26,7 +26,7 @@
 **管理与运维**
 - Web 管理后台：仪表盘（实时指标 + 趋势图）、用户/举报/广播/开关/归档/审计
 - `opchat`：纯终端管理台，7 个标签页，适合 SSH 里快速处理
-- `openchatctl` / `adminctl`：脚本化命令行，退出码可编排
+- `opendiscordctl` / `adminctl`：脚本化命令行，退出码可编排
 - 全中英双语，界面语言自动跟随系统
 
 **数据自主**
@@ -95,7 +95,7 @@ CI 2 核 runner、无限流、20 秒稳态、mixed 负载。7cb04fc = 发送路�
 |---|---|---|
 | Linux | x86_64 / x86 / arm64 / armv7 / riscv64 | `.tar.gz`（静态链接 SQLite） |
 | Windows | x86_64 / x86 | `.zip` |
-| 源码 | — | `openchat-<ver>-src.tar.gz` |
+| 源码 | — | `opendiscord-<ver>-src.tar.gz` |
 
 Windows on ARM / ARM64 暂无产物（缺 mingw CGO 工具链），见 [已知问题](docs/known-issues.md#3-windows-arm--arm64-不提供构建产物)。
 
@@ -108,12 +108,12 @@ Windows on ARM / ARM64 暂无产物（缺 mingw CGO 工具链），见 [已知�
 ### 安装
 
 ```bash
-# 1. 下载（版本号见 https://github.com/yingo-server/OpenChat/releases）
+# 1. 下载（版本号见 https://github.com/yingo-server/OpenDiscord/releases）
 V=1.1.0
-curl -LO https://github.com/yingo-server/OpenChat/releases/download/v$V/openchat-v$V-linux-amd64.tar.gz
-curl -LO https://github.com/yingo-server/OpenChat/releases/download/v$V/SHA256SUMS
+curl -LO https://github.com/yingo-server/OpenDiscord/releases/download/v$V/opendiscord-v$V-linux-amd64.tar.gz
+curl -LO https://github.com/yingo-server/OpenDiscord/releases/download/v$V/SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing
-tar -xzf openchat-v$V-linux-amd64.tar.gz
+tar -xzf opendiscord-v$V-linux-amd64.tar.gz
 
 # 2. 安装（交互式向导；无 TTY 时自动降级为参数模式）
 sudo ./deploy/install-interactive
@@ -123,21 +123,21 @@ sudo ./deploy/install-interactive
 #      --admin-user admin --admin-pass-file /root/admin.pass --lang zh
 
 # 3. 启动
-sudo systemctl enable --now openchat
+sudo systemctl enable --now opendiscord
 ```
 
 打开 `https://你的域名` 即可使用。首次启动会创建管理员账号并打印一次性的
-TOTP 密钥（用 `journalctl -u openchat | grep otpauth` 查看），请立即在认证器里登记。
+TOTP 密钥（用 `journalctl -u opendiscord | grep otpauth` 查看），请立即在认证器里登记。
 
 ### 升级
 
 ```bash
 # 备份 → 替换二进制 → 重启（详见 docs/deploy.md §7）
-sudo openchatctl backup
-sudo systemctl stop openchat
+sudo opendiscordctl backup
+sudo systemctl stop opendiscord
 # 替换 releases/<ver> 下的二进制并切换 current 符号链接
-sudo systemctl start openchat
-sudo openchatctl doctor
+sudo systemctl start opendiscord
+sudo opendiscordctl doctor
 ```
 
 > **从 v1.0 升级到 v1.1 必须做一次热库转换**（启用 auto_vacuum，否则磁盘只涨不落），
@@ -147,19 +147,19 @@ sudo openchatctl doctor
 
 | 命令 | 用途 |
 |---|---|
-| `openchatctl status` | 服务状态、进程信息、热库统计 |
-| `openchatctl doctor` | 体检：数据库完整性、磁盘空间、日志错误、冷库连通、审计存储 |
-| `openchatctl backup [--dry-run]` | 备份热库与配置 |
-| `openchatctl ban <uid> --days 7` | 封禁用户 |
-| `openchatctl unban <uid>` | 解封 |
-| `openchatctl flags list` / `flags set k=v` | 查看/修改功能开关 |
-| `openchatctl archive --dry-run` / `--run` | 归档预演 / 执行 |
-| `openchatctl migrate thumbs [--dry-run]` | 把旧版存在数据库里的缩略图迁到文件系统 |
+| `opendiscordctl status` | 服务状态、进程信息、热库统计 |
+| `opendiscordctl doctor` | 体检：数据库完整性、磁盘空间、日志错误、冷库连通、审计存储 |
+| `opendiscordctl backup [--dry-run]` | 备份热库与配置 |
+| `opendiscordctl ban <uid> --days 7` | 封禁用户 |
+| `opendiscordctl unban <uid>` | 解封 |
+| `opendiscordctl flags list` / `flags set k=v` | 查看/修改功能开关 |
+| `opendiscordctl archive --dry-run` / `--run` | 归档预演 / 执行 |
+| `opendiscordctl migrate thumbs [--dry-run]` | 把旧版存在数据库里的缩略图迁到文件系统 |
 | `opchat` | 打开终端管理台（交互式） |
 | `adminctl users list --q 张` | 检索用户（脚本化） |
 | `adminctl broadcast send --text "..."` | 全站广播 |
 
-日志：`journalctl -u openchat -f`　　Dump 内部状态：`kill -USR1 $(pidof openchat)`
+日志：`journalctl -u opendiscord -f`　　Dump 内部状态：`kill -USR1 $(pidof opendiscord)`
 
 ## 文档
 

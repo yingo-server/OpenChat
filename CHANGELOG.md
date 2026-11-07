@@ -1,6 +1,6 @@
 # 变更日志
 
-本文件记录 OpenChat 的版本变更。格式参考 Keep a Changelog，版本号遵循语义化版本。
+本文件记录 OpenDiscord 的版本变更。格式参考 Keep a Changelog，版本号遵循语义化版本。
 
 ## [1.2.0] - 2026-11-02
 
@@ -134,7 +134,7 @@
 - 在线状态语义反转：presence 解码只认 `status` 字符串，上线事件被判成下线；现按事件 kind 判定上下线。
 - 撤回跨设备失效：历史拉取不返回 recalled 标记，换设备后撤回消息原文重现；现历史与实时都带 `rn` 撤回标记。
 - `install.sh --domain` 未生效：参数解析后被丢弃，`public_origin` 为空、同源校验与 Secure Cookie 判定走宽松分支；现 `--domain` 真正写入 `public_origin`。
-- CLI flag 顺序：Go flag 遇位置参数即停止解析，`users ban 42 --level 2 --days 7` 实际发出默认值（"禁 7 天 2 级"变成"永久 1 级"）；现解析前先提升 flag token（`openchatctl`/`adminctl`）。
+- CLI flag 顺序：Go flag 遇位置参数即停止解析，`users ban 42 --level 2 --days 7` 实际发出默认值（"禁 7 天 2 级"变成"永久 1 级"）；现解析前先提升 flag token（`opendiscordctl`/`adminctl`）。
 - 压测假通过：可用性分母为 0 时算成 100%，什么都没测到却判 PASS；现分母为 0 直接判失败。
 
 ## [1.0.0] - 2026-10-29
@@ -148,10 +148,10 @@
 - 总线与桥接层：进程内/远程 Peer（TCP/UDS）、HMAC 握手（双钥轮换、±30s 窗口、10 万 nonce 防重放）、8 组件桥接流水线（framerw/verifier/router/egress/ack/session/adminapi/supervisor）、16 路总线 fanout、有界队列背压与优雅排空。
 - 数据层：SQLite 热库（WAL、`RETURNING` seq 分配、keyset 分页）、PostgreSQL 冷库（分区归档、trgm 全文检索、哈希链审计）、21 张分域表与版本化迁移、policy 热加载、写管道（seqalloc/dedup/flusher，1000 条或 50ms 组提交）。
 - 用户层：WebSocket 网关（升级前 Cookie 鉴权、按 kind 令牌桶、16 路会话分片、七步优雅排空）；`/api/auth/*` 认证服务（手机 OTP、邮箱 magic link、密码、游客、refresh 轮换与重放检测、Ed25519 签发、登录锁定 5 次→15m/1h/24h）。
-- 管理面：独立 `admin.db`、TOTP + RBAC 三角色、常量时间 CSRF 校验、幂等键、审计游标、管理 REST（`/api/v1/*` 挂载在 `admin_rest_listen`）、`adminctl` / `openchatctl` 运维 CLI。
+- 管理面：独立 `admin.db`、TOTP + RBAC 三角色、常量时间 CSRF 校验、幂等键、审计游标、管理 REST（`/api/v1/*` 挂载在 `admin_rest_listen`）、`adminctl` / `opendiscordctl` 运维 CLI。
 - 前端：用户端 SPA（net/core/ui 分层、IndexedDB 单一真源、seq 收敛与 gap buffer、乐观 outbox、渲染器注册表、消息列表虚拟滚动）与管理控制台；两端产物经 `go:embed` 内嵌进单二进制。
 - 媒体：`POST /api/media/upload` 与 `GET /api/media/{id}`（magic bytes 校验、扩展名一致、类型/大小上限、每日 50 次限流、内容寻址去重）。
-- 部署件：systemd 加固单元、Caddyfile、install/backup/release 脚本、`openchat-<ver>-linux-<arch>.tar.gz` + `SHA256SUMS` 发布包。
+- 部署件：systemd 加固单元、Caddyfile、install/backup/release 脚本、`opendiscord-<ver>-linux-<arch>.tar.gz` + `SHA256SUMS` 发布包。
 
 ### Fixed
 
@@ -176,14 +176,14 @@
 
 ### Fixed
 
-- 发布构建：`VERSION` 不再因 `make web` 重写 `server/web/*` 而带上 `-dirty`，发布资产名固定为 `openchat-<ver>-linux-<arch>.tar.gz`。
+- 发布构建：`VERSION` 不再因 `make web` 重写 `server/web/*` 而带上 `-dirty`，发布资产名固定为 `opendiscord-<ver>-linux-<arch>.tar.gz`。
 
 ## [0.1.0] - 2026-10-29
 
 ### Added
 
 - 首个可安装的 embedded 骨架：协议契约、分域迁移、总线/桥接/数据/用户/管理各层主体、用户端与管理端 SPA、systemd/Caddy/install 等部署件。
-- 发布链路：tag push 触发 CI 构建 `openchat-<ver>-linux-<arch>.tar.gz` 与 `SHA256SUMS`，并作为 GitHub Release 资产发布。
+- 发布链路：tag push 触发 CI 构建 `opendiscord-<ver>-linux-<arch>.tar.gz` 与 `SHA256SUMS`，并作为 GitHub Release 资产发布。
 
 ### Fixed
 

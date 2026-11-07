@@ -60,7 +60,7 @@ export interface OutboxOptions {
   newId?: () => string;
 }
 
-const STORAGE_KEY = 'openchat.outbox';
+const STORAGE_KEY = 'opendiscord.outbox';
 
 export function createLocalStoragePersistence(key = STORAGE_KEY): OutboxPersistence {
   const available = typeof localStorage !== 'undefined';

@@ -1,4 +1,4 @@
-# OpenChat 1.1 已知问题
+# OpenDiscord 1.1 已知问题
 
 > 版本：1.1.0（LTS 基线）
 > 每条都在「现象 / 影响 / 计划版本」三栏里说明。已修复项移至 `CHANGELOG.md`。
@@ -40,7 +40,7 @@ CGO_ENABLED=1` 且需 arm64 mingw 工具链），或改用 x86_64 版本走模�
 
 ### 4. split 多进程部署未实现
 
-**现象**：`deploy/systemd/openchat-{bridge,user,data,admin}.service` 是 v1.2 的预留，
+**现象**：`deploy/systemd/opendiscord-{bridge,user,data,admin}.service` 是 v1.2 的预留，
 `ExecStart` 指向当前构建不产出的二进制；`chatd` 目前只支持 embedded 单进程。
 
 **影响**：不能把一个部署拆到多台机器上做水平扩展。单机 2C2G 场景不受影响。
@@ -134,7 +134,7 @@ v1.1 起写入文件系统，但存量行不会自动搬。
 
 **影响**：数据库里仍占着这部分体积（读取会回退到旧列，功能不受影响）。
 
-**处理**：`openchatctl migrate thumbs --dry-run` 先看规模，再 `--run`。
+**处理**：`opendiscordctl migrate thumbs --dry-run` 先看规模，再 `--run`。
 
 **计划版本**：已提供工具；v1.2 在升级流程里自动化。
 

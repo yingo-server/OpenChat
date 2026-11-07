@@ -209,7 +209,7 @@ export function Archive() {
           <div>
             <h2 className="text-table font-semibold text-text-primary">当前策略</h2>
             <p className="text-body-sm text-text-tertiary">
-              策略来自 <span className="code">/etc/openchat/policy.json</span>，改完 <span className="code">systemctl reload openchat</span> 热生效。
+              策略来自 <span className="code">/etc/opendiscord/policy.json</span>，改完 <span className="code">systemctl reload opendiscord</span> 热生效。
             </p>
           </div>
           <dl className="flex flex-wrap gap-x-6 gap-y-2 text-body-sm">

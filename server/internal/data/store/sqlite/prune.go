@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
 )
 
 // deleteHotBeforeSQL prunes the hot message table by sent_at. It rides

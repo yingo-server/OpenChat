@@ -1,9 +1,9 @@
-// Command openchatctl is the SYSTEM-LEVEL operations CLI for OpenChat.
+// Command opendiscordctl is the SYSTEM-LEVEL operations CLI for OpenDiscord.
 //
 // Division of labour (docs/admin-data-design.md §7):
 //
 //	adminctl      speaks the management REST API (users/reports/flags/…)
-//	openchatctl   speaks to the LOCAL machine: systemd unit state, signals,
+//	opendiscordctl   speaks to the LOCAL machine: systemd unit state, signals,
 //	              the hot SQLite file, backups, doctor checks. It never opens a
 //	              new network port and never bypasses the admin API for
 //	              management actions — the few mutating commands (archive, flags,
@@ -36,7 +36,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3" // hot.db read-only diagnostics
 
-	"github.com/yingo-server/OpenChat/server/internal/pkg/i18n"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/i18n"
 )
 
 // Exit codes.
@@ -61,9 +61,9 @@ var (
 // Default paths. Every one of them is overridable by flag or environment
 // variable so the same binary works in containers and on dev machines.
 const (
-	defaultUnit    = "openchat"
-	defaultHotDB   = "/var/lib/openchat/hot.db"
-	fallbackHotDB  = "/var/lib/openchat/chatd.db" // deploy/backup.sh default
+	defaultUnit    = "opendiscord"
+	defaultHotDB   = "/var/lib/opendiscord/hot.db"
+	fallbackHotDB  = "/var/lib/opendiscord/chatd.db" // deploy/backup.sh default
 	defaultTimeout = 20 * time.Second
 )
 
@@ -207,7 +207,7 @@ func (e *environment) printf(format string, a ...any) {
 }
 
 func (e *environment) errorf(format string, a ...any) {
-	fmt.Fprintf(e.stderr, "openchatctl: "+format+"\n", a...)
+	fmt.Fprintf(e.stderr, "opendiscordctl: "+format+"\n", a...)
 }
 
 // ---------------------------------------------------------------- gl flags
@@ -286,16 +286,16 @@ func parseGlobals(args []string) (globals, []string, error) {
 // credentials file, so `adminctl login` has to be run only once.
 func (g *globals) resolveAdmin(e *environment) {
 	if g.AdminURL == "" {
-		g.AdminURL = e.getenv("OPENCHAT_ADMIN_URL")
+		g.AdminURL = e.getenv("OPENDISCORD_ADMIN_URL")
 	}
 	if g.AdminURL == "" {
-		g.AdminURL = e.getenv("OPENCHAT_ADMIN_CREDENTIALS_SERVER")
+		g.AdminURL = e.getenv("OPENDISCORD_ADMIN_CREDENTIALS_SERVER")
 	}
 	if g.Token == "" {
-		g.Token = e.getenv("OPENCHAT_ADMIN_TOKEN")
+		g.Token = e.getenv("OPENDISCORD_ADMIN_TOKEN")
 	}
 	if g.CSRF == "" {
-		g.CSRF = e.getenv("OPENCHAT_ADMIN_CSRF")
+		g.CSRF = e.getenv("OPENDISCORD_ADMIN_CSRF")
 	}
 	creds := loadAdminctlCredentials(e)
 	if g.AdminURL == "" {
@@ -309,7 +309,7 @@ func (g *globals) resolveAdmin(e *environment) {
 	}
 	if g.AdminURL == "" {
 		// Built-in default matches config/chatd.toml admin_listen; override with
-		// --admin-url or OPENCHAT_ADMIN_URL.
+		// --admin-url or OPENDISCORD_ADMIN_URL.
 		g.AdminURL = "http://127.0.0.1:7780"
 	}
 }
@@ -333,7 +333,7 @@ func hotDBPath(e *environment, explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	if p := e.getenv("OPENCHAT_HOT_DB"); p != "" {
+	if p := e.getenv("OPENDISCORD_HOT_DB"); p != "" {
 		return p
 	}
 	if _, err := e.stat(defaultHotDB); err == nil {
@@ -348,12 +348,12 @@ func hotDBPath(e *environment, explicit string) string {
 // adminctlCredPath mirrors adminctl's credential location exactly (one login
 // for both CLIs).
 func adminctlCredPath(e *environment) string {
-	if p := e.getenv("OPENCHAT_ADMIN_CREDENTIALS"); p != "" {
+	if p := e.getenv("OPENDISCORD_ADMIN_CREDENTIALS"); p != "" {
 		return p
 	}
 	dir, err := os.UserConfigDir()
 	if err != nil || dir == "" {
 		dir = filepath.Join(e.getenv("HOME"), ".config")
 	}
-	return filepath.Join(dir, "openchat", "adminctl.json")
+	return filepath.Join(dir, "opendiscord", "adminctl.json")
 }

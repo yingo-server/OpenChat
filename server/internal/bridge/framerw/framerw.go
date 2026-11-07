@@ -10,9 +10,9 @@ import (
 	"encoding/hex"
 	"time"
 
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
-	"github.com/yingo-server/OpenChat/server/internal/proto"
-	"github.com/yingo-server/OpenChat/server/internal/transport"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto"
+	"github.com/yingo-server/OpenDiscord/server/internal/transport"
 )
 
 var lg = log.For("framerw")

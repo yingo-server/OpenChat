@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yingo-server/OpenChat/server/internal/pipedef"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
-	"github.com/yingo-server/OpenChat/server/internal/proto"
-	"github.com/yingo-server/OpenChat/server/internal/proto/kinds"
+	"github.com/yingo-server/OpenDiscord/server/internal/pipedef"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto/kinds"
 )
 
 // 队列容量与默认水位（0 < soft < firm <= 1，可配）。

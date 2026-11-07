@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yingo-server/OpenChat/server/internal/admin/service"
+	"github.com/yingo-server/OpenDiscord/server/internal/admin/service"
 )
 
 // Reach implements service.ReachCounter: the dry-run estimate for a broadcast.

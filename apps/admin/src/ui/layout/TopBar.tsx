@@ -50,7 +50,7 @@ export function TopBar({ item, onOpenNav }: { item: NavItem; onOpenNav: () => vo
   };
 
   useEffect(() => {
-    document.title = `${item.label} · OpenChat 管理后台`;
+    document.title = `${item.label} · OpenDiscord 管理后台`;
   }, [item.label]);
 
   return (

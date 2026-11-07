@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# OpenChat 发布脚本：构建 → 打包 → 上传 → 远程切换 → 健康检查 → 失败回滚
+# OpenDiscord 发布脚本：构建 → 打包 → 上传 → 远程切换 → 健康检查 → 失败回滚
 #
 #   ./deploy/release.sh --target root@chat.example.com
 #   ./deploy/release.sh --target root@host --version v1.4.2 --skip-build
 #
 # 远端布局（单机）：
-#   /opt/openchat/releases/<version>/{bin,web}
-#   /opt/openchat/current -> releases/<version>     # 原子切换点
-#   /opt/openchat/last    -> releases/<上一版本>     # 回滚点
-#   /opt/openchat/bin     -> current/bin
-#   /opt/openchat/web     -> current/web
+#   /opt/opendiscord/releases/<version>/{bin,web}
+#   /opt/opendiscord/current -> releases/<version>     # 原子切换点
+#   /opt/opendiscord/last    -> releases/<上一版本>     # 回滚点
+#   /opt/opendiscord/bin     -> current/bin
+#   /opt/opendiscord/web     -> current/web
 #
 # 回滚语义：健康检查（HTTP /healthz，404 时退化为 systemd is-active）失败
 #           → 把 current 指回 last → 重启 → 再次检查 → 仍失败则退出非 0 并保留现场。
@@ -21,11 +21,11 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 REPO_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
 
-TARGET="${OPENCHAT_DEPLOY_TARGET:-}"
-REMOTE_ROOT="${OPENCHAT_REMOTE_ROOT:-/opt/openchat}"
-SERVICE="${OPENCHAT_SERVICE:-openchat.service}"
-HEALTH_URL="${OPENCHAT_HEALTH_URL:-http://127.0.0.1:8080/healthz}"
-SSH_PORT="${OPENCHAT_SSH_PORT:-22}"
+TARGET="${OPENDISCORD_DEPLOY_TARGET:-}"
+REMOTE_ROOT="${OPENDISCORD_REMOTE_ROOT:-/opt/opendiscord}"
+SERVICE="${OPENDISCORD_SERVICE:-opendiscord.service}"
+HEALTH_URL="${OPENDISCORD_HEALTH_URL:-http://127.0.0.1:8080/healthz}"
+SSH_PORT="${OPENDISCORD_SSH_PORT:-22}"
 SKIP_BUILD=0
 VERSION=""
 
@@ -37,12 +37,12 @@ usage() {
   cat <<'EOF'
 用法: release.sh --target user@host [选项]
 
-  --target USER@HOST   目标机（也可用 OPENCHAT_DEPLOY_TARGET）
+  --target USER@HOST   目标机（也可用 OPENDISCORD_DEPLOY_TARGET）
   --version VERSION    发布版本号（默认 git describe --tags --always --dirty）
   --skip-build         复用已有 dist/ 与 apps/*/dist
-  --service NAME       systemd 单元名（默认 openchat.service）
+  --service NAME       systemd 单元名（默认 opendiscord.service）
   --health-url URL     健康检查地址（默认 http://127.0.0.1:8080/healthz）
-  --remote-root DIR    远端根目录（默认 /opt/openchat）
+  --remote-root DIR    远端根目录（默认 /opt/opendiscord）
   --ssh-port PORT      SSH 端口（默认 22）
   -h, --help
 EOF
@@ -126,11 +126,11 @@ if [ -d apps/client/dist ]; then
 fi
 
 # 部署件随包发布，保证「发布即自包含」
-cp -R deploy/systemd deploy/policy.json deploy/openchat.toml deploy/Caddyfile "$STAGE/deploy/"
+cp -R deploy/systemd deploy/policy.json deploy/opendiscord.toml deploy/Caddyfile "$STAGE/deploy/"
 cp deploy/install.sh "$STAGE/deploy/install.sh"
 chmod 0755 "$STAGE/deploy/install.sh"
 
-TARBALL="dist/openchat-$VERSION-linux-$(go env GOARCH 2>/dev/null || echo amd64).tar.gz"
+TARBALL="dist/opendiscord-$VERSION-linux-$(go env GOARCH 2>/dev/null || echo amd64).tar.gz"
 tar -czf "$TARBALL" -C "$STAGE" .
 ( cd dist && sha256sum "$(basename "$TARBALL")" > SHA256SUMS )
 log "产物: $TARBALL"

@@ -1,4 +1,4 @@
-# OpenChat WebSocket 协议参考（1.0）
+# OpenDiscord WebSocket 协议参考（1.0）
 
 > 只描述 `proto/chat.proto`、`server/internal/proto/kinds/kinds.go`、`server/internal/user/net/frame/codec.go`、`server/internal/user/net/ws/acceptor.go`、`server/internal/data/pipe/wire/wire.go` 中**真实存在**的帧结构与语义。kind 号段逐条取自 `kinds.go`（共 **77** 个常量），状态列标注是否已有处理分支。
 

@@ -275,7 +275,7 @@ export async function bootstrap(registry: HandlerRegistry): Promise<void> {
   callController.onToast = (key) => toast.show(t(key));
 
   if (mock) {
-    (window as Window & { __openchatMock?: unknown }).__openchatMock = {
+    (window as Window & { __opendiscordMock?: unknown }).__opendiscordMock = {
       goOffline: () => mock.simulateOffline(),
       goOnline: () => mock.simulateOnline(),
       sendWatermark: (convId: number, latestSeq?: number) => mock.sendWatermark(convId, latestSeq),

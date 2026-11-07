@@ -20,9 +20,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/store/sqlite"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
-	"github.com/yingo-server/OpenChat/server/internal/user/core/authn"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store/sqlite"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/user/core/authn"
 )
 
 type fakeClock struct {

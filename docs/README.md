@@ -1,6 +1,6 @@
-# OpenChat 开发文档
+# OpenDiscord 开发文档
 
-OpenChat 采用分层 socket 架构：总线层为骨架，桥接层为枢纽，用户层/管理层/数据层经桥接通信。除管理层到桥接使用 HTTP API 外，所有层间通信均为内部 socket 长连接；前端到用户层使用 WebSocket。
+OpenDiscord 采用分层 socket 架构：总线层为骨架，桥接层为枢纽，用户层/管理层/数据层经桥接通信。除管理层到桥接使用 HTTP API 外，所有层间通信均为内部 socket 长连接；前端到用户层使用 WebSocket。
 
 ## 文档索引
 
@@ -13,7 +13,7 @@ OpenChat 采用分层 socket 架构：总线层为骨架，桥接层为枢纽，
 | [Web UI 设计规范](web-ui-spec.md) | 设计令牌、组件规范、消息区交互、性能指标 |
 | [限流与安全规范](security-spec.md) | 分层限流、认证、上传安全、运维基线、合规 |
 | [API 参考](api-reference.md) | 全部 HTTP 端点（方法/路径/鉴权/入参/出参/错误码） |
-| [CLI 参考](cli-reference.md) | `adminctl` / `openchatctl` / `opchat` 完整参数与退出码 |
+| [CLI 参考](cli-reference.md) | `adminctl` / `opendiscordctl` / `opchat` 完整参数与退出码 |
 | [WS 协议](ws-protocol.md) | 帧格式、kind 号段、各 kind payload、时序、限流语义 |
 | [路线图](roadmap.md) | 已完成 / v1.2 计划 / 明确不做及理由 |
 | [v1.1 升级说明](release-notes-v1.1.0.md) | 升级步骤、配置变更、破坏性变更、回滚 |

@@ -23,13 +23,13 @@ export interface StoredSession {
   displayName?: string;
 }
 
-const SESSION_KEY = 'openchat.session';
-const DEVICE_KEY = 'openchat.device';
+const SESSION_KEY = 'opendiscord.session';
+const DEVICE_KEY = 'opendiscord.device';
 
 function safeStorage(): StorageLike | null {
   try {
     if (typeof localStorage === 'undefined') return null;
-    const probe = '__openchat_probe__';
+    const probe = '__opendiscord_probe__';
     localStorage.setItem(probe, '1');
     localStorage.removeItem(probe);
     return localStorage;

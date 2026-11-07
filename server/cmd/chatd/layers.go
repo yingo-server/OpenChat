@@ -18,8 +18,8 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/yingo-server/OpenChat/server/internal/proto"
-	"github.com/yingo-server/OpenChat/server/internal/transport"
+	"github.com/yingo-server/OpenDiscord/server/internal/proto"
+	"github.com/yingo-server/OpenDiscord/server/internal/transport"
 )
 
 // layerQueueCap bounds each layer's inbound queue. Under measurement a

@@ -1,4 +1,4 @@
-// Command chatd is the embedded-mode assembly of OpenChat: one process, four
+// Command chatd is the embedded-mode assembly of OpenDiscord: one process, four
 // layers wired through the in-process transport, plus the user authentication
 // HTTP API and the management frame injector.
 //
@@ -14,14 +14,14 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/yingo-server/OpenChat/server/internal/pkg/i18n"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/i18n"
 
-	"github.com/yingo-server/OpenChat/server/internal/pkg/exitcodes"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/log"
-	"github.com/yingo-server/OpenChat/server/internal/pkg/signalset"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/exitcodes"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/log"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/signalset"
 )
 
-const usage = `chatd — OpenChat embedded server
+const usage = `chatd — OpenDiscord embedded server
 
 usage: chatd [--config PATH] [--tui] [--lang zh-CN|en]   (default config: config/chatd.toml)
 

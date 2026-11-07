@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/yingo-server/OpenChat/server/internal/data/store"
+	"github.com/yingo-server/OpenDiscord/server/internal/data/store"
 )
 
 // sysStore implements store.SysStore over sys_* tables.

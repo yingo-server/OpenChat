@@ -8,17 +8,17 @@ import (
 // TestSafeJoin is the table-driven guard: legitimate sharded paths resolve
 // under the base, everything that could escape is refused.
 func TestSafeJoin(t *testing.T) {
-	base := "/var/lib/openchat/media"
+	base := "/var/lib/opendiscord/media"
 
 	ok := []struct {
 		rel  string
 		want string
 	}{
-		{"ab/cd" + "/deadbeef", "/var/lib/openchat/media/ab/cd/deadbeef"},
-		{"thumbs/ab/abcd/x.thumb", "/var/lib/openchat/media/thumbs/ab/abcd/x.thumb"},
-		{"a/b/c", "/var/lib/openchat/media/a/b/c"},
-		{"flat", "/var/lib/openchat/media/flat"},
-		{"a/./b", "/var/lib/openchat/media/a/b"}, // a "." component is harmless
+		{"ab/cd" + "/deadbeef", "/var/lib/opendiscord/media/ab/cd/deadbeef"},
+		{"thumbs/ab/abcd/x.thumb", "/var/lib/opendiscord/media/thumbs/ab/abcd/x.thumb"},
+		{"a/b/c", "/var/lib/opendiscord/media/a/b/c"},
+		{"flat", "/var/lib/opendiscord/media/flat"},
+		{"a/./b", "/var/lib/opendiscord/media/a/b"}, // a "." component is harmless
 	}
 	for _, c := range ok {
 		got, err := safeJoin(base, c.rel)

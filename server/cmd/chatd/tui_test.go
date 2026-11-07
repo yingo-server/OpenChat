@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yingo-server/OpenChat/server/internal/pkg/i18n"
+	"github.com/yingo-server/OpenDiscord/server/internal/pkg/i18n"
 )
 
 // pty is unavailable in CI, so the TUI is tested through its pure renderer
@@ -20,7 +20,7 @@ func TestTUIRenders(t *testing.T) {
 	renderTUI(&buf, snap)
 	out := buf.String()
 	for _, want := range []string{
-		"OpenChat chatd", "test-version", "1m5s", "conns=7", "p9", "flags=3",
+		"OpenDiscord chatd", "test-version", "1m5s", "conns=7", "p9", "flags=3",
 		"hotkeys", "goroutines=12",
 	} {
 		if !strings.Contains(out, want) {

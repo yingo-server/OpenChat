@@ -1,4 +1,4 @@
-# OpenChat CLI 参考（1.0）
+# OpenDiscord CLI 参考（1.0）
 
 > 只描述两个二进制 **代码里真实实现且实测过** 的子命令/flag/退出码。命令表取自
 > `rg 'case "' server/cmd/*/main.go`，flag 取自 `rg 'fs\.(String|Int|Bool|StringVar)' server/cmd/`。
@@ -9,7 +9,7 @@
 | 二进制 | 定位 | 说明 |
 |--------|------|------|
 | `adminctl` | **管理 API 客户端** | 纯 HTTP 客户端，所有操作经 `admin_rest_listen` 的 `/api/v1/*`，与浏览器控制台同一 CRUD/鉴权路径（"API 的第二皮肤，不是旁路"）。 |
-| `openchatctl` | **本机运维 + 管理 API** | 直连本机 systemd/信号/热 SQLite（status/doctor/backup）；少数变更动作（archive/flags/ban）经同一 loopback 管理 API。 |
+| `opendiscordctl` | **本机运维 + 管理 API** | 直连本机 systemd/信号/热 SQLite（status/doctor/backup）；少数变更动作（archive/flags/ban）经同一 loopback 管理 API。 |
 
 ---
 
@@ -17,27 +17,27 @@
 
 ### 1.1 凭据文件
 
-- 路径：`~/.config/openchat/adminctl.json`（`os.UserConfigDir()/openchat/adminctl.json`）。
-- 可用 `OPENCHAT_ADMIN_CREDENTIALS` 覆盖路径。
-- JSON 结构（`adminctl/client.go` `credentials`，`openchatctl/api.go` 复制同构）：
+- 路径：`~/.config/opendiscord/adminctl.json`（`os.UserConfigDir()/opendiscord/adminctl.json`）。
+- 可用 `OPENDISCORD_ADMIN_CREDENTIALS` 覆盖路径。
+- JSON 结构（`adminctl/client.go` `credentials`，`opendiscordctl/api.go` 复制同构）：
   ```json
   { "server": "http://127.0.0.1:7781", "token": "...", "csrf_token": "...",
     "username": "rootadmin", "expires_at": 1700000000 }
   ```
 - 权限：目录 `0700`、文件 `0600`（`saveCredentials`）。
-- `adminctl login` 写该文件；`openchatctl` 读同一文件 → **登录一次，两个 CLI 通用**。
+- `adminctl login` 写该文件；`opendiscordctl` 读同一文件 → **登录一次，两个 CLI 通用**。
 
 ### 1.2 环境变量
 
 | 变量 | 作用 | 两个 CLI |
 |------|------|---------|
-| `OPENCHAT_ADMIN_URL` | 管理 API base URL | 都读 |
-| `OPENCHAT_ADMIN_TOKEN` | Bearer token | 都读 |
-| `OPENCHAT_ADMIN_CSRF` | CSRF token | 都读 |
-| `OPENCHAT_ADMIN_CREDENTIALS` | 凭据文件路径 | 都读 |
-| `OPENCHAT_HOT_DB` | 热库路径（默认 `/var/lib/openchat/hot.db`） | openchatctl |
-| `OPENCHAT_COLD_DSN` | 冷库 DSN（doctor 只做 TCP 连通） | openchatctl |
-| `OPENCHAT_BACKUP_SCRIPT` | 自定义备份脚本 | openchatctl |
+| `OPENDISCORD_ADMIN_URL` | 管理 API base URL | 都读 |
+| `OPENDISCORD_ADMIN_TOKEN` | Bearer token | 都读 |
+| `OPENDISCORD_ADMIN_CSRF` | CSRF token | 都读 |
+| `OPENDISCORD_ADMIN_CREDENTIALS` | 凭据文件路径 | 都读 |
+| `OPENDISCORD_HOT_DB` | 热库路径（默认 `/var/lib/opendiscord/hot.db`） | opendiscordctl |
+| `OPENDISCORD_COLD_DSN` | 冷库 DSN（doctor 只做 TCP 连通） | opendiscordctl |
+| `OPENDISCORD_BACKUP_SCRIPT` | 自定义备份脚本 | opendiscordctl |
 
 优先级：命令行 flag → 环境变量 → 凭据文件 → 内置默认。
 
@@ -52,17 +52,17 @@
 
 - 写方法（非 GET/HEAD）自动生成 RFC4122 v4 UUID 放入 `Idempotency-Key`（`newUUID()`）。
 - `adminctl` 可用 `--idempotency-key <key>` 显式指定（用于重放复现）。
-- `openchatctl` 每次写操作都生成新 UUID，不支持外部指定。
+- `opendiscordctl` 每次写操作都生成新 UUID，不支持外部指定。
 
 ### 1.5 退出码（sysexits 子集）
 
 | 码 | 名称 | 含义 |
 |----|------|------|
 | 0 | OK | 成功 |
-| 1 | ERROR | 一般错误；`openchatctl doctor` 检出 `FAIL` 也算 1 |
+| 1 | ERROR | 一般错误；`opendiscordctl doctor` 检出 `FAIL` 也算 1 |
 | 64 | USAGE | 语法/参数错误（含非法 flag、缺少位置参数、子命令拼错） |
 | 65 | NOT_FOUND | 目标不存在（REST 404 / 本地路径缺失）——`admin-data-design §7` |
-| 77 | DENIED | 未授权/无权限；`openchatctl` 未配置管理令牌（未登录）也归 77 |
+| 77 | DENIED | 未授权/无权限；`opendiscordctl` 未配置管理令牌（未登录）也归 77 |
 
 ---
 
@@ -161,11 +161,11 @@
 
 ---
 
-## 3. `openchatctl`
+## 3. `opendiscordctl`
 
-用法：`openchatctl [global flags] <command> [args]`
+用法：`opendiscordctl [global flags] <command> [args]`
 
-### 3.1 全局 flag（`openchatctl/cli.go` `parseGlobals`）
+### 3.1 全局 flag（`opendiscordctl/cli.go` `parseGlobals`）
 
 | flag | 默认 | 说明 |
 |------|------|------|
@@ -175,7 +175,7 @@
 | `--csrf-token <t>` | — | CSRF 令牌 |
 | `--timeout <dur>` | `20s` | 总超时（`time.ParseDuration`，≤0 → 64） |
 
-> 注意 JSON 开关命名与 adminctl **不同**：`openchatctl --json` vs `adminctl --output json`。
+> 注意 JSON 开关命名与 adminctl **不同**：`opendiscordctl --json` vs `adminctl --output json`。
 
 ### 3.2 子命令总表（`main.go` case 分支）
 
@@ -183,40 +183,40 @@
 （8 个功能子命令 + help = 9。）
 
 #### version
-- 语法：`openchatctl version`
+- 语法：`opendiscordctl version`
 - 打印 `version/commit/date/go/os/arch`；`--json` 输出信封。附带多余参数 → 64。
 
 #### status
-- 语法：`openchatctl status [--unit NAME(openchat)] [--hot-db PATH] [--signal usr1|usr2|none] [--no-journal] [--journal-lines N(50)]`
+- 语法：`opendiscordctl status [--unit NAME(opendiscord)] [--hot-db PATH] [--signal usr1|usr2|none] [--no-journal] [--journal-lines N(50)]`
 - 读 systemd 进程状态 + 发 SIGUSR1 dump + 读 journal 摘要 + 热库统计。
 - 退出码：0 / 1 / 64 / 65（热库缺失）/ 77。
 
 #### doctor
-- 语法：`openchatctl doctor [--hot-db PATH] [--unit NAME] [--since -1h] [--no-logs] [--no-cold]`
+- 语法：`opendiscordctl doctor [--hot-db PATH] [--unit NAME] [--since -1h] [--no-logs] [--no-cold]`
 - 体检：热库完整性、磁盘余量、近窗口 error 日志数、冷库 TCP 连通。
 - 有 `FAIL` 项时退出码 **1**（非 0，也非 64）。
 - 退出码：0 / 1 / 64 / 77。
 
 #### backup
-- 语法：`openchatctl backup [--dry-run] [--db PATH] [--script PATH] [--to DIR]`
+- 语法：`opendiscordctl backup [--dry-run] [--db PATH] [--script PATH] [--to DIR]`
 - 调用 `deploy/backup.sh`；不存在则内置 `sqlite .backup` + 加密提示。
 - 退出码：0 / 1 / 64 / 65（脚本/db 缺失）/ 77。
 
 #### archive
-- 语法：`openchatctl archive --dry-run | --run`（**必须且只能二选一**）
+- 语法：`opendiscordctl archive --dry-run | --run`（**必须且只能二选一**）
 - 经管理 API `POST /api/v1/archive/run`；未登录时提示改用 `adminctl archive`。
 - 退出码：0 / 64（两者都/都不给）/ 77（未登录）/ 1。
 
 #### flags
-- `openchatctl flags list` → `GET /api/v1/flags`
-- `openchatctl flags set KEY=VALUE` 或 `openchatctl flags set KEY VALUE`（**支持 `k=v` 或 `k v` 两种**）
+- `opendiscordctl flags list` → `GET /api/v1/flags`
+- `opendiscordctl flags set KEY=VALUE` 或 `opendiscordctl flags set KEY VALUE`（**支持 `k=v` 或 `k v` 两种**）
   - 该语法校验先于凭据检查：语法错 → 64（不是 77）。
   - value 非合法 JSON 时加引号成字符串。
 - 退出码：0 / 64 / 77 / 1。
 
 #### ban / unban
-- `openchatctl ban <uid> [--days N(0=永久)] [--level 1..3(1)] [--until UNIX] [--reason S]` → `POST /api/v1/users/{id}/ban`
-- `openchatctl unban <uid> [--reason S]` → `POST /api/v1/users/{id}/unban`
+- `opendiscordctl ban <uid> [--days N(0=永久)] [--level 1..3(1)] [--until UNIX] [--reason S]` → `POST /api/v1/users/{id}/ban`
+- `opendiscordctl unban <uid> [--reason S]` → `POST /api/v1/users/{id}/unban`
 - `--days` 与 `--until` 互斥且不能为负；`ban` 校验 `--level 1..3`。
 - 退出码：0 / 64（缺 uid / 非法 level / 互斥冲突）/ 65 / 77 / 1。
 
@@ -224,7 +224,7 @@
 
 ## 4. 退出码详解（逐条）
 
-| 码 | adminctl 触发点 | openchatctl 触发点 |
+| 码 | adminctl 触发点 | opendiscordctl 触发点 |
 |----|----------------|-------------------|
 | 0 | 命令成功、`help`/`completion` 成功 | 命令成功、`help`/`version` 成功 |
 | 1 | 网络/非 2xx 且非 401/403/404 | 一般错误；`doctor` 有 FAIL |
@@ -236,7 +236,7 @@
 
 ## 5. 变更类命令统一走管理 API
 
-`openchatctl` 的 `archive`、`flags`、`ban`、`unban` **不直连数据库/总线**，而是复用与 `adminctl` 完全相同的 loopback REST 链路（含 CSRF 双提交、Idempotency-Key、错误体解析）。这是 `docs/admin-data-design.md §7` 的一致性红线。
+`opendiscordctl` 的 `archive`、`flags`、`ban`、`unban` **不直连数据库/总线**，而是复用与 `adminctl` 完全相同的 loopback REST 链路（含 CSRF 双提交、Idempotency-Key、错误体解析）。这是 `docs/admin-data-design.md §7` 的一致性红线。
 
 ---
 
@@ -250,13 +250,13 @@ adminctl completion bash > /etc/bash_completion.d/adminctl
 ```
 补全覆盖顶层命令、`users/reports/messages/broadcast/flags/archive` 子命令、`--output json|table` 取值，以及全局 flag（`--server/--token/--csrf-token/--output/--idempotency-key/--no-save`）。
 
-> `openchatctl` **没有** `completion` 子命令（见 §7）。
+> `opendiscordctl` **没有** `completion` 子命令（见 §7）。
 
 ---
 
 ## 7. 已知限制（按 2026-10 当前源码实测记录）
 
-> 说明：任务书里原始列的"adminctl 缺 logout/metrics""`<sub> --help` 无输出""openchatctl `--help` 返回 64"三条，在当前仓库源码中**已不成立**（见下）；本文件按**实测**记录真实状态。
+> 说明：任务书里原始列的"adminctl 缺 logout/metrics""`<sub> --help` 无输出""opendiscordctl `--help` 返回 64"三条，在当前仓库源码中**已不成立**（见下）；本文件按**实测**记录真实状态。
 
 1. **`adminctl` 已含 `logout`、`metrics` 子命令（原"缺失"说法已过时）。**
    `main.go` 有 `case "logout"` / `case "metrics"`，对应 `cmdLogout`（`POST /api/v1/logout` + 删凭据）与 `cmdMetrics`（`GET /api/v1/metrics` 原文输出）。实测均可用。
@@ -265,27 +265,27 @@ adminctl completion bash > /etc/bash_completion.d/adminctl
    - **叶子子命令**（如 `users list --help`、`login --help`、`metrics --help`）会打印 flag 用法并退出 **0**。
    - **父命令**（如 `users --help`、`reports --help`）把 `--help` 当作参数走子命令分发，返回 `users requires list|show|ban|unban` 并退出 **64**。要查看父命令帮助请用顶层 `adminctl help`。
 
-3. **`openchatctl status|doctor|backup|archive --help` 当前返回 0（原"返回 64"已过时）。**
-   实测这四个子命令的 `--help` 都会打印 flag 用法并退出 **0**。只有 `openchatctl help`/`-h`/`--help` 作为顶层命令时也是 0。
+3. **`opendiscordctl status|doctor|backup|archive --help` 当前返回 0（原"返回 64"已过时）。**
+   实测这四个子命令的 `--help` 都会打印 flag 用法并退出 **0**。只有 `opendiscordctl help`/`-h`/`--help` 作为顶层命令时也是 0。
 
 4. **两个 CLI 的 `flags set` 语法不同（仍然成立）。**
    - `adminctl flags set <key> <value>`：**两个位置参数**。
-   - `openchatctl flags set KEY=VALUE` 或 `flags set KEY VALUE`：支持 `k=v` 与 `k v` 两种；语法校验先于凭据检查（语法错 → 64，未登录 → 77）。
+   - `opendiscordctl flags set KEY=VALUE` 或 `flags set KEY VALUE`：支持 `k=v` 与 `k v` 两种；语法校验先于凭据检查（语法错 → 64，未登录 → 77）。
 
 5. **JSON 开关命名不同（仍然成立）。**
    - `adminctl --output json`（或 `-o json`；`table` 为默认）。
-   - `openchatctl --json`（布尔开关，输出 `{ok,command,data}` 信封）。
+   - `opendiscordctl --json`（布尔开关，输出 `{ok,command,data}` 信封）。
 
 6. **端口 footgun：CLI 内置默认端口 7781，而 `config/chatd.toml` 里写的 `admin_listen` 是 7780（仍然成立）。**
    - 两个 CLI 默认 base URL 都是 `http://127.0.0.1:7781`，指向 **`admin_rest_listen`（REST 面）**——正确。
    - 但 `config/chatd.toml` **只配置了 `admin_listen = 127.0.0.1:7780`**（injector 面，只为 `POST /admin/inject`），**没有** `admin_rest_listen` 项；后者取默认 7781。
    - 若把 CLI 的 `--server` 手动改成 7780，会打到 injector 端口：`/api/v1/*` 全部不是 REST 面（404 / `WRONG_SURFACE`）。**裸跑 `adminctl` 依赖默认 7781 才连得通 REST 面**。
 
-7. **`openchatctl` 没有 `completion` 子命令**（只有 `adminctl completion bash`）。
+7. **`opendiscordctl` 没有 `completion` 子命令**（只有 `adminctl completion bash`）。
 
 ---
 
 ## 8. 补充
 
-- `adminctl help` / `-h` / `--help`、`openchatctl help` / `-h` / `--help` 打印用法并退出 0。
+- `adminctl help` / `-h` / `--help`、`opendiscordctl help` / `-h` / `--help` 打印用法并退出 0。
 - 两个 CLI 的写操作都在请求前生成幂等键；重放同一 `--idempotency-key` 可复现同一响应（服务端 5 分钟缓存）。

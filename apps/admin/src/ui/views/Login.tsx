@@ -82,7 +82,7 @@ export function Login() {
             OC
           </span>
           <div>
-            <h1 className="text-title text-text-primary">OpenChat 管理后台</h1>
+            <h1 className="text-title text-text-primary">OpenDiscord 管理后台</h1>
             <p className="text-body-sm text-text-tertiary">仅限授权管理员访问，所有操作均记入审计日志</p>
           </div>
         </div>
